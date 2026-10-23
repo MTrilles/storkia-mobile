@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'dart:convert';
+import 'package:http/http.dart' as http;
 import '../models/user_model.dart';
 import '../models/product_model.dart';
 import '../components/custom_bottom_nav.dart';
@@ -6,6 +8,7 @@ import '../components/product_card.dart';
 import '../services/api_service.dart';
 import 'browse_screen.dart';
 import 'me_screen.dart';
+import 'cart_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   final UserModel user;
@@ -27,10 +30,13 @@ class _HomeScreenState extends State<HomeScreen> {
   int _currentPage = 1;
   bool _hasMore = true;
 
+  int _cartItemCount = 0;
+
   @override
   void initState() {
     super.initState();
     _fetchProducts();
+    _fetchCartItemCount();
     _scrollController.addListener(_onScroll);
   }
 
@@ -47,6 +53,29 @@ class _HomeScreenState extends State<HomeScreen> {
       if (!_isFetchingMore && _hasMore) {
         _fetchProducts(loadMore: true);
       }
+    }
+  }
+
+  Future<void> _fetchCartItemCount() async {
+    try {
+      final response = await http.get(
+        Uri.parse('https://dev.storkia.shop/api/v1/cart'),
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Accept': 'application/json',
+        },
+      );
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        final List items = data['data'] ?? [];
+        if (mounted) {
+          setState(() {
+            _cartItemCount = items.length;
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint("Error fetching cart count: $e");
     }
   }
 
@@ -102,9 +131,8 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildHomeContent() {
     return Column(
       children: [
-        // Custom Header
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
           decoration: BoxDecoration(
             color: Colors.white,
             boxShadow: [
@@ -149,16 +177,66 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
               ),
-              const SizedBox(width: 12),
-              const Icon(Icons.shopping_cart_outlined,
-                  color: Color(0xFF292524)),
-              const SizedBox(width: 16),
-              const Icon(Icons.chat_bubble_outline, color: Color(0xFF292524)),
+              const SizedBox(width: 4),
+              IconButton(
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
+                icon: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    const Icon(Icons.shopping_cart_outlined,
+                        color: Color(0xFF292524), size: 26),
+                    if (_cartItemCount > 0)
+                      Positioned(
+                        right: -4,
+                        top: -4,
+                        child: Container(
+                          padding: const EdgeInsets.all(4),
+                          decoration: const BoxDecoration(
+                            color: Color(0xFFCF4173),
+                            shape: BoxShape.circle,
+                          ),
+                          constraints: const BoxConstraints(
+                            minWidth: 18,
+                            minHeight: 18,
+                          ),
+                          child: Text(
+                            '$_cartItemCount',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                              height: 1.0,
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => CartScreen(
+                        baseUrl: 'https://dev.storkia.shop',
+                        token: widget.token,
+                      ),
+                    ),
+                  ).then((_) => _fetchCartItemCount());
+                },
+              ),
+              const SizedBox(width: 8),
+              IconButton(
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
+                icon: const Icon(Icons.chat_bubble_outline,
+                    color: Color(0xFF292524), size: 26),
+                onPressed: () {},
+              ),
             ],
           ),
         ),
-
-        // Scrollable Content
         Expanded(
           child: _isLoading && !_isFetchingMore
               ? const Center(
@@ -170,7 +248,6 @@ class _HomeScreenState extends State<HomeScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          // Hero Banner
                           Container(
                             width: double.infinity,
                             height: 160,
@@ -228,7 +305,6 @@ class _HomeScreenState extends State<HomeScreen> {
                               ],
                             ),
                           ),
-
                           const Padding(
                             padding: EdgeInsets.symmetric(
                                 horizontal: 16.0, vertical: 8.0),
@@ -244,8 +320,6 @@ class _HomeScreenState extends State<HomeScreen> {
                         ],
                       ),
                     ),
-
-                    // Products Grid
                     _products.isEmpty
                         ? const SliverToBoxAdapter(
                             child: Padding(
@@ -277,8 +351,6 @@ class _HomeScreenState extends State<HomeScreen> {
                               ),
                             ),
                           ),
-
-                    // Loading Indicator at bottom
                     if (_isFetchingMore)
                       const SliverToBoxAdapter(
                         child: Padding(
@@ -289,7 +361,6 @@ class _HomeScreenState extends State<HomeScreen> {
                           ),
                         ),
                       ),
-
                     const SliverToBoxAdapter(child: SizedBox(height: 24)),
                   ],
                 ),

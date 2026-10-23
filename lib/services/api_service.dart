@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../config/api_config.dart';
+import '../models/cart_model.dart';
 
 class ApiService {
   static Future<Map<String, dynamic>> sendOtp(String email) async {
@@ -108,13 +109,11 @@ class ApiService {
         },
       );
 
-      // Clear local storage to force the UI to log out
       final prefs = await SharedPreferences.getInstance();
       await prefs.clear();
 
       return response.statusCode == 200;
     } catch (e) {
-      // Clear local storage even if there's a network error
       final prefs = await SharedPreferences.getInstance();
       await prefs.clear();
       return false;
@@ -197,6 +196,125 @@ class ApiService {
         return {
           'success': false,
           'message': data['message'] ?? 'Failed to fetch products.'
+        };
+      }
+    } catch (e) {
+      return {'success': false, 'message': 'Network error: $e'};
+    }
+  }
+
+  // Cart API Methods
+  static Future<Map<String, dynamic>> getCartItems(String token) async {
+    try {
+      final response = await http.get(
+        Uri.parse('${ApiConfig.baseUrl}/cart'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+      );
+
+      final data = jsonDecode(response.body);
+      if (response.statusCode == 200) {
+        List items = data['data'] ?? [];
+        List<CartItem> cartItems =
+            items.map((e) => CartItem.fromJson(e)).toList();
+        return {'success': true, 'data': cartItems};
+      } else {
+        return {
+          'success': false,
+          'message': data['message'] ?? 'Failed to load cart'
+        };
+      }
+    } catch (e) {
+      return {'success': false, 'message': 'Network error: $e'};
+    }
+  }
+
+  static Future<Map<String, dynamic>> addToCart({
+    required String token,
+    required int productId,
+    required int quantity,
+    String? variant,
+    String? subVariant,
+  }) async {
+    try {
+      final response = await http.post(
+        Uri.parse('${ApiConfig.baseUrl}/cart'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+        body: jsonEncode({
+          'product_id': productId,
+          'quantity': quantity,
+          'variant': variant,
+          'sub_variant': subVariant,
+        }),
+      );
+
+      final data = jsonDecode(response.body);
+      if (response.statusCode == 201 || response.statusCode == 200) {
+        return {'success': true, 'data': data};
+      } else {
+        return {
+          'success': false,
+          'message': data['message'] ?? 'Failed to add item'
+        };
+      }
+    } catch (e) {
+      return {'success': false, 'message': 'Network error: $e'};
+    }
+  }
+
+  static Future<Map<String, dynamic>> updateCartQuantity(
+      String token, int cartId, int quantity) async {
+    try {
+      final response = await http.put(
+        Uri.parse('${ApiConfig.baseUrl}/cart/$cartId'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+        body: jsonEncode({'quantity': quantity}),
+      );
+
+      final data = jsonDecode(response.body);
+      if (response.statusCode == 200) {
+        return {'success': true, 'data': data};
+      } else {
+        return {
+          'success': false,
+          'message': data['message'] ?? 'Failed to update item'
+        };
+      }
+    } catch (e) {
+      return {'success': false, 'message': 'Network error: $e'};
+    }
+  }
+
+  static Future<Map<String, dynamic>> removeCartItem(
+      String token, int cartId) async {
+    try {
+      final response = await http.delete(
+        Uri.parse('${ApiConfig.baseUrl}/cart/$cartId'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+      );
+
+      final data = jsonDecode(response.body);
+      if (response.statusCode == 200) {
+        return {'success': true, 'data': data};
+      } else {
+        return {
+          'success': false,
+          'message': data['message'] ?? 'Failed to remove item'
         };
       }
     } catch (e) {

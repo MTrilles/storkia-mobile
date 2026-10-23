@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 import '../models/product_model.dart';
 import '../components/product_card.dart';
 import '../services/api_service.dart';
@@ -24,6 +26,8 @@ class _ProductShowScreenState extends State<ProductShowScreen> {
 
   int? _selectedMainIndex;
   int? _selectedSubIndex;
+  String _selectedMainName = '';
+  String _selectedSubName = '';
 
   late String _currentImage;
   late double _activePrice;
@@ -34,12 +38,12 @@ class _ProductShowScreenState extends State<ProductShowScreen> {
   bool _hasSubVariants = false;
   late int _totalStock;
 
-  // Suggestions state
   List<Product> _suggestedProducts = [];
   bool _isLoadingSuggestions = true;
   bool _isFetchingMoreSuggestions = false;
   int _currentSuggestionPage = 1;
   bool _hasMoreSuggestions = true;
+  bool _isAddingToCart = false;
 
   @override
   void initState() {
@@ -93,7 +97,7 @@ class _ProductShowScreenState extends State<ProductShowScreen> {
 
       final List<Product> newProducts = productsJson
           .map((json) => Product.fromJson(json))
-          .where((p) => p.id != widget.product.id) // Exclude current product
+          .where((p) => p.id != widget.product.id)
           .toList();
 
       setState(() {
@@ -151,6 +155,8 @@ class _ProductShowScreenState extends State<ProductShowScreen> {
       if (_selectedMainIndex == index) {
         _selectedMainIndex = null;
         _selectedSubIndex = null;
+        _selectedMainName = '';
+        _selectedSubName = '';
         _hasSubVariants = false;
         _activePrice = widget.product.price;
         _activeStock = _totalStock;
@@ -160,6 +166,8 @@ class _ProductShowScreenState extends State<ProductShowScreen> {
       } else {
         _selectedMainIndex = index;
         _selectedSubIndex = null;
+        _selectedMainName = item['name'] ?? '';
+        _selectedSubName = '';
 
         _hasSubVariants =
             item['subs'] != null && (item['subs'] as List).isNotEmpty;
@@ -192,6 +200,7 @@ class _ProductShowScreenState extends State<ProductShowScreen> {
     setState(() {
       if (_selectedSubIndex == index) {
         _selectedSubIndex = null;
+        _selectedSubName = '';
         _activePrice = double.tryParse(parentItem['price'].toString()) ??
             widget.product.price;
 
@@ -204,9 +213,13 @@ class _ProductShowScreenState extends State<ProductShowScreen> {
         if (parentItem['image'] != null &&
             parentItem['image'].toString().isNotEmpty) {
           _currentImage = '${widget.baseUrl}/storage/${parentItem['image']}';
+        } else if (widget.product.pictures.isNotEmpty) {
+          _currentImage =
+              '${widget.baseUrl}/storage/${widget.product.pictures[0]}';
         }
       } else {
         _selectedSubIndex = index;
+        _selectedSubName = sub['name'] ?? '';
         _activePrice = double.tryParse(sub['price'].toString()) ??
             double.tryParse(parentItem['price'].toString()) ??
             widget.product.price;
@@ -220,7 +233,7 @@ class _ProductShowScreenState extends State<ProductShowScreen> {
     });
   }
 
-  void _validateAndSubmit() {
+  Future<void> _validateAndSubmit() async {
     if (_hasVariants && _selectedMainIndex == null) {
       _showToast(
           'Please pick a ${widget.product.variants?['title'] ?? 'variant'} first.');
@@ -231,7 +244,35 @@ class _ProductShowScreenState extends State<ProductShowScreen> {
           'Please pick a ${widget.product.variants?['sub_title'] ?? 'sub-variant'} too.');
       return;
     }
-    _showToast('Added to cart successfully!', isError: false);
+
+    setState(() => _isAddingToCart = true);
+
+    try {
+      final response = await http.post(
+        Uri.parse('${widget.baseUrl}/api/v1/cart'),
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: json.encode({
+          'product_id': widget.product.id,
+          'quantity': _quantity,
+          'variant': _selectedMainName.isNotEmpty ? _selectedMainName : null,
+          'sub_variant': _selectedSubName.isNotEmpty ? _selectedSubName : null,
+        }),
+      );
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        _showToast('Added to cart successfully!', isError: false);
+      } else {
+        _showToast('Failed to add to cart. Please try again.');
+      }
+    } catch (e) {
+      _showToast('Network error occurred.');
+    } finally {
+      if (mounted) setState(() => _isAddingToCart = false);
+    }
   }
 
   void _showToast(String message, {bool isError = true}) {
@@ -294,10 +335,6 @@ class _ProductShowScreenState extends State<ProductShowScreen> {
         foregroundColor: const Color(0xFF292524),
         title: const Text('Product Details',
             style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-        actions: [
-          IconButton(
-              icon: const Icon(Icons.shopping_cart_outlined), onPressed: () {}),
-        ],
       ),
       body: CustomScrollView(
         controller: _scrollController,
@@ -305,7 +342,6 @@ class _ProductShowScreenState extends State<ProductShowScreen> {
           SliverToBoxAdapter(
             child: Column(
               children: [
-                // Image Gallery block
                 Container(
                   width: double.infinity,
                   color: Colors.white,
@@ -364,8 +400,6 @@ class _ProductShowScreenState extends State<ProductShowScreen> {
                   ),
                 ),
                 const SizedBox(height: 8),
-
-                // Product Header Block
                 Container(
                   width: double.infinity,
                   color: Colors.white,
@@ -437,8 +471,6 @@ class _ProductShowScreenState extends State<ProductShowScreen> {
                   ),
                 ),
                 const SizedBox(height: 8),
-
-                // Variants & Quantity Selection Block
                 Container(
                   width: double.infinity,
                   color: Colors.white,
@@ -503,7 +535,6 @@ class _ProductShowScreenState extends State<ProductShowScreen> {
                         ),
                         const SizedBox(height: 20),
                       ],
-
                       if (_hasSubVariants && _selectedMainIndex != null) ...[
                         Text(
                           (widget.product.variants?['sub_title'] ??
@@ -566,8 +597,6 @@ class _ProductShowScreenState extends State<ProductShowScreen> {
                         ),
                         const SizedBox(height: 20),
                       ],
-
-                      // Quantity Selector
                       Wrap(
                         crossAxisAlignment: WrapCrossAlignment.center,
                         spacing: 16,
@@ -619,8 +648,6 @@ class _ProductShowScreenState extends State<ProductShowScreen> {
                   ),
                 ),
                 const SizedBox(height: 8),
-
-                // Seller Profile Block
                 if (widget.product.sellerProfile != null)
                   Container(
                     width: double.infinity,
@@ -735,8 +762,6 @@ class _ProductShowScreenState extends State<ProductShowScreen> {
                   ),
                 if (widget.product.sellerProfile != null)
                   const SizedBox(height: 8),
-
-                // Specifications Block
                 Container(
                   width: double.infinity,
                   color: Colors.white,
@@ -761,8 +786,6 @@ class _ProductShowScreenState extends State<ProductShowScreen> {
                   ),
                 ),
                 const SizedBox(height: 8),
-
-                // Description Block
                 Container(
                   width: double.infinity,
                   color: Colors.white,
@@ -801,8 +824,6 @@ class _ProductShowScreenState extends State<ProductShowScreen> {
                   ),
                 ),
                 const SizedBox(height: 16),
-
-                // Suggestions Header
                 const Padding(
                   padding:
                       EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
@@ -818,8 +839,6 @@ class _ProductShowScreenState extends State<ProductShowScreen> {
               ],
             ),
           ),
-
-          // Suggestions Grid
           _suggestedProducts.isEmpty && !_isLoadingSuggestions
               ? const SliverToBoxAdapter(
                   child: Padding(
@@ -849,8 +868,6 @@ class _ProductShowScreenState extends State<ProductShowScreen> {
                     ),
                   ),
                 ),
-
-          // Loading Indicator for Suggestions
           if (_isFetchingMoreSuggestions || _isLoadingSuggestions)
             const SliverToBoxAdapter(
               child: Padding(
@@ -860,12 +877,9 @@ class _ProductShowScreenState extends State<ProductShowScreen> {
                 ),
               ),
             ),
-
           const SliverToBoxAdapter(child: SizedBox(height: 24)),
         ],
       ),
-
-      // Bottom Actions
       bottomNavigationBar: Container(
         width: double.infinity,
         padding: const EdgeInsets.all(16),
@@ -883,11 +897,17 @@ class _ProductShowScreenState extends State<ProductShowScreen> {
             children: [
               Expanded(
                 child: OutlinedButton.icon(
-                  onPressed: _validateAndSubmit,
-                  icon: const Icon(Icons.add_shopping_cart,
-                      color: Color(0xFFCF4173)),
-                  label: const Text('Add To Cart',
-                      style: TextStyle(
+                  onPressed: _isAddingToCart ? null : _validateAndSubmit,
+                  icon: _isAddingToCart
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Color(0xFFCF4173)))
+                      : const Icon(Icons.add_shopping_cart,
+                          color: Color(0xFFCF4173)),
+                  label: Text(_isAddingToCart ? 'Adding...' : 'Add To Cart',
+                      style: const TextStyle(
                           color: Color(0xFFCF4173),
                           fontWeight: FontWeight.bold)),
                   style: OutlinedButton.styleFrom(
@@ -902,7 +922,7 @@ class _ProductShowScreenState extends State<ProductShowScreen> {
               const SizedBox(width: 12),
               Expanded(
                 child: ElevatedButton(
-                  onPressed: _validateAndSubmit,
+                  onPressed: _isAddingToCart ? null : _validateAndSubmit,
                   style: ElevatedButton.styleFrom(
                     padding: const EdgeInsets.symmetric(vertical: 16),
                     backgroundColor: const Color(0xFFCF4173),
