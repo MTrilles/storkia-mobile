@@ -134,10 +134,22 @@ class ApiService {
   }
 
   static Future<Map<String, dynamic>> getProducts(String token,
-      {int page = 1, int perPage = 6}) async {
+      {int page = 1,
+      int perPage = 6,
+      String? category,
+      String? subcategory}) async {
     try {
+      String url = '${ApiConfig.baseUrl}/products?page=$page&per_page=$perPage';
+
+      if (category != null && category.isNotEmpty) {
+        url += '&category=${Uri.encodeComponent(category)}';
+      }
+      if (subcategory != null && subcategory.isNotEmpty) {
+        url += '&subcategory=${Uri.encodeComponent(subcategory)}';
+      }
+
       final response = await http.get(
-        Uri.parse('${ApiConfig.baseUrl}/products?page=$page&per_page=$perPage'),
+        Uri.parse(url),
         headers: {
           'Content-Type': 'application/json',
           'Accept': 'application/json',
