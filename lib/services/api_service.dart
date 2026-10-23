@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 import '../config/api_config.dart';
 
 class ApiService {
@@ -75,6 +76,14 @@ class ApiService {
 
       final data = jsonDecode(response.body);
       if (response.statusCode == 200) {
+        final role = data['user']?['role'] ?? '';
+        if (role.toLowerCase() != 'buyer') {
+          return {
+            'success': false,
+            'message':
+                'You have a $role account. Please access your account on a desktop to view the dashboard.'
+          };
+        }
         return {'success': true, 'data': data};
       } else {
         return {
@@ -85,6 +94,30 @@ class ApiService {
       }
     } catch (e) {
       return {'success': false, 'message': 'Network error: $e'};
+    }
+  }
+
+  static Future<bool> logout(String token) async {
+    try {
+      final response = await http.post(
+        Uri.parse('${ApiConfig.baseUrl}/logout'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+      );
+
+      // Clear local storage to force the UI to log out
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.clear();
+
+      return response.statusCode == 200;
+    } catch (e) {
+      // Clear local storage even if there's a network error
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.clear();
+      return false;
     }
   }
 

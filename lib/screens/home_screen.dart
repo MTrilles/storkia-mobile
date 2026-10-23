@@ -5,6 +5,7 @@ import '../components/custom_bottom_nav.dart';
 import '../components/product_card.dart';
 import '../services/api_service.dart';
 import 'browse_screen.dart';
+import 'me_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   final UserModel user;
@@ -303,8 +304,10 @@ class _HomeScreenState extends State<HomeScreen> {
         return _buildHomeContent();
       case 1:
         return BrowseScreen(token: widget.token);
+      case 3:
+        return MeScreen(user: widget.user, token: widget.token);
       default:
-        return _buildHomeContent(); // Fallbacks to home for now
+        return _buildHomeContent();
     }
   }
 
