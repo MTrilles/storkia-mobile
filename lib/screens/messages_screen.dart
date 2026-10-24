@@ -7,7 +7,7 @@ import 'chat_screen.dart';
 
 class MessagesScreen extends StatefulWidget {
   final int authUserId;
-  final String token; // Required Token Injection
+  final String token;
   final int? initialContactId;
 
   const MessagesScreen({
@@ -37,10 +37,15 @@ class _MessagesScreenState extends State<MessagesScreen> {
   }
 
   Future<void> _loadData() async {
-    WebSocketService.init(widget.token);
-    WebSocketService.listenToChat(widget.authUserId, (event) {
-      _fetchContactsSilently();
-    });
+    // Wrap WebSocket init in a try-catch so that if the websocket fails to connect
+    // when detached, it doesn't prevent _fetchContacts() from executing and retrieving data.
+    try {
+      WebSocketService.init(widget.token);
+      WebSocketService.listenToChat(widget.authUserId, (event) {
+        _fetchContactsSilently();
+      });
+    } catch (_) {}
+
     await _fetchContacts();
   }
 
@@ -167,7 +172,7 @@ class _MessagesScreenState extends State<MessagesScreen> {
                           MaterialPageRoute(
                             builder: (_) => ChatScreen(
                               contact: contact,
-                              token: widget.token, // Push the token downstream!
+                              token: widget.token,
                               authUserId: widget.authUserId,
                             ),
                           ),

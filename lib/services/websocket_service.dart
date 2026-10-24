@@ -7,43 +7,57 @@ class WebSocketService {
   static PusherClient? pusherClient;
 
   static void init(String token) {
-    PusherOptions options = PusherOptions(
-      host: ApiConfig.websocketHost,
-      wsPort: ApiConfig.websocketPort,
-      wssPort: ApiConfig.websocketPort, // Added WSS Port binding
-      encrypted: true, // MUST BE TRUE for an HTTPS backend (dev.storkia.shop)
-      auth: PusherAuth(
-        '${ApiConfig.baseUrl}/broadcasting/auth',
-        headers: {
-          'Authorization': 'Bearer $token',
-          'Accept': 'application/json',
-        },
-      ),
-    );
+    try {
+      PusherOptions options = PusherOptions(
+        host: ApiConfig.websocketHost,
+        wsPort: ApiConfig.websocketPort,
+        wssPort: ApiConfig.websocketPort,
+        encrypted: true,
+        auth: PusherAuth(
+          '${ApiConfig.baseUrl}/broadcasting/auth',
+          headers: {
+            'Authorization': 'Bearer $token',
+            'Accept': 'application/json',
+          },
+        ),
+      );
 
-    pusherClient = PusherClient(
-      ApiConfig.pusherKey,
-      options,
-      autoConnect: true,
-      enableLogging: true, // Will help you verify successful connection in logs
-    );
+      pusherClient = PusherClient(
+        ApiConfig.pusherKey,
+        options,
+        autoConnect: true,
+        enableLogging: false,
+      );
 
-    echo = Echo(
-      broadcaster: EchoBroadcasterType.Pusher,
-      client: pusherClient,
-    );
+      pusherClient?.connect();
+
+      echo = Echo(
+        broadcaster: EchoBroadcasterType.Pusher,
+        client: pusherClient,
+      );
+    } catch (e) {
+      // Catch initialization errors so it doesn't break the entire screen's HTTP requests
+    }
   }
 
   static void listenToChat(int userId, Function(dynamic) onMessageReceived) {
     if (echo == null) return;
 
-    echo!.private('chat.$userId').listen('.MessageSent', (e) {
-      onMessageReceived(e);
-    });
+    try {
+      echo!.private('chat.$userId').listen('.MessageSent', (e) {
+        onMessageReceived(e);
+      });
+    } catch (e) {
+      // Prevent listener crash from halting execution
+    }
   }
 
   static void disconnect() {
-    pusherClient?.disconnect();
-    echo?.disconnect();
+    try {
+      pusherClient?.disconnect();
+      echo?.disconnect();
+    } catch (e) {
+      // Ignore disconnect errors
+    }
   }
 }
