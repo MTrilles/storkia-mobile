@@ -3,6 +3,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../config/api_config.dart';
 import '../models/cart_model.dart';
+import '../models/chat_models.dart';
 
 class ApiService {
   static Future<Map<String, dynamic>> sendOtp(String email) async {
@@ -203,7 +204,6 @@ class ApiService {
     }
   }
 
-  // Cart API Methods
   static Future<Map<String, dynamic>> getCartItems(String token) async {
     try {
       final response = await http.get(
@@ -320,5 +320,170 @@ class ApiService {
     } catch (e) {
       return {'success': false, 'message': 'Network error: $e'};
     }
+  }
+
+  static Future<Map<String, dynamic>> fetchContacts(String token,
+      {int? contactId}) async {
+    try {
+      String url = '${ApiConfig.baseUrl}/messages/contacts';
+      if (contactId != null) {
+        url += '?contact=$contactId';
+      }
+
+      final response = await http.get(
+        Uri.parse(url),
+        headers: {
+          'Accept': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+
+        List rawList = [];
+        if (data is Map && data['success'] == true && data['data'] != null) {
+          rawList = data['data'] is List
+              ? data['data']
+              : (data['data'] as Map).values.toList();
+        } else if (data is List) {
+          rawList = data;
+        }
+
+        List<ChatContact> contacts = rawList.map((e) {
+          return ChatContact.fromJson(Map<String, dynamic>.from(e));
+        }).toList();
+
+        return {'success': true, 'data': contacts};
+      }
+      return {
+        'success': false,
+        'message': 'Failed to load contacts: ${response.statusCode}'
+      };
+    } catch (e) {
+      return {'success': false, 'message': 'Network error: $e'};
+    }
+  }
+
+  static Future<Map<String, dynamic>> fetchUnreadMessageCount(
+      String token) async {
+    try {
+      final response = await http.get(
+        Uri.parse('${ApiConfig.baseUrl}/messages/unread-count'),
+        headers: {
+          'Accept': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data is Map) {
+          int count = 0;
+          if (data['data'] != null &&
+              data['data'] is Map &&
+              data['data']['count'] != null) {
+            count = int.tryParse(data['data']['count'].toString()) ?? 0;
+          } else if (data['count'] != null) {
+            count = int.tryParse(data['count'].toString()) ?? 0;
+          }
+          return {'success': true, 'count': count};
+        }
+      }
+      return {'success': false, 'count': 0};
+    } catch (e) {
+      return {'success': false, 'count': 0};
+    }
+  }
+
+  static Future<Map<String, dynamic>> fetchMessages(
+      String token, int contactId) async {
+    try {
+      final response = await http.get(
+        Uri.parse('${ApiConfig.baseUrl}/messages/fetch/$contactId'),
+        headers: {
+          'Accept': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+
+        List rawList = [];
+        if (data is Map && data['success'] == true && data['data'] != null) {
+          rawList = data['data'] is List
+              ? data['data']
+              : (data['data'] as Map).values.toList();
+        } else if (data is List) {
+          rawList = data;
+        }
+
+        List<ChatMessage> messages = rawList.map((e) {
+          return ChatMessage.fromJson(Map<String, dynamic>.from(e));
+        }).toList();
+
+        return {'success': true, 'data': messages};
+      }
+      return {'success': false, 'message': 'Failed to load messages'};
+    } catch (e) {
+      return {'success': false, 'message': 'Network error: $e'};
+    }
+  }
+
+  static Future<Map<String, dynamic>> sendMessage(
+      String token, int receiverId, String message) async {
+    try {
+      final response = await http.post(
+        Uri.parse('${ApiConfig.baseUrl}/messages'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+        body: jsonEncode({
+          'receiver_id': receiverId,
+          'message': message,
+        }),
+      );
+
+      final data = jsonDecode(response.body);
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        Map<String, dynamic>? msgData;
+        if (data is Map) {
+          if (data.containsKey('data') && data['data'] is Map) {
+            msgData = Map<String, dynamic>.from(data['data']);
+          } else {
+            msgData = Map<String, dynamic>.from(data);
+          }
+        }
+
+        if (msgData != null && !msgData.containsKey('error')) {
+          return {'success': true, 'data': ChatMessage.fromJson(msgData)};
+        }
+      }
+
+      return {
+        'success': false,
+        'message': (data is Map && data.containsKey('message'))
+            ? data['message']
+            : 'Failed to send message'
+      };
+    } catch (e) {
+      return {'success': false, 'message': 'Network error: $e'};
+    }
+  }
+
+  static Future<void> markAsRead(String token, int contactId) async {
+    try {
+      await http.patch(
+        Uri.parse('${ApiConfig.baseUrl}/messages/$contactId/read'),
+        headers: {
+          'Accept': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+      );
+    } catch (_) {}
   }
 }

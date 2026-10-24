@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import '../models/product_model.dart';
+import '../models/chat_models.dart';
 import '../components/product_card.dart';
 import '../services/api_service.dart';
+import 'chat_screen.dart';
 
 class ProductShowScreen extends StatefulWidget {
   final Product product;
@@ -323,6 +325,76 @@ class _ProductShowScreenState extends State<ProductShowScreen> {
         );
       },
     );
+  }
+
+  Future<void> _chatNow() async {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const Center(
+          child: CircularProgressIndicator(color: Color(0xFFCF4173))),
+    );
+
+    try {
+      final userResponse = await http.get(
+        Uri.parse('${widget.baseUrl}/api/v1/user'),
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Accept': 'application/json',
+        },
+      );
+
+      if (!mounted) return;
+
+      if (userResponse.statusCode == 200) {
+        final data = jsonDecode(userResponse.body);
+        final authUserId = data['data']['id'];
+
+        int sellerId = 1;
+        try {
+          sellerId = (widget.product as dynamic).userId;
+        } catch (_) {
+          try {
+            sellerId = (widget.product as dynamic).sellerProfile?.userId ?? 1;
+          } catch (_) {}
+        }
+
+        // Fetch contact details from the API to get a ChatContact object
+        final contactRes =
+            await ApiService.fetchContacts(widget.token, contactId: sellerId);
+
+        if (!mounted) return;
+        Navigator.pop(context); // close loading dialog
+
+        if (contactRes['success']) {
+          final List<ChatContact> contacts = contactRes['data'];
+          // Fallback to the first item just in case there is a mismatch
+          final contact = contacts.firstWhere((c) => c.id == sellerId,
+              orElse: () => contacts.first);
+
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => ChatScreen(
+                contact: contact,
+                token: widget.token,
+                authUserId: authUserId,
+              ),
+            ),
+          );
+        } else {
+          _showToast('Failed to load chat contact.');
+        }
+      } else {
+        Navigator.pop(context);
+        _showToast('Failed to verify user session.');
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        _showToast('Error connecting to chat.');
+      }
+    }
   }
 
   @override
@@ -716,7 +788,7 @@ class _ProductShowScreenState extends State<ProductShowScreen> {
                           children: [
                             Expanded(
                               child: OutlinedButton.icon(
-                                onPressed: () {},
+                                onPressed: _chatNow,
                                 icon: const Icon(Icons.chat_bubble_outline,
                                     size: 18),
                                 label: const Text('Chat Now'),

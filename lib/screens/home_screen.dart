@@ -9,6 +9,7 @@ import '../services/api_service.dart';
 import 'browse_screen.dart';
 import 'me_screen.dart';
 import 'cart_screen.dart';
+import 'messages_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   final UserModel user;
@@ -31,12 +32,14 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _hasMore = true;
 
   int _cartItemCount = 0;
+  int _unreadMessageCount = 0;
 
   @override
   void initState() {
     super.initState();
     _fetchProducts();
     _fetchCartItemCount();
+    _fetchUnreadMessageCount();
     _scrollController.addListener(_onScroll);
   }
 
@@ -76,6 +79,19 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     } catch (e) {
       debugPrint("Error fetching cart count: $e");
+    }
+  }
+
+  Future<void> _fetchUnreadMessageCount() async {
+    try {
+      final result = await ApiService.fetchUnreadMessageCount(widget.token);
+      if (result['success'] && mounted) {
+        setState(() {
+          _unreadMessageCount = result['count'];
+        });
+      }
+    } catch (e) {
+      debugPrint("Error fetching unread messages: $e");
     }
   }
 
@@ -230,9 +246,50 @@ class _HomeScreenState extends State<HomeScreen> {
               IconButton(
                 padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(),
-                icon: const Icon(Icons.chat_bubble_outline,
-                    color: Color(0xFF292524), size: 26),
-                onPressed: () {},
+                icon: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    const Icon(Icons.chat_bubble_outline,
+                        color: Color(0xFF292524), size: 26),
+                    if (_unreadMessageCount > 0)
+                      Positioned(
+                        right: -4,
+                        top: -4,
+                        child: Container(
+                          padding: const EdgeInsets.all(4),
+                          decoration: const BoxDecoration(
+                            color: Color(0xFFCF4173),
+                            shape: BoxShape.circle,
+                          ),
+                          constraints: const BoxConstraints(
+                            minWidth: 18,
+                            minHeight: 18,
+                          ),
+                          child: Text(
+                            '$_unreadMessageCount',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                              height: 1.0,
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => MessagesScreen(
+                        authUserId: widget.user.id,
+                        token: widget.token, // PASSING TOKEN DIRECTLY HERE!
+                      ),
+                    ),
+                  ).then((_) => _fetchUnreadMessageCount());
+                },
               ),
             ],
           ),
