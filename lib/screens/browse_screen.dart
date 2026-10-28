@@ -3,153 +3,73 @@ import 'category_products_screen.dart';
 
 class BrowseScreen extends StatelessWidget {
   final String token;
+  final String baseUrl; // Added to pass down to CategoryProductsScreen
 
-  BrowseScreen({super.key, required this.token});
+  BrowseScreen(
+      {super.key,
+      required this.token,
+      this.baseUrl = 'https://dev.storkia.shop'});
 
   final List<Map<String, dynamic>> categories = [
     {
       'name': 'Pet',
+      'slug': 'pet',
       'icon': Icons.pets,
-      'subcategories': [
-        'Dog Food & Treats',
-        'Cat Litter & Accessories',
-        'Aquariums & Fish Supplies',
-        'Bird Feeders & Food',
-        'Pet Grooming Products',
-        'Pet Health & Wellness'
-      ]
     },
     {
       'name': 'Kids',
+      'slug': 'kids',
       'icon': Icons.child_care,
-      'subcategories': [
-        'Baby Clothes & Accessories',
-        'Toys & Games',
-        'Educational Materials',
-        'Strollers & Gear',
-        'Nursery Furniture',
-        'Safety and Health'
-      ]
     },
     {
       'name': 'Electronics',
+      'slug': 'electronics',
       'icon': Icons.devices,
-      'subcategories': [
-        'Mobile Phones & Accessories',
-        'Laptops, Desktops & Monitors',
-        'Audio & Video Equipment',
-        'Smart Home Devices',
-        'Cameras & Photography',
-        'Wearable Technology'
-      ]
     },
     {
       'name': 'Home & Garden',
+      'slug': 'home-garden',
       'icon': Icons.home,
-      'subcategories': [
-        'Kitchen Appliances',
-        'Furniture & Decor',
-        'Gardening Tools',
-        'Outdoor Living',
-        'Home Improvement Tools',
-        'Bedding & Bath'
-      ]
     },
     {
       'name': 'Women\'s',
+      'slug': 'womens',
       'icon': Icons.woman,
-      'subcategories': [
-        'Dresses & Skirts',
-        'Tops & Blouses',
-        'Activewear & Yoga Pants',
-        'Lingerie & Sleepwear',
-        'Jackets & Coats',
-        'Shoes & Accessories'
-      ]
     },
     {
       'name': 'Men\'s',
+      'slug': 'mens',
       'icon': Icons.man,
-      'subcategories': [
-        'Suits & Blazers',
-        'Casual Shirts & Pants',
-        'Outerwear & Jackets',
-        'Activewear & Fitness Gear',
-        'Shoes & Accessories',
-        'Grooming Products'
-      ]
     },
     {
       'name': 'Health & Beauty',
+      'slug': 'health-beauty',
       'icon': Icons.health_and_safety,
-      'subcategories': [
-        'Skincare Products',
-        'Haircare Solutions',
-        'Makeup & Cosmetics',
-        'Personal Care Appliances',
-        'Men\'s Grooming',
-        'Health Supplements'
-      ]
     },
     {
       'name': 'Books & Media',
+      'slug': 'books-media',
       'icon': Icons.book,
-      'subcategories': [
-        'Fiction & Non-Fiction Books',
-        'Magazines & Periodicals',
-        'Music CDs & Vinyl Records',
-        'Movie DVDs & Blu-ray',
-        'Video Games & Consoles',
-        'Educational DVDs'
-      ]
     },
     {
       'name': 'Sports & Outdoors',
+      'slug': 'sports-outdoors',
       'icon': Icons.sports_soccer,
-      'subcategories': [
-        'Fitness Equipment',
-        'Camping & Hiking Gear',
-        'Sports Apparel',
-        'Cycling & Bikes',
-        'Water Sports',
-        'Team Sports Equipment'
-      ]
     },
     {
       'name': 'Food & Gourmet',
+      'slug': 'food-gourmet',
       'icon': Icons.restaurant,
-      'subcategories': [
-        'Baking Supplies & Ingredients',
-        'Coffee, Tea & Beverages',
-        'Snacks & Candy',
-        'Specialty Foods',
-        'Organic and Health Foods',
-        'Meal Kits & Prepped Foods'
-      ]
     },
     {
       'name': 'Furniture & Office',
+      'slug': 'furniture-office',
       'icon': Icons.chair,
-      'subcategories': [
-        'Office Desks & Chairs',
-        'Storage Cabinets & Shelving',
-        'Conference & Meeting Furniture',
-        'Computer Tables & Workstations',
-        'Ergonomic Accessories',
-        'Office Lighting & Fixtures'
-      ]
     },
     {
       'name': 'Jewelry & Watches',
+      'slug': 'jewelry-watches',
       'icon': Icons.watch,
-      'subcategories': [
-        'Necklaces & Pendants',
-        'Rings & Earrings',
-        'Bracelets & Bangles',
-        'Watches for Men & Women',
-        'Fashion Jewelry',
-        'Jewelry Storage & Care'
-      ]
     },
   ];
 
@@ -198,8 +118,9 @@ class BrowseScreen extends StatelessWidget {
                     context,
                     MaterialPageRoute(
                       builder: (context) => CategoryProductsScreen(
-                        categoryName: category['name'],
-                        subcategories: category['subcategories'],
+                        slug: category[
+                            'slug'], // Pass slug instead of categoryName
+                        baseUrl: baseUrl, // Pass baseUrl
                         token: token,
                       ),
                     ),

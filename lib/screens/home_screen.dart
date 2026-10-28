@@ -10,6 +10,7 @@ import 'browse_screen.dart';
 import 'me_screen.dart';
 import 'cart_screen.dart';
 import 'messages_screen.dart';
+import 'search_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   final UserModel user;
@@ -24,15 +25,14 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   int _currentIndex = 0;
   final ScrollController _scrollController = ScrollController();
-
   List<Product> _products = [];
   bool _isLoading = true;
   bool _isFetchingMore = false;
   int _currentPage = 1;
   bool _hasMore = true;
-
   int _cartItemCount = 0;
   int _unreadMessageCount = 0;
+  final String _baseUrl = 'https://dev.storkia.shop';
 
   @override
   void initState() {
@@ -62,7 +62,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _fetchCartItemCount() async {
     try {
       final response = await http.get(
-        Uri.parse('https://dev.storkia.shop/api/v1/cart'),
+        Uri.parse('$_baseUrl/api/v1/cart'),
         headers: {
           'Authorization': 'Bearer ${widget.token}',
           'Accept': 'application/json',
@@ -109,7 +109,6 @@ class _HomeScreenState extends State<HomeScreen> {
       final Map<String, dynamic> paginatedData =
           result['data']['data'] ?? result['data'];
       final List<dynamic> productsJson = paginatedData['data'] ?? [];
-
       final int lastPage = paginatedData['last_page'] ?? 1;
 
       final List<Product> newProducts =
@@ -169,26 +168,43 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: Container(
-                  height: 40,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFF5F5F4),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: const Color(0xFFE7E5E4)),
-                  ),
-                  child: const TextField(
-                    textAlignVertical: TextAlignVertical.center,
-                    decoration: InputDecoration(
-                      isDense: true,
-                      hintText: 'Search products...',
-                      hintStyle: TextStyle(
-                          fontSize: 14, color: Color(0xFF78716C), height: 1.2),
-                      prefixIcon: Icon(Icons.search,
-                          size: 20, color: Color(0xFF78716C)),
-                      prefixIconConstraints:
-                          BoxConstraints(minWidth: 40, minHeight: 40),
-                      border: InputBorder.none,
-                      contentPadding: EdgeInsets.only(right: 12),
+                child: GestureDetector(
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => SearchScreen(
+                          baseUrl: _baseUrl,
+                          token: widget.token,
+                        ),
+                      ),
+                    );
+                  },
+                  child: Container(
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF5F5F4),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: const Color(0xFFE7E5E4)),
+                    ),
+                    child: const AbsorbPointer(
+                      child: TextField(
+                        textAlignVertical: TextAlignVertical.center,
+                        decoration: InputDecoration(
+                          isDense: true,
+                          hintText: 'Search products...',
+                          hintStyle: TextStyle(
+                              fontSize: 14,
+                              color: Color(0xFF78716C),
+                              height: 1.2),
+                          prefixIcon: Icon(Icons.search,
+                              size: 20, color: Color(0xFF78716C)),
+                          prefixIconConstraints:
+                              BoxConstraints(minWidth: 40, minHeight: 40),
+                          border: InputBorder.none,
+                          contentPadding: EdgeInsets.only(right: 12),
+                        ),
+                      ),
                     ),
                   ),
                 ),
@@ -235,7 +251,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     context,
                     MaterialPageRoute(
                       builder: (context) => CartScreen(
-                        baseUrl: 'https://dev.storkia.shop',
+                        baseUrl: _baseUrl,
                         token: widget.token,
                       ),
                     ),
@@ -285,7 +301,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     MaterialPageRoute(
                       builder: (context) => MessagesScreen(
                         authUserId: widget.user.id,
-                        token: widget.token, // PASSING TOKEN DIRECTLY HERE!
+                        token: widget.token,
                       ),
                     ),
                   ).then((_) => _fetchUnreadMessageCount());
@@ -400,7 +416,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                 (context, index) {
                                   return ProductCard(
                                     product: _products[index],
-                                    baseUrl: 'https://dev.storkia.shop',
+                                    baseUrl: _baseUrl,
                                     token: widget.token,
                                   );
                                 },
@@ -431,9 +447,10 @@ class _HomeScreenState extends State<HomeScreen> {
       case 0:
         return _buildHomeContent();
       case 1:
-        return BrowseScreen(token: widget.token);
+        return BrowseScreen(token: widget.token, baseUrl: _baseUrl);
       case 3:
-        return MeScreen(user: widget.user, token: widget.token);
+        return MeScreen(
+            user: widget.user, token: widget.token, baseUrl: _baseUrl);
       default:
         return _buildHomeContent();
     }

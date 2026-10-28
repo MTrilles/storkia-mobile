@@ -2,12 +2,22 @@ import 'package:flutter/material.dart';
 import '../models/user_model.dart';
 import '../services/api_service.dart';
 import 'login_screen.dart'; // Imported LoginScreen
+import 'account_management_screen.dart'; // Added import for Account Management
+import 'orders_screen.dart'; // Added import for Orders
+import 'address_selection_screen.dart'; // Added import for Address Book
 
 class MeScreen extends StatelessWidget {
   final UserModel user;
   final String token;
+  // Make sure your main.dart passes down baseUrl to this screen.
+  final String baseUrl;
 
-  const MeScreen({super.key, required this.user, required this.token});
+  const MeScreen({
+    super.key,
+    required this.user,
+    required this.token,
+    this.baseUrl = 'https://dev.storkia.shop', // Adjust default if needed
+  });
 
   void _showLogoutDialog(BuildContext context) {
     showDialog(
@@ -227,7 +237,20 @@ class MeScreen extends StatelessWidget {
               _buildSectionCard(
                 children: [
                   _buildMenuTile(
-                      icon: Icons.shopping_bag_outlined, title: 'My Orders'),
+                    icon: Icons.shopping_bag_outlined,
+                    title: 'My Orders',
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => OrdersScreen(
+                            baseUrl: baseUrl,
+                            token: token,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
                   Divider(
                       height: 1,
                       color: Colors.grey.withOpacity(0.1),
@@ -289,8 +312,21 @@ class MeScreen extends StatelessWidget {
               _buildSectionCard(
                 children: [
                   _buildMenuTile(
-                      icon: Icons.manage_accounts_outlined,
-                      title: 'Account Management'),
+                    icon: Icons.manage_accounts_outlined,
+                    title: 'Account Management',
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => AccountManagementScreen(
+                            user: user,
+                            baseUrl: baseUrl,
+                            token: token,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
                   Divider(
                       height: 1,
                       color: Colors.grey.withOpacity(0.1),
@@ -301,13 +337,28 @@ class MeScreen extends StatelessWidget {
                       color: Colors.grey.withOpacity(0.1),
                       indent: 64),
                   _buildMenuTile(
-                      icon: Icons.location_on_outlined, title: 'Address Book'),
+                    icon: Icons.location_on_outlined,
+                    title: 'Address Book',
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => AddressSelectionScreen(
+                            baseUrl: baseUrl,
+                            token: token,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
                   Divider(
                       height: 1,
                       color: Colors.grey.withOpacity(0.1),
                       indent: 64),
                   _buildMenuTile(
-                      icon: Icons.lock_outline, title: 'Change Password'),
+                      icon: Icons.lock_outline,
+                      title:
+                          'Change Password'), // Note: Password change flow is now handled inside AccountManagementScreen, but you can leave this visual tile or wire it directly to a shortcut.
                 ],
               ),
               const SizedBox(height: 24),

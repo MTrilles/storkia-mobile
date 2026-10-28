@@ -1,17 +1,18 @@
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 import '../models/product_model.dart';
 import '../components/product_card.dart';
-import '../services/api_service.dart';
 
 class CategoryProductsScreen extends StatefulWidget {
-  final String categoryName;
-  final List<String> subcategories;
+  final String slug;
+  final String baseUrl;
   final String token;
 
   const CategoryProductsScreen({
     super.key,
-    required this.categoryName,
-    required this.subcategories,
+    required this.slug,
+    required this.baseUrl,
     required this.token,
   });
 
@@ -21,18 +22,19 @@ class CategoryProductsScreen extends StatefulWidget {
 
 class _CategoryProductsScreenState extends State<CategoryProductsScreen> {
   final ScrollController _scrollController = ScrollController();
-
-  String _selectedSubcategory = 'All';
-  List<Product> _products = [];
   bool _isLoading = true;
   bool _isFetchingMore = false;
+  String _categoryName = '';
+  List<String> _subcategories = [];
+  String _selectedSubcategory = 'All';
+  List<Product> _products = [];
   int _currentPage = 1;
   bool _hasMore = true;
 
   @override
   void initState() {
     super.initState();
-    _fetchProducts();
+    _fetchCategoryData();
     _scrollController.addListener(_onScroll);
   }
 
@@ -46,13 +48,14 @@ class _CategoryProductsScreenState extends State<CategoryProductsScreen> {
     if (_scrollController.position.pixels >=
         _scrollController.position.maxScrollExtent - 200) {
       if (!_isFetchingMore && _hasMore) {
-        _fetchProducts(loadMore: true);
+        _fetchCategoryData(loadMore: true);
       }
     }
   }
 
-  Future<void> _fetchProducts({bool loadMore = false}) async {
+  Future<void> _fetchCategoryData({bool loadMore = false}) async {
     if (loadMore) {
+      if (!_hasMore || _isFetchingMore) return;
       setState(() => _isFetchingMore = true);
     } else {
       setState(() {
@@ -61,66 +64,90 @@ class _CategoryProductsScreenState extends State<CategoryProductsScreen> {
       });
     }
 
-    final result = await ApiService.getProducts(
-      widget.token,
-      page: _currentPage,
-      category: widget.categoryName,
-      subcategory: _selectedSubcategory == 'All' ? null : _selectedSubcategory,
-    );
+    try {
+      final page = loadMore ? _currentPage + 1 : 1;
 
-    if (result['success']) {
-      final Map<String, dynamic> paginatedData =
-          result['data']['data'] ?? result['data'];
-      final List<dynamic> productsJson = paginatedData['data'] ?? [];
-      final int lastPage = paginatedData['last_page'] ?? 1;
+      // Fix 1: Dynamically build the URL to prevent sending "subcategory=All" to the backend
+      String urlString =
+          '${widget.baseUrl}/api/v1/category/${widget.slug}?page=$page';
+      if (_selectedSubcategory != 'All') {
+        urlString +=
+            '&subcategory=${Uri.encodeComponent(_selectedSubcategory)}';
+      }
 
-      final List<Product> newProducts =
-          productsJson.map((json) => Product.fromJson(json)).toList();
+      final uri = Uri.parse(urlString);
 
-      setState(() {
-        if (loadMore) {
-          _products.addAll(newProducts);
-        } else {
-          _products = newProducts;
-        }
-
-        if (_currentPage >= lastPage) {
-          _hasMore = false;
-        } else {
-          _currentPage++;
-        }
-
-        _isLoading = false;
-        _isFetchingMore = false;
+      final response = await http.get(uri, headers: {
+        'Accept': 'application/json',
+        'Authorization':
+            'Bearer ${widget.token}', // Fix 2: Uncommented Auth header
       });
-    } else {
-      setState(() {
-        _isLoading = false;
-        _isFetchingMore = false;
-      });
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        if (data['success']) {
+          final payload = data['data'];
+          final paginatedData = payload['products'];
+          final List newProductsJson = paginatedData['data'];
+
+          setState(() {
+            _categoryName = payload['category_name'];
+            if (!loadMore) {
+              _subcategories = [
+                'All',
+                ...(payload['subcategories'] as List).map((e) => e.toString())
+              ];
+              _products = newProductsJson
+                  .map((json) => Product.fromJson(json))
+                  .toList();
+            } else {
+              _products.addAll(newProductsJson
+                  .map((json) => Product.fromJson(json))
+                  .toList());
+            }
+
+            _currentPage = paginatedData['current_page'];
+            _hasMore = _currentPage < paginatedData['last_page'];
+          });
+        }
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Failed to load category.')),
+          );
+        }
+      }
+    } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(result['message'])),
+          const SnackBar(content: Text('Network error.')),
         );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _isFetchingMore = false;
+        });
       }
     }
   }
 
   void _onSubcategorySelected(String subcategory) {
     if (_selectedSubcategory == subcategory) return;
+
     setState(() {
       _selectedSubcategory = subcategory;
       _products.clear();
       _hasMore = true;
       _currentPage = 1;
     });
-    _fetchProducts();
+
+    _fetchCategoryData();
   }
 
   @override
   Widget build(BuildContext context) {
-    final filters = ['All', ...widget.subcategories];
-
     return Scaffold(
       backgroundColor: const Color(0xFFF5F5F4),
       appBar: AppBar(
@@ -128,7 +155,7 @@ class _CategoryProductsScreenState extends State<CategoryProductsScreen> {
         elevation: 0,
         iconTheme: const IconThemeData(color: Color(0xFF292524)),
         title: Text(
-          widget.categoryName,
+          _categoryName.isEmpty ? 'Loading...' : _categoryName,
           style: const TextStyle(
             color: Color(0xFF292524),
             fontWeight: FontWeight.bold,
@@ -138,55 +165,57 @@ class _CategoryProductsScreenState extends State<CategoryProductsScreen> {
       ),
       body: Column(
         children: [
-          // Subcategory Filter List
-          Container(
-            height: 50,
-            decoration: BoxDecoration(
-              color: Colors.white,
-              border: Border(
-                bottom: BorderSide(color: Colors.black.withOpacity(0.05)),
+          if (_subcategories.isNotEmpty)
+            Container(
+              height: 50,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                border: Border(
+                  bottom: BorderSide(color: Colors.black.withOpacity(0.05)),
+                ),
               ),
-            ),
-            child: ListView.builder(
-              scrollDirection: Axis.horizontal,
-              itemCount: filters.length,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              itemBuilder: (context, index) {
-                final isSelected = _selectedSubcategory == filters[index];
-                return GestureDetector(
-                  onTap: () => _onSubcategorySelected(filters[index]),
-                  child: Container(
-                    margin: const EdgeInsets.only(right: 8),
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                      color: isSelected
-                          ? const Color(0xFFCF4173)
-                          : const Color(0xFFF5F5F4),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
+              child: ListView.builder(
+                scrollDirection: Axis.horizontal,
+                itemCount: _subcategories.length,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                itemBuilder: (context, index) {
+                  final filter = _subcategories[index];
+                  final isSelected = _selectedSubcategory == filter;
+
+                  return GestureDetector(
+                    onTap: () => _onSubcategorySelected(filter),
+                    child: Container(
+                      margin: const EdgeInsets.only(right: 8),
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
                         color: isSelected
                             ? const Color(0xFFCF4173)
-                            : const Color(0xFFE7E5E4),
+                            : const Color(0xFFF5F5F4),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                          color: isSelected
+                              ? const Color(0xFFCF4173)
+                              : const Color(0xFFE7E5E4),
+                        ),
+                      ),
+                      child: Text(
+                        filter,
+                        style: TextStyle(
+                          color: isSelected
+                              ? Colors.white
+                              : const Color(0xFF78716C),
+                          fontWeight:
+                              isSelected ? FontWeight.bold : FontWeight.normal,
+                          fontSize: 13,
+                        ),
                       ),
                     ),
-                    child: Text(
-                      filters[index],
-                      style: TextStyle(
-                        color:
-                            isSelected ? Colors.white : const Color(0xFF78716C),
-                        fontWeight:
-                            isSelected ? FontWeight.bold : FontWeight.normal,
-                        fontSize: 13,
-                      ),
-                    ),
-                  ),
-                );
-              },
+                  );
+                },
+              ),
             ),
-          ),
-
-          // Products Grid
           Expanded(
             child: _isLoading && !_isFetchingMore
                 ? const Center(
@@ -219,7 +248,7 @@ class _CategoryProductsScreenState extends State<CategoryProductsScreen> {
                                   (context, index) {
                                     return ProductCard(
                                       product: _products[index],
-                                      baseUrl: 'https://dev.storkia.shop',
+                                      baseUrl: widget.baseUrl,
                                       token: widget.token,
                                     );
                                   },

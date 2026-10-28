@@ -6,6 +6,7 @@ import '../models/chat_models.dart';
 import '../components/product_card.dart';
 import '../services/api_service.dart';
 import 'chat_screen.dart';
+import 'checkout_screen.dart';
 
 class ProductShowScreen extends StatefulWidget {
   final Product product;
@@ -30,8 +31,8 @@ class _ProductShowScreenState extends State<ProductShowScreen> {
   int? _selectedSubIndex;
   String _selectedMainName = '';
   String _selectedSubName = '';
-
   late String _currentImage;
+
   late double _activePrice;
   late int _activeStock;
   int _quantity = 1;
@@ -45,6 +46,7 @@ class _ProductShowScreenState extends State<ProductShowScreen> {
   bool _isFetchingMoreSuggestions = false;
   int _currentSuggestionPage = 1;
   bool _hasMoreSuggestions = true;
+
   bool _isAddingToCart = false;
 
   @override
@@ -170,7 +172,6 @@ class _ProductShowScreenState extends State<ProductShowScreen> {
         _selectedSubIndex = null;
         _selectedMainName = item['name'] ?? '';
         _selectedSubName = '';
-
         _hasSubVariants =
             item['subs'] != null && (item['subs'] as List).isNotEmpty;
 
@@ -225,6 +226,7 @@ class _ProductShowScreenState extends State<ProductShowScreen> {
         _activePrice = double.tryParse(sub['price'].toString()) ??
             double.tryParse(parentItem['price'].toString()) ??
             widget.product.price;
+
         _activeStock = int.tryParse(sub['stock'].toString()) ?? 0;
 
         if (sub['image'] != null && sub['image'].toString().isNotEmpty) {
@@ -275,6 +277,37 @@ class _ProductShowScreenState extends State<ProductShowScreen> {
     } finally {
       if (mounted) setState(() => _isAddingToCart = false);
     }
+  }
+
+  void _buyNow() {
+    if (_hasVariants && _selectedMainIndex == null) {
+      _showToast(
+          'Please pick a ${widget.product.variants?['title'] ?? 'variant'} first.');
+      return;
+    }
+    if (_hasSubVariants && _selectedSubIndex == null) {
+      _showToast(
+          'Please pick a ${widget.product.variants?['sub_title'] ?? 'sub-variant'} too.');
+      return;
+    }
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => CheckoutScreen(
+          baseUrl: widget.baseUrl,
+          token: widget.token,
+          mode: 'buy_now',
+          buyNowData: {
+            'product_id': widget.product.id,
+            'quantity': _quantity,
+            'variant': _selectedMainName.isNotEmpty ? _selectedMainName : null,
+            'sub_variant':
+                _selectedSubName.isNotEmpty ? _selectedSubName : null,
+          },
+        ),
+      ),
+    );
   }
 
   void _showToast(String message, {bool isError = true}) {
@@ -359,16 +392,14 @@ class _ProductShowScreenState extends State<ProductShowScreen> {
           } catch (_) {}
         }
 
-        // Fetch contact details from the API to get a ChatContact object
         final contactRes =
             await ApiService.fetchContacts(widget.token, contactId: sellerId);
-
         if (!mounted) return;
+
         Navigator.pop(context); // close loading dialog
 
         if (contactRes['success']) {
           final List<ChatContact> contacts = contactRes['data'];
-          // Fallback to the first item just in case there is a mismatch
           final contact = contacts.firstWhere((c) => c.id == sellerId,
               orElse: () => contacts.first);
 
@@ -442,6 +473,7 @@ class _ProductShowScreenState extends State<ProductShowScreen> {
                             children: widget.product.pictures.map((pic) {
                               String picUrl = '${widget.baseUrl}/storage/$pic';
                               bool isSelected = _currentImage == picUrl;
+
                               return GestureDetector(
                                 onTap: () =>
                                     setState(() => _currentImage = picUrl),
@@ -932,7 +964,7 @@ class _ProductShowScreenState extends State<ProductShowScreen> {
                       (context, index) {
                         return ProductCard(
                           product: _suggestedProducts[index],
-                          baseUrl: 'https://dev.storkia.shop',
+                          baseUrl: widget.baseUrl,
                           token: widget.token,
                         );
                       },
@@ -994,7 +1026,9 @@ class _ProductShowScreenState extends State<ProductShowScreen> {
               const SizedBox(width: 12),
               Expanded(
                 child: ElevatedButton(
-                  onPressed: _isAddingToCart ? null : _validateAndSubmit,
+                  onPressed: _isAddingToCart
+                      ? null
+                      : _buyNow, // Changed to use _buyNow
                   style: ElevatedButton.styleFrom(
                     padding: const EdgeInsets.symmetric(vertical: 16),
                     backgroundColor: const Color(0xFFCF4173),

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../models/product_model.dart';
+import 'checkout_screen.dart';
 
 class CartItem {
   final int id;
@@ -189,7 +190,6 @@ class _CartScreenState extends State<CartScreen> {
           'Accept': 'application/json',
         },
       );
-
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         List items = data['data'] ?? [];
@@ -216,7 +216,6 @@ class _CartScreenState extends State<CartScreen> {
   bool get _isAllSelected =>
       _cartItems.isNotEmpty && _cartItems.every((i) => i.isSelected);
 
-  // Changed to count items instead of quantities to fix "10 of 2 selected" issue
   int get _selectedCount => _cartItems.where((i) => i.isSelected).length;
 
   double get _retailTotal => _cartItems
@@ -246,19 +245,18 @@ class _CartScreenState extends State<CartScreen> {
   }
 
   bool _isStoreSelected(String store) {
-    if (_groupedItems[store] == null || _groupedItems[store]!.isEmpty)
+    if (_groupedItems[store] == null || _groupedItems[store]!.isEmpty) {
       return false;
+    }
     return _groupedItems[store]!.every((i) => i.isSelected);
   }
 
   Future<void> _updateQuantity(CartItem item, int newQty) async {
     if (newQty < 1 || newQty > item.maxStock || item.isSyncing) return;
-
     setState(() {
       item.quantity = newQty;
       item.isSyncing = true;
     });
-
     try {
       await http.put(
         Uri.parse('${widget.baseUrl}/api/v1/cart/${item.id}'),
@@ -755,7 +753,26 @@ class _CartScreenState extends State<CartScreen> {
             ),
             const SizedBox(width: 12),
             ElevatedButton(
-              onPressed: _selectedCount == 0 ? null : () {},
+              onPressed: _selectedCount == 0
+                  ? null
+                  : () {
+                      final selectedIds = _cartItems
+                          .where((i) => i.isSelected)
+                          .map((i) => i.id)
+                          .toList();
+
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => CheckoutScreen(
+                            baseUrl: widget.baseUrl,
+                            token: widget.token,
+                            mode: 'cart',
+                            cartIds: selectedIds,
+                          ),
+                        ),
+                      );
+                    },
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFFCF4173),
                 foregroundColor: Colors.white,
