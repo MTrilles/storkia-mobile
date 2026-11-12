@@ -1,29 +1,32 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import '../services/api_service.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../config/app_routes.dart';
+import '../config/app_theme.dart';
 import '../models/user_model.dart';
+import '../providers/auth_provider.dart';
+import '../providers/global_counters_provider.dart';
+import '../services/api_service.dart';
 import 'home_screen.dart';
 
-class RegisterScreen extends StatefulWidget {
+class RegisterScreen extends ConsumerStatefulWidget {
   const RegisterScreen({super.key});
 
   @override
-  State<RegisterScreen> createState() => _RegisterScreenState();
+  ConsumerState<RegisterScreen> createState() => _RegisterScreenState();
 }
 
-class _RegisterScreenState extends State<RegisterScreen> {
+class _RegisterScreenState extends ConsumerState<RegisterScreen> {
   int _currentStep = 1;
 
-  // Step 1 Controllers
   final _emailController = TextEditingController();
   final _codeController = TextEditingController();
+  String? _verificationToken;
   bool _codeSent = false;
   bool _isLoading = false;
   int _resendCooldown = 0;
   Timer? _timer;
 
-  // Step 2 Controllers
   final _formKeyStep2 = GlobalKey<FormState>();
   final _firstNameController = TextEditingController();
   final _lastNameController = TextEditingController();
@@ -31,14 +34,12 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final _birthdayController = TextEditingController();
   String _selectedSex = 'male';
 
-  // Step 3 Controllers
   final _formKeyStep3 = GlobalKey<FormState>();
   final _passwordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
   bool _isPasswordVisible = false;
   bool _isConfirmVisible = false;
 
-  // Password Requirements
   bool _hasMinLength = false;
   bool _hasUppercase = false;
   bool _hasNumber = false;
@@ -74,8 +75,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
     });
   }
 
-  void _startResendTimer() {
-    setState(() => _resendCooldown = 60);
+  void _startResendTimer([int seconds = 60]) {
+    _timer?.cancel();
+    setState(() => _resendCooldown = seconds);
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (_resendCooldown > 0) {
         setState(() => _resendCooldown--);
@@ -86,6 +88,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
   }
 
   Future<void> _sendOtp() async {
+    FocusScope.of(context).unfocus();
     final email = _emailController.text.trim();
     if (email.isEmpty || !email.contains('@')) {
       _showError('Please enter a valid email address.');
@@ -94,51 +97,62 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
     setState(() => _isLoading = true);
     final res = await ApiService.sendOtp(email);
+    if (!mounted) return;
     setState(() => _isLoading = false);
 
-    if (res['success']) {
+    if (res['success'] == true) {
       setState(() => _codeSent = true);
-      _startResendTimer();
+      _startResendTimer(res['cooldown'] ?? 60);
     } else {
-      _showError(res['message']);
+      final int cooldown = res['cooldown'] ?? 0;
+      if (cooldown > 0) {
+        setState(() => _codeSent = true);
+        _startResendTimer(cooldown);
+      }
+      _showError(res['message'] ?? 'Could not send verification code.');
     }
   }
 
   Future<void> _verifyOtp() async {
+    FocusScope.of(context).unfocus();
     final email = _emailController.text.trim();
     final code = _codeController.text.trim();
-
     if (code.length < 6) {
-      _showError('Please enter the 6-digit code.');
+      _showError('Please enter the 6-digit verification code.');
       return;
     }
 
     setState(() => _isLoading = true);
     final res = await ApiService.verifyOtp(email, code);
+    if (!mounted) return;
     setState(() => _isLoading = false);
 
-    if (res['success']) {
-      setState(() => _currentStep = 2);
+    if (res['success'] == true) {
+      setState(() {
+        _verificationToken = res['verification_token']?.toString();
+        _currentStep = 2;
+      });
     } else {
-      _showError(res['message']);
+      _showError(res['message'] ?? 'Invalid verification code.');
     }
   }
 
   void _goToPasswordStep() {
+    FocusScope.of(context).unfocus();
     if (_formKeyStep2.currentState!.validate()) {
       setState(() => _currentStep = 3);
     }
   }
 
   Future<void> _handleRegister() async {
+    FocusScope.of(context).unfocus();
     if (!_formKeyStep3.currentState!.validate()) return;
     if (!_hasMinLength || !_hasUppercase || !_hasNumber || !_hasSpecial) {
-      _showError('Please meet all password requirements.');
+      _showError('Please meet all password security requirements.');
       return;
     }
 
     setState(() => _isLoading = true);
-
     final res = await ApiService.register(
       firstName: _firstNameController.text.trim(),
       lastName: _lastNameController.text.trim(),
@@ -148,35 +162,40 @@ class _RegisterScreenState extends State<RegisterScreen> {
       sex: _selectedSex,
       birthday: _birthdayController.text,
       email: _emailController.text.trim(),
+      verificationToken: _verificationToken,
       password: _passwordController.text,
       passwordConfirmation: _confirmPasswordController.text,
     );
 
+    if (!mounted) return;
     setState(() => _isLoading = false);
 
-    if (!mounted) return;
-
-    if (res['success']) {
+    if (res['success'] == true) {
       final user = UserModel.fromJson(res['data']['user']);
-      final token = res['data']['access_token'];
+      final token = res['data']['access_token'].toString();
 
+      await ref.read(authProvider.notifier).login(user, token);
+      syncAllBuyerCounters(ref, token);
+
+      if (!mounted) return;
       Navigator.pushAndRemoveUntil(
         context,
-        MaterialPageRoute(
-            builder: (context) => HomeScreen(user: user, token: token)),
+        StorkRoute.fade(HomeScreen(user: user, token: token)),
         (route) => false,
       );
     } else {
-      _showError(res['message']);
+      _showError(res['message'] ?? 'Registration failed.');
     }
   }
 
-  void _selectBirthday() async {
+  Future<void> _selectBirthday() async {
+    final DateTime eighteenYearsAgo =
+        DateTime.now().subtract(const Duration(days: 365 * 18 + 4));
     final DateTime? picked = await showDatePicker(
       context: context,
-      initialDate: DateTime.now().subtract(const Duration(days: 365 * 18)),
-      firstDate: DateTime(1920),
-      lastDate: DateTime.now().subtract(const Duration(days: 365 * 18)),
+      initialDate: eighteenYearsAgo,
+      firstDate: DateTime(1925),
+      lastDate: eighteenYearsAgo,
     );
     if (picked != null) {
       setState(() {
@@ -188,52 +207,78 @@ class _RegisterScreenState extends State<RegisterScreen> {
   }
 
   void _showError(String message) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), backgroundColor: Colors.red.shade700),
+      SnackBar(
+        content: Text(message),
+        backgroundColor: StorkTheme.danger,
+      ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: StorkTheme.surfaceSubtle,
       appBar: AppBar(
-        elevation: 0,
         backgroundColor: Colors.transparent,
-        iconTheme: const IconThemeData(color: Color(0xFF881337)),
+        elevation: 0,
+        title: const Text('Create Buyer Account'),
       ),
       body: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 12.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              const Text(
-                'Create an Account',
-                style: TextStyle(
-                  fontSize: 28,
-                  fontWeight: FontWeight.bold,
-                  fontFamily: 'Serif',
-                  color: Color(0xFF881337),
-                  letterSpacing: -0.5,
-                ),
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 440),
+              child: Column(
+                children: [
+                  _buildStepIndicator(),
+                  const SizedBox(height: 20),
+                  Container(
+                    padding: const EdgeInsets.all(22),
+                    decoration: BoxDecoration(
+                      color: StorkTheme.surface,
+                      borderRadius: BorderRadius.circular(24),
+                      border: Border.all(color: StorkTheme.borderSubtle),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          _currentStep == 1
+                              ? 'Verify Your Email'
+                              : _currentStep == 2
+                                  ? 'Personal Information'
+                                  : 'Create a Secure Password',
+                          style: const TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.w800,
+                            color: StorkTheme.primaryDark,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          _currentStep == 1
+                              ? 'We will send a 6-digit verification code to your email.'
+                              : _currentStep == 2
+                                  ? 'Please enter your legal name and date of birth.'
+                                  : 'Choose a strong password for your Storkia account.',
+                          style: const TextStyle(
+                            fontSize: 13,
+                            color: StorkTheme.textMuted,
+                          ),
+                        ),
+                        const SizedBox(height: 22),
+                        if (_currentStep == 1) _buildStep1(),
+                        if (_currentStep == 2) _buildStep2(),
+                        if (_currentStep == 3) _buildStep3(),
+                      ],
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(height: 8),
-              Text(
-                _currentStep == 1
-                    ? 'Verify your email address to get started'
-                    : _currentStep == 2
-                        ? 'Tell us a little bit about yourself'
-                        : 'Set up a secure password for your account',
-                style: TextStyle(fontSize: 14, color: Colors.grey.shade600),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 32),
-              _buildStepIndicator(),
-              const SizedBox(height: 40),
-              if (_currentStep == 1) _buildStep1(),
-              if (_currentStep == 2) _buildStep2(),
-              if (_currentStep == 3) _buildStep3(),
-            ],
+            ),
           ),
         ),
       ),
@@ -241,43 +286,61 @@ class _RegisterScreenState extends State<RegisterScreen> {
   }
 
   Widget _buildStepIndicator() {
+    final labels = ['Email OTP', 'Profile', 'Password'];
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [1, 2, 3].map((step) {
         final isActive = _currentStep == step;
         final isCompleted = _currentStep > step;
+
         return Row(
           children: [
-            Container(
-              width: 28,
-              height: 28,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: isActive
-                    ? const Color(0xFF881337)
-                    : (isCompleted
-                        ? const Color(0xFFFCE4EC)
-                        : Colors.grey.shade200),
-              ),
-              alignment: Alignment.center,
-              child: isCompleted
-                  ? const Icon(Icons.check, size: 16, color: Color(0xFF881337))
-                  : Text(
-                      step.toString(),
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                        color: isActive ? Colors.white : Colors.grey.shade500,
-                      ),
-                    ),
+            Column(
+              children: [
+                Container(
+                  width: 30,
+                  height: 30,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: isActive
+                        ? StorkTheme.primary
+                        : (isCompleted
+                            ? StorkTheme.primary.withValues(alpha: 0.15)
+                            : StorkTheme.borderSubtle),
+                  ),
+                  alignment: Alignment.center,
+                  child: isCompleted
+                      ? const Icon(Icons.check_rounded,
+                          size: 16, color: StorkTheme.primary)
+                      : Text(
+                          step.toString(),
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w800,
+                            color:
+                                isActive ? Colors.white : StorkTheme.textMuted,
+                          ),
+                        ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  labels[step - 1],
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: isActive ? FontWeight.w700 : FontWeight.w500,
+                    color: isActive ? StorkTheme.primary : StorkTheme.textMuted,
+                  ),
+                ),
+              ],
             ),
             if (step < 3)
               Container(
-                width: 40,
+                width: 48,
                 height: 2,
+                margin: const EdgeInsets.only(bottom: 16, left: 8, right: 8),
                 color: isCompleted
-                    ? const Color(0xFF881337).withOpacity(0.4)
-                    : Colors.grey.shade300,
+                    ? StorkTheme.primary.withValues(alpha: 0.5)
+                    : StorkTheme.borderSubtle,
               ),
           ],
         );
@@ -289,114 +352,123 @@ class _RegisterScreenState extends State<RegisterScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        const Text(
+          'EMAIL ADDRESS',
+          style: TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w700,
+            color: StorkTheme.textMuted,
+          ),
+        ),
+        const SizedBox(height: 6),
         TextField(
           controller: _emailController,
           enabled: !_codeSent,
           keyboardType: TextInputType.emailAddress,
           decoration: InputDecoration(
-            labelText: 'EMAIL ADDRESS',
-            labelStyle:
-                const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
             hintText: 'name@example.com',
-            border: const UnderlineInputBorder(),
-            disabledBorder: UnderlineInputBorder(
-                borderSide: BorderSide(color: Colors.grey.shade300)),
+            prefixIcon: const Icon(Icons.email_outlined, size: 20),
+            suffixIcon: _codeSent
+                ? TextButton(
+                    onPressed: () {
+                      setState(() {
+                        _codeSent = false;
+                        _codeController.clear();
+                      });
+                    },
+                    child: const Text('Change', style: TextStyle(fontSize: 12)),
+                  )
+                : null,
           ),
         ),
-        const SizedBox(height: 24),
+        const SizedBox(height: 20),
         if (!_codeSent)
           SizedBox(
             width: double.infinity,
-            height: 50,
+            height: 48,
             child: ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF881337),
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(25)),
-                elevation: 0,
-              ),
               onPressed: _isLoading ? null : _sendOtp,
               child: _isLoading
                   ? const SizedBox(
                       height: 20,
                       width: 20,
                       child: CircularProgressIndicator(
-                          color: Colors.white, strokeWidth: 2))
-                  : const Text('Send Verification Code',
-                      style:
-                          TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                        color: Colors.white,
+                        strokeWidth: 2,
+                      ),
+                    )
+                  : const Text('Send Verification Code'),
             ),
           )
         else
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              const Text(
+                '6-DIGIT VERIFICATION CODE',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  color: StorkTheme.textMuted,
+                ),
+              ),
+              const SizedBox(height: 6),
               TextField(
                 controller: _codeController,
                 keyboardType: TextInputType.number,
                 maxLength: 6,
                 textAlign: TextAlign.center,
                 style: const TextStyle(
-                    fontSize: 24,
-                    letterSpacing: 16,
-                    fontWeight: FontWeight.bold),
+                  fontSize: 22,
+                  letterSpacing: 12,
+                  fontWeight: FontWeight.w800,
+                ),
                 decoration: const InputDecoration(
                   counterText: '',
-                  labelText: 'VERIFICATION CODE',
-                  labelStyle: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 0),
-                  border: UnderlineInputBorder(),
+                  hintText: '000000',
                 ),
               ),
               const SizedBox(height: 8),
-              Center(
-                child: Text(
-                  'Code sent to ${_emailController.text}',
-                  style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+              Text(
+                'Code sent to ${_emailController.text.trim()}',
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: StorkTheme.textMuted,
                 ),
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 20),
               SizedBox(
                 width: double.infinity,
-                height: 50,
+                height: 48,
                 child: ElevatedButton(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF881337),
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(25)),
-                    elevation: 0,
-                  ),
                   onPressed: _isLoading ? null : _verifyOtp,
                   child: _isLoading
                       ? const SizedBox(
                           height: 20,
                           width: 20,
                           child: CircularProgressIndicator(
-                              color: Colors.white, strokeWidth: 2))
-                      : const Text('Verify & Continue',
-                          style: TextStyle(
-                              fontSize: 14, fontWeight: FontWeight.w600)),
+                            color: Colors.white,
+                            strokeWidth: 2,
+                          ),
+                        )
+                      : const Text('Verify & Continue'),
                 ),
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 12),
               Center(
                 child: TextButton(
                   onPressed:
                       (_resendCooldown > 0 || _isLoading) ? null : _sendOtp,
                   child: Text(
                     _resendCooldown > 0
-                        ? 'Resend available in ${_resendCooldown}s'
-                        : 'Resend Code',
+                        ? 'Resend code in ${_resendCooldown}s'
+                        : 'Resend Verification Code',
                     style: TextStyle(
                       fontSize: 12,
-                      fontWeight: FontWeight.w600,
+                      fontWeight: FontWeight.w700,
                       color: _resendCooldown > 0
-                          ? Colors.grey
-                          : const Color(0xFF881337),
+                          ? StorkTheme.textMuted
+                          : StorkTheme.primary,
                     ),
                   ),
                 ),
@@ -421,17 +493,18 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   controller: _firstNameController,
                   textCapitalization: TextCapitalization.words,
                   decoration: const InputDecoration(
-                    labelText: 'FIRST NAME*',
-                    labelStyle:
-                        TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-                    border: UnderlineInputBorder(),
+                    labelText: 'First Name*',
                   ),
-                  validator: (v) =>
-                      (v == null || v.trim().isEmpty) ? 'Required' : null,
-                  onChanged: (v) => _formKeyStep2.currentState?.validate(),
+                  validator: (v) {
+                    if (v == null || v.trim().isEmpty) return 'Required';
+                    if (!RegExp(r'^[A-Za-z\s]+$').hasMatch(v.trim())) {
+                      return 'Letters only';
+                    }
+                    return null;
+                  },
                 ),
               ),
-              const SizedBox(width: 12),
+              const SizedBox(width: 10),
               Expanded(
                 flex: 1,
                 child: TextFormField(
@@ -441,52 +514,101 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   decoration: const InputDecoration(
                     labelText: 'M.I.',
                     counterText: '',
-                    labelStyle:
-                        TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-                    border: UnderlineInputBorder(),
                   ),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 14),
           TextFormField(
             controller: _lastNameController,
             textCapitalization: TextCapitalization.words,
             decoration: const InputDecoration(
-              labelText: 'LAST NAME*',
-              labelStyle: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-              border: UnderlineInputBorder(),
+              labelText: 'Last Name*',
             ),
-            validator: (v) =>
-                (v == null || v.trim().isEmpty) ? 'Required' : null,
-            onChanged: (v) => _formKeyStep2.currentState?.validate(),
+            validator: (v) {
+              if (v == null || v.trim().isEmpty) return 'Required';
+              if (!RegExp(r'^[A-Za-z\s]+$').hasMatch(v.trim())) {
+                return 'Letters only';
+              }
+              return null;
+            },
           ),
-          const SizedBox(height: 24),
-          const Text('SEX*',
-              style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.grey)),
+          const SizedBox(height: 18),
+          const Text(
+            'SEX*',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: StorkTheme.textMuted,
+            ),
+          ),
+          const SizedBox(height: 6),
           Row(
             children: [
-              Radio<String>(
-                value: 'male',
-                groupValue: _selectedSex,
-                activeColor: const Color(0xFF881337),
-                onChanged: (val) => setState(() => _selectedSex = val!),
+              Expanded(
+                child: InkWell(
+                  onTap: () => setState(() => _selectedSex = 'male'),
+                  borderRadius: BorderRadius.circular(12),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 11),
+                    decoration: BoxDecoration(
+                      color: _selectedSex == 'male'
+                          ? StorkTheme.primary.withValues(alpha: 0.1)
+                          : StorkTheme.surface,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: _selectedSex == 'male'
+                            ? StorkTheme.primary
+                            : StorkTheme.borderSubtle,
+                        width: _selectedSex == 'male' ? 1.5 : 1,
+                      ),
+                    ),
+                    alignment: Alignment.center,
+                    child: Text(
+                      'Male',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w700,
+                        color: _selectedSex == 'male'
+                            ? StorkTheme.primary
+                            : StorkTheme.textMain,
+                      ),
+                    ),
+                  ),
+                ),
               ),
-              const Text('Male',
-                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
-              const SizedBox(width: 24),
-              Radio<String>(
-                value: 'female',
-                groupValue: _selectedSex,
-                activeColor: const Color(0xFF881337),
-                onChanged: (val) => setState(() => _selectedSex = val!),
+              const SizedBox(width: 10),
+              Expanded(
+                child: InkWell(
+                  onTap: () => setState(() => _selectedSex = 'female'),
+                  borderRadius: BorderRadius.circular(12),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 11),
+                    decoration: BoxDecoration(
+                      color: _selectedSex == 'female'
+                          ? StorkTheme.primary.withValues(alpha: 0.1)
+                          : StorkTheme.surface,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: _selectedSex == 'female'
+                            ? StorkTheme.primary
+                            : StorkTheme.borderSubtle,
+                        width: _selectedSex == 'female' ? 1.5 : 1,
+                      ),
+                    ),
+                    alignment: Alignment.center,
+                    child: Text(
+                      'Female',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w700,
+                        color: _selectedSex == 'female'
+                            ? StorkTheme.primary
+                            : StorkTheme.textMain,
+                      ),
+                    ),
+                  ),
+                ),
               ),
-              const Text('Female',
-                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
             ],
           ),
           const SizedBox(height: 16),
@@ -495,29 +617,19 @@ class _RegisterScreenState extends State<RegisterScreen> {
             readOnly: true,
             onTap: _selectBirthday,
             decoration: const InputDecoration(
-              labelText: 'BIRTHDAY*',
-              labelStyle: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+              labelText: 'Date of Birth (18+)*',
               hintText: 'YYYY-MM-DD',
-              border: UnderlineInputBorder(),
-              suffixIcon: Icon(Icons.calendar_today, size: 18),
+              suffixIcon: Icon(Icons.calendar_today_outlined, size: 18),
             ),
             validator: (v) => (v == null || v.isEmpty) ? 'Required' : null,
           ),
-          const SizedBox(height: 32),
+          const SizedBox(height: 24),
           SizedBox(
             width: double.infinity,
-            height: 50,
+            height: 48,
             child: ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF881337),
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(25)),
-                elevation: 0,
-              ),
               onPressed: _goToPasswordStep,
-              child: const Text('Continue',
-                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+              child: const Text('Continue'),
             ),
           ),
         ],
@@ -535,39 +647,33 @@ class _RegisterScreenState extends State<RegisterScreen> {
             controller: _passwordController,
             obscureText: !_isPasswordVisible,
             decoration: InputDecoration(
-              labelText: 'PASSWORD*',
-              labelStyle:
-                  const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-              border: const UnderlineInputBorder(),
+              labelText: 'Password*',
               suffixIcon: IconButton(
                 icon: Icon(
-                    _isPasswordVisible
-                        ? Icons.visibility
-                        : Icons.visibility_off,
-                    size: 18),
+                  _isPasswordVisible
+                      ? Icons.visibility_rounded
+                      : Icons.visibility_off_rounded,
+                  size: 18,
+                ),
                 onPressed: () =>
                     setState(() => _isPasswordVisible = !_isPasswordVisible),
               ),
             ),
-            validator: (v) {
-              if (v == null || v.isEmpty) return 'Required';
-              return null;
-            },
-            onChanged: (v) => _formKeyStep3.currentState?.validate(),
+            validator: (v) => (v == null || v.isEmpty) ? 'Required' : null,
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 14),
           TextFormField(
             controller: _confirmPasswordController,
             obscureText: !_isConfirmVisible,
             decoration: InputDecoration(
-              labelText: 'CONFIRM PASSWORD*',
-              labelStyle:
-                  const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-              border: const UnderlineInputBorder(),
+              labelText: 'Confirm Password*',
               suffixIcon: IconButton(
                 icon: Icon(
-                    _isConfirmVisible ? Icons.visibility : Icons.visibility_off,
-                    size: 18),
+                  _isConfirmVisible
+                      ? Icons.visibility_rounded
+                      : Icons.visibility_off_rounded,
+                  size: 18,
+                ),
                 onPressed: () =>
                     setState(() => _isConfirmVisible = !_isConfirmVisible),
               ),
@@ -578,53 +684,41 @@ class _RegisterScreenState extends State<RegisterScreen> {
               }
               return null;
             },
-            onChanged: (v) => _formKeyStep3.currentState?.validate(),
           ),
           const SizedBox(height: 16),
-          // Dynamic Requirements Indicator
-          GridView.count(
-            shrinkWrap: true,
-            crossAxisCount: 2,
-            childAspectRatio: 8,
-            physics: const NeverScrollableScrollPhysics(),
+          Wrap(
+            spacing: 12,
+            runSpacing: 8,
             children: [
-              _buildRequirementRow('8+ characters', _hasMinLength),
-              _buildRequirementRow('1 uppercase', _hasUppercase),
-              _buildRequirementRow('1 number', _hasNumber),
-              _buildRequirementRow('1 special symbol', _hasSpecial),
+              _buildRequirementChip('8+ characters', _hasMinLength),
+              _buildRequirementChip('1 uppercase', _hasUppercase),
+              _buildRequirementChip('1 number', _hasNumber),
+              _buildRequirementChip('1 special symbol', _hasSpecial),
             ],
           ),
-          const SizedBox(height: 32),
+          const SizedBox(height: 24),
           Row(
             children: [
-              TextButton(
+              OutlinedButton(
                 onPressed: () => setState(() => _currentStep = 2),
-                child: const Text('Back',
-                    style: TextStyle(
-                        color: Colors.grey, fontWeight: FontWeight.w600)),
+                child: const Text('Back'),
               ),
-              const SizedBox(width: 16),
+              const SizedBox(width: 12),
               Expanded(
                 child: SizedBox(
-                  height: 50,
+                  height: 48,
                   child: ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF881337),
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(25)),
-                      elevation: 0,
-                    ),
                     onPressed: _isLoading ? null : _handleRegister,
                     child: _isLoading
                         ? const SizedBox(
                             height: 20,
                             width: 20,
                             child: CircularProgressIndicator(
-                                color: Colors.white, strokeWidth: 2))
-                        : const Text('Complete Registration',
-                            style: TextStyle(
-                                fontSize: 14, fontWeight: FontWeight.w600)),
+                              color: Colors.white,
+                              strokeWidth: 2,
+                            ),
+                          )
+                        : const Text('Complete Registration'),
                   ),
                 ),
               ),
@@ -635,24 +729,39 @@ class _RegisterScreenState extends State<RegisterScreen> {
     );
   }
 
-  Widget _buildRequirementRow(String text, bool isMet) {
-    return Row(
-      children: [
-        Icon(
-          isMet ? Icons.check : Icons.circle,
-          size: isMet ? 14 : 6,
-          color: isMet ? Colors.green : Colors.grey.shade400,
+  Widget _buildRequirementChip(String text, bool isMet) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: isMet
+            ? StorkTheme.success.withValues(alpha: 0.1)
+            : StorkTheme.surfaceSubtle,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: isMet
+              ? StorkTheme.success.withValues(alpha: 0.3)
+              : StorkTheme.borderSubtle,
         ),
-        const SizedBox(width: 6),
-        Text(
-          text,
-          style: TextStyle(
-            fontSize: 11,
-            fontWeight: isMet ? FontWeight.bold : FontWeight.normal,
-            color: isMet ? Colors.green : Colors.grey.shade600,
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            isMet ? Icons.check_circle_rounded : Icons.radio_button_unchecked,
+            size: 14,
+            color: isMet ? StorkTheme.success : StorkTheme.textMuted,
           ),
-        ),
-      ],
+          const SizedBox(width: 5),
+          Text(
+            text,
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: isMet ? FontWeight.w700 : FontWeight.w500,
+              color: isMet ? StorkTheme.success : StorkTheme.textMuted,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

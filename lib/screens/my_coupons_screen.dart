@@ -1,0 +1,635 @@
+import 'dart:async';
+import 'dart:convert';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
+import '../config/api_config.dart';
+import '../config/app_theme.dart';
+
+typedef JsonMap = Map<String, dynamic>;
+
+class MyCouponsScreen extends StatefulWidget {
+  final String baseUrl;
+  final String token;
+
+  const MyCouponsScreen({
+    super.key,
+    required this.baseUrl,
+    required this.token,
+  });
+
+  @override
+  State<MyCouponsScreen> createState() => _MyCouponsScreenState();
+}
+
+class _MyCouponsScreenState extends State<MyCouponsScreen>
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+  late TabController _tabController;
+  final TextEditingController _codeController = TextEditingController();
+  Timer? _autoSyncTimer;
+
+  bool _isLoading = true;
+  bool _isClaimingCode = false;
+  String? _claimingVoucherCode;
+
+  List<JsonMap> _walletVouchers = [];
+  List<JsonMap> _discoverVouchers = [];
+
+  String get _domain => ApiConfig.resolveBaseDomain(widget.baseUrl);
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _tabController = TabController(length: 2, vsync: this);
+    _fetchVouchers();
+    _autoSyncTimer = Timer.periodic(const Duration(seconds: 6), (_) {
+      _fetchVouchers(silent: true);
+    });
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _autoSyncTimer?.cancel();
+    _tabController.dispose();
+    _codeController.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _fetchVouchers(silent: true);
+    }
+  }
+
+  String _formatMoney(dynamic raw) {
+    final val = double.tryParse(raw?.toString() ?? '0') ?? 0.0;
+    final parts = val.toStringAsFixed(2).split('.');
+    final intPart = parts[0].replaceAllMapped(
+      RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'),
+      (Match m) => '${m[1]},',
+    );
+    return '$intPart.${parts[1]}';
+  }
+
+  List<JsonMap> _extractVoucherList(dynamic raw) {
+    if (raw is List) {
+      return [
+        for (final item in raw)
+          if (item is Map)
+            Map<String, dynamic>.from(
+              item['voucher'] is Map ? (item['voucher'] as Map) : item,
+            ),
+      ];
+    }
+    if (raw is Map && raw['data'] is List) {
+      return _extractVoucherList(raw['data']);
+    }
+    return [];
+  }
+
+  Future<void> _fetchVouchers({bool silent = false}) async {
+    if (!silent) {
+      setState(() => _isLoading = true);
+    }
+    try {
+      final headers = {
+        'Authorization': 'Bearer ${widget.token}',
+        'Accept': 'application/json',
+      };
+
+      final response = await http
+          .get(Uri.parse('$_domain/api/v1/vouchers'), headers: headers)
+          .timeout(ApiConfig.requestTimeout);
+
+      if (!mounted) return;
+
+      List<JsonMap> wallet = [];
+      List<JsonMap> discover = [];
+
+      if (response.statusCode == 200) {
+        final body = json.decode(response.body);
+        final dynamic d = body is Map ? (body['data'] ?? body) : body;
+        if (d is Map) {
+          wallet = _extractVoucherList(
+            d['wallet'] ??
+                d['claimed'] ??
+                d['my_vouchers'] ??
+                d['user_vouchers'],
+          );
+          discover = _extractVoucherList(
+            d['discover'] ??
+                d['available'] ??
+                d['claimable'] ??
+                d['platform_vouchers'] ??
+                d['vouchers'],
+          );
+        } else if (d is List) {
+          final all = _extractVoucherList(d);
+          wallet = all.where((v) => v['is_claimed'] == true).toList();
+          discover = all.where((v) => v['is_claimed'] != true).toList();
+        }
+      }
+
+      if (discover.isEmpty) {
+        try {
+          final activeRes = await http
+              .get(Uri.parse('$_domain/api/v1/vouchers/active'),
+                  headers: headers)
+              .timeout(ApiConfig.requestTimeout);
+          if (activeRes.statusCode == 200) {
+            final activeBody = json.decode(activeRes.body);
+            final activeList = _extractVoucherList(
+              activeBody is Map
+                  ? (activeBody['data'] ?? activeBody)
+                  : activeBody,
+            );
+            final claimedCodes = wallet
+                .map((w) => (w['code'] ?? '').toString().toUpperCase())
+                .toSet();
+            discover = activeList
+                .where((v) =>
+                    v['is_claimed'] != true &&
+                    !claimedCodes
+                        .contains((v['code'] ?? '').toString().toUpperCase()))
+                .toList();
+          }
+        } catch (_) {}
+      }
+
+      if (mounted) {
+        setState(() {
+          _walletVouchers = wallet;
+          _discoverVouchers = discover;
+          _isLoading = false;
+        });
+      }
+      return;
+    } catch (_) {}
+
+    if (mounted && !silent) {
+      setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _claimVoucher(String rawCode) async {
+    final code = rawCode.trim().toUpperCase();
+    if (code.isEmpty || _isClaimingCode || _claimingVoucherCode != null) return;
+
+    setState(() {
+      _isClaimingCode = true;
+      _claimingVoucherCode = code;
+    });
+
+    try {
+      final response = await http
+          .post(
+            Uri.parse('$_domain/api/v1/vouchers/claim'),
+            headers: {
+              'Authorization': 'Bearer ${widget.token}',
+              'Accept': 'application/json',
+              'Content-Type': 'application/json',
+            },
+            body: json.encode({'code': code}),
+          )
+          .timeout(ApiConfig.requestTimeout);
+
+      if (!mounted) return;
+      final data = json.decode(response.body);
+
+      if ((response.statusCode == 200 || response.statusCode == 201) &&
+          data is Map &&
+          data['success'] == true) {
+        _codeController.clear();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              data['message']?.toString() ??
+                  'Voucher "$code" added to your wallet!',
+            ),
+            backgroundColor: StorkTheme.success,
+          ),
+        );
+        _fetchVouchers(silent: true);
+      } else {
+        String errMsg = data is Map
+            ? (data['message']?.toString() ?? 'Unable to claim voucher.')
+            : 'Unable to claim voucher.';
+        if (data is Map &&
+            data['errors'] is Map &&
+            (data['errors'] as Map).isNotEmpty) {
+          final first = (data['errors'] as Map).values.first;
+          if (first is List && first.isNotEmpty) {
+            errMsg = first.first.toString();
+          }
+        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(errMsg),
+            backgroundColor: StorkTheme.danger,
+          ),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Network error occurred.'),
+            backgroundColor: StorkTheme.danger,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isClaimingCode = false;
+          _claimingVoucherCode = null;
+        });
+      }
+    }
+  }
+
+  void _copyToClipboard(String code) {
+    Clipboard.setData(ClipboardData(text: code));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Voucher code "$code" copied to clipboard!'),
+        backgroundColor: StorkTheme.success,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: StorkTheme.surfaceSubtle,
+      appBar: AppBar(
+        title: const Text('My Coupons & Voucher Wallet'),
+        bottom: TabBar(
+          controller: _tabController,
+          indicatorColor: StorkTheme.primary,
+          labelColor: StorkTheme.primary,
+          unselectedLabelColor: StorkTheme.textMuted,
+          labelStyle: const TextStyle(
+            fontWeight: FontWeight.w800,
+            fontSize: 13,
+          ),
+          tabs: [
+            Tab(text: 'My Wallet (${_walletVouchers.length})'),
+            Tab(text: 'Claim Vouchers (${_discoverVouchers.length})'),
+          ],
+        ),
+      ),
+      body: Column(
+        children: [
+          Container(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+            decoration: const BoxDecoration(
+              color: StorkTheme.surface,
+              border: Border(
+                bottom: BorderSide(color: StorkTheme.borderSubtle),
+              ),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _codeController,
+                    textCapitalization: TextCapitalization.characters,
+                    decoration: const InputDecoration(
+                      hintText: 'Enter secret or promo voucher code...',
+                      prefixIcon: Icon(
+                        Icons.confirmation_number_outlined,
+                        size: 19,
+                        color: StorkTheme.textMuted,
+                      ),
+                    ),
+                    onSubmitted: _claimVoucher,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                ElevatedButton(
+                  onPressed: _isClaimingCode
+                      ? null
+                      : () => _claimVoucher(_codeController.text),
+                  child: _isClaimingCode
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                            color: Colors.white,
+                            strokeWidth: 2,
+                          ),
+                        )
+                      : const Text('Claim Code'),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: _isLoading
+                ? const Center(
+                    child: CircularProgressIndicator(color: StorkTheme.primary),
+                  )
+                : TabBarView(
+                    controller: _tabController,
+                    children: [
+                      _buildVoucherList(
+                        items: _walletVouchers,
+                        isWallet: true,
+                        emptyTitle: 'Your Voucher Wallet is empty',
+                        emptySubtitle:
+                            'Claim Platform or Free Shipping vouchers from the Claim tab, or follow verified stores!',
+                      ),
+                      _buildVoucherList(
+                        items: _discoverVouchers,
+                        isWallet: false,
+                        emptyTitle: 'No unclaimed platform vouchers right now',
+                        emptySubtitle:
+                            'All available Platform and Free Shipping vouchers are already in your wallet.',
+                      ),
+                    ],
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildVoucherList({
+    required List<JsonMap> items,
+    required bool isWallet,
+    required String emptyTitle,
+    required String emptySubtitle,
+  }) {
+    return RefreshIndicator(
+      color: StorkTheme.primary,
+      onRefresh: () => _fetchVouchers(),
+      child: items.isEmpty
+          ? ListView(
+              padding: const EdgeInsets.all(32),
+              children: [
+                const SizedBox(height: 60),
+                const Icon(
+                  Icons.local_activity_outlined,
+                  size: 56,
+                  color: StorkTheme.textMuted,
+                ),
+                const SizedBox(height: 14),
+                Text(
+                  emptyTitle,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                    color: StorkTheme.textMain,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  emptySubtitle,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 12.5,
+                    color: StorkTheme.textMuted,
+                    height: 1.4,
+                  ),
+                ),
+              ],
+            )
+          : ListView.separated(
+              padding: const EdgeInsets.all(14),
+              itemCount: items.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 12),
+              itemBuilder: (context, index) {
+                return _buildTicketCard(items[index], isWallet: isWallet);
+              },
+            ),
+    );
+  }
+
+  Widget _buildTicketCard(
+    JsonMap voucher, {
+    required bool isWallet,
+  }) {
+    final String code = voucher['code']?.toString() ?? 'CODE';
+    final String title =
+        (voucher['title'] ?? voucher['name'] ?? 'Discount Voucher').toString();
+    final String badgeLabel =
+        (voucher['badge_label'] ?? 'STORKIA OFF').toString();
+    final String scope = (voucher['scope'] ?? 'platform').toString();
+    final String description =
+        (voucher['description'] ?? 'Valid on qualifying orders.').toString();
+    final String minSpend = _formatMoney(voucher['min_spend'] ?? 0);
+    final String expiresAt =
+        (voucher['ends_at_formatted'] ?? voucher['expires_at'] ?? 'Active')
+            .toString();
+    final bool isUsable = voucher['is_usable'] != false;
+    final String? storeName = voucher['seller_name']?.toString() ??
+        (voucher['seller_profile'] is Map
+            ? voucher['seller_profile']['business_name']?.toString()
+            : null);
+
+    final Color accentColor = scope == 'shipping'
+        ? const Color(0xFF047857)
+        : (scope == 'store' ? StorkTheme.primary : const Color(0xFF6B21A8));
+
+    return Opacity(
+      opacity: (isWallet && !isUsable) ? 0.55 : 1.0,
+      child: Container(
+        decoration: BoxDecoration(
+          color: StorkTheme.surface,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: StorkTheme.borderSubtle),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: IntrinsicHeight(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Container(
+                width: 108,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: accentColor,
+                ),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.22),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        scope.toUpperCase(),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 8.5,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      badgeLabel,
+                      textAlign: TextAlign.center,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w900,
+                        height: 1.15,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Min ₱$minSpend',
+                      textAlign: TextAlign.center,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.9),
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 4,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 7, vertical: 2),
+                            decoration: BoxDecoration(
+                              color:
+                                  StorkTheme.brandLight.withValues(alpha: 0.5),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              code,
+                              style: const TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w900,
+                                color: StorkTheme.primaryDark,
+                              ),
+                            ),
+                          ),
+                          if (storeName != null && storeName.isNotEmpty)
+                            Text(
+                              storeName,
+                              style: const TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700,
+                                color: StorkTheme.textMuted,
+                              ),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w800,
+                          color: StorkTheme.textMain,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        description,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 11.5,
+                          color: StorkTheme.textMuted,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Flexible(
+                            child: Text(
+                              'Valid until: $expiresAt',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 10.5,
+                                color: StorkTheme.textMuted,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          if (isWallet)
+                            ElevatedButton(
+                              onPressed: isUsable
+                                  ? () => _copyToClipboard(code)
+                                  : null,
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: accentColor,
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 12, vertical: 6),
+                                minimumSize: const Size(0, 30),
+                              ),
+                              child: Text(
+                                isUsable ? 'Copy Code' : 'Used / Expired',
+                                style: const TextStyle(fontSize: 11),
+                              ),
+                            )
+                          else
+                            ElevatedButton(
+                              onPressed: _claimingVoucherCode == code
+                                  ? null
+                                  : () => _claimVoucher(code),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: accentColor,
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 14, vertical: 6),
+                                minimumSize: const Size(0, 30),
+                              ),
+                              child: _claimingVoucherCode == code
+                                  ? const SizedBox(
+                                      width: 14,
+                                      height: 14,
+                                      child: CircularProgressIndicator(
+                                        color: Colors.white,
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : const Text(
+                                      'Claim',
+                                      style: TextStyle(fontSize: 11),
+                                    ),
+                            ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}

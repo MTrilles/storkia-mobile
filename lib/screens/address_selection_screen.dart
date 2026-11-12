@@ -1,7 +1,11 @@
+import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import 'dart:convert';
+import '../config/api_config.dart';
+import '../config/app_theme.dart';
 import '../models/address_model.dart';
+import 'address_form_screen.dart';
 
 class AddressSelectionScreen extends StatefulWidget {
   final String baseUrl;
@@ -19,65 +23,189 @@ class AddressSelectionScreen extends StatefulWidget {
   State<AddressSelectionScreen> createState() => _AddressSelectionScreenState();
 }
 
-class _AddressSelectionScreenState extends State<AddressSelectionScreen> {
+class _AddressSelectionScreenState extends State<AddressSelectionScreen>
+    with WidgetsBindingObserver {
   bool _isLoading = true;
   List<Address> _addresses = [];
   int? _currentSelectedId;
+  Timer? _autoSyncTimer;
+
+  String get _domain => ApiConfig.resolveBaseDomain(widget.baseUrl);
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _currentSelectedId = widget.selectedAddressId;
-    _fetchAddresses();
+    _fetchAddresses(silent: false);
+    _autoSyncTimer = Timer.periodic(const Duration(seconds: 8), (_) {
+      _fetchAddresses(silent: true);
+    });
   }
 
-  Future<void> _fetchAddresses() async {
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _autoSyncTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _fetchAddresses(silent: true);
+    }
+  }
+
+  Future<void> _fetchAddresses({bool silent = true}) async {
+    if (!silent && _addresses.isEmpty) {
+      setState(() => _isLoading = true);
+    }
     try {
       final response = await http.get(
-        Uri.parse('${widget.baseUrl}/api/v1/addresses'),
+        Uri.parse('$_domain/api/v1/addresses'),
         headers: {
           'Authorization': 'Bearer ${widget.token}',
           'Accept': 'application/json',
         },
-      );
+      ).timeout(ApiConfig.requestTimeout);
+
+      if (!mounted) return;
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
-        if (data['success'] == true) {
+        if (data['success'] == true && data['data'] is List) {
+          final List<dynamic> raw = data['data'] as List<dynamic>;
           setState(() {
-            _addresses = (data['data'] as List)
-                .map((item) => Address.fromJson(item))
-                .toList();
+            _addresses = [
+              for (final item in raw)
+                if (item is Map)
+                  Address.fromJson(Map<String, dynamic>.from(item)),
+            ];
             _isLoading = false;
           });
+          return;
         }
       }
-    } catch (e) {
+    } catch (_) {}
+    if (mounted && !silent) {
       setState(() => _isLoading = false);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Failed to load addresses.')),
-        );
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Failed to load addresses.')),
+      );
+    }
+  }
+
+  Future<void> _setDefaultAddress(Address address) async {
+    try {
+      final response = await http.patch(
+        Uri.parse('$_domain/api/v1/addresses/${address.id}/default'),
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Accept': 'application/json',
+        },
+      ).timeout(ApiConfig.requestTimeout);
+      if (!mounted) return;
+      final data = json.decode(response.body);
+      if (response.statusCode == 200 && data['success'] == true) {
+        _fetchAddresses(silent: true);
       }
+    } catch (_) {}
+  }
+
+  Future<void> _deleteAddress(Address address) async {
+    final bool? confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Address'),
+        content: const Text(
+            'Are you sure you want to delete this address? This action cannot be undone.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel',
+                style: TextStyle(color: StorkTheme.textMuted)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: StorkTheme.danger),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true) return;
+
+    setState(() {
+      _addresses.removeWhere((a) => a.id == address.id);
+    });
+
+    try {
+      final response = await http.delete(
+        Uri.parse('$_domain/api/v1/addresses/${address.id}'),
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Accept': 'application/json',
+        },
+      ).timeout(ApiConfig.requestTimeout);
+
+      final data = json.decode(response.body);
+      if (response.statusCode == 200 && data['success'] == true) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Address deleted successfully.'),
+              backgroundColor: StorkTheme.success,
+            ),
+          );
+        }
+        _fetchAddresses(silent: true);
+      } else {
+        _fetchAddresses(silent: true);
+        _showError(data['message'] ?? 'Failed to delete address.');
+      }
+    } catch (_) {
+      _fetchAddresses(silent: true);
+      _showError('Network error occurred.');
+    }
+  }
+
+  void _showError(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), backgroundColor: StorkTheme.danger),
+    );
+  }
+
+  Future<void> _navigateToAddOrEdit([Address? address]) async {
+    final refreshed = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (context) => AddressFormScreen(
+          baseUrl: _domain,
+          token: widget.token,
+          address: address,
+        ),
+      ),
+    );
+    if (refreshed == true) {
+      _fetchAddresses(silent: true);
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F5F4),
+      backgroundColor: StorkTheme.surfaceSubtle,
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        foregroundColor: const Color(0xFF292524),
-        elevation: 0.5,
-        title: const Text('Select Delivery Address',
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+        title: const Text('Address Book'),
       ),
-      body: _isLoading
+      body: _isLoading && _addresses.isEmpty
           ? const Center(
-              child: CircularProgressIndicator(color: Color(0xFFCF4173)))
+              child: CircularProgressIndicator(color: StorkTheme.primary))
           : _addresses.isEmpty
-              ? const Center(child: Text('No addresses found. Add one.'))
+              ? _buildEmptyState()
               : ListView.separated(
                   padding: const EdgeInsets.all(16),
                   itemCount: _addresses.length,
@@ -95,15 +223,15 @@ class _AddressSelectionScreenState extends State<AddressSelectionScreen> {
                         padding: const EdgeInsets.all(16),
                         decoration: BoxDecoration(
                           color: isSelected
-                              ? const Color(0xFFCF4173).withOpacity(0.05)
-                              : Colors.white,
+                              ? StorkTheme.primary.withValues(alpha: 0.05)
+                              : StorkTheme.surface,
                           border: Border.all(
                             color: isSelected
-                                ? const Color(0xFFCF4173)
-                                : Colors.grey.shade300,
+                                ? StorkTheme.primary
+                                : StorkTheme.borderSubtle,
                             width: isSelected ? 2 : 1,
                           ),
-                          borderRadius: BorderRadius.circular(12),
+                          borderRadius: BorderRadius.circular(16),
                         ),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -111,12 +239,14 @@ class _AddressSelectionScreenState extends State<AddressSelectionScreen> {
                             Row(
                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
-                                Text(
-                                  address.recipientName,
-                                  style: const TextStyle(
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.bold,
-                                    color: Color(0xFF292524),
+                                Expanded(
+                                  child: Text(
+                                    address.recipientName,
+                                    style: const TextStyle(
+                                      fontSize: 15.5,
+                                      fontWeight: FontWeight.w800,
+                                      color: StorkTheme.textMain,
+                                    ),
                                   ),
                                 ),
                                 if (address.isDefault)
@@ -124,33 +254,138 @@ class _AddressSelectionScreenState extends State<AddressSelectionScreen> {
                                     padding: const EdgeInsets.symmetric(
                                         horizontal: 8, vertical: 4),
                                     decoration: BoxDecoration(
-                                      color: const Color(0xFFCF4173),
-                                      borderRadius: BorderRadius.circular(4),
+                                      color: StorkTheme.primary,
+                                      borderRadius: BorderRadius.circular(6),
                                     ),
-                                    child: const Text('Default',
-                                        style: TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 10,
-                                            fontWeight: FontWeight.bold)),
+                                    child: const Text(
+                                      'Default',
+                                      style: TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w800,
+                                      ),
+                                    ),
                                   )
+                                else
+                                  TextButton(
+                                    onPressed: () =>
+                                        _setDefaultAddress(address),
+                                    style: TextButton.styleFrom(
+                                      visualDensity: VisualDensity.compact,
+                                    ),
+                                    child: const Text(
+                                      'Set Default',
+                                      style: TextStyle(
+                                        fontSize: 11.5,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                  ),
                               ],
                             ),
-                            const SizedBox(height: 8),
-                            Text(address.phoneNumber,
-                                style: const TextStyle(
-                                    color: Color(0xFF78716C), fontSize: 14)),
+                            const SizedBox(height: 6),
+                            Text(
+                              address.phoneNumber,
+                              style: const TextStyle(
+                                color: StorkTheme.textMuted,
+                                fontSize: 13.5,
+                              ),
+                            ),
                             const SizedBox(height: 4),
-                            Text(address.fullAddress,
-                                style: const TextStyle(
-                                    color: Color(0xFF292524),
-                                    fontSize: 14,
-                                    height: 1.4)),
+                            Text(
+                              address.fullAddress,
+                              style: const TextStyle(
+                                color: StorkTheme.textMain,
+                                fontSize: 13.5,
+                                height: 1.4,
+                              ),
+                            ),
+                            const Divider(height: 22),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.end,
+                              children: [
+                                TextButton.icon(
+                                  onPressed: () =>
+                                      _navigateToAddOrEdit(address),
+                                  icon: const Icon(Icons.edit_outlined,
+                                      size: 16, color: StorkTheme.primary),
+                                  label: const Text(
+                                    'Edit',
+                                    style: TextStyle(
+                                      color: StorkTheme.primary,
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                TextButton.icon(
+                                  onPressed: () => _deleteAddress(address),
+                                  icon: const Icon(Icons.delete_outline_rounded,
+                                      size: 16, color: StorkTheme.danger),
+                                  label: const Text(
+                                    'Delete',
+                                    style: TextStyle(
+                                      color: StorkTheme.danger,
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
                           ],
                         ),
                       ),
                     );
                   },
                 ),
+      bottomNavigationBar: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: StorkTheme.surface,
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.05),
+              blurRadius: 10,
+              offset: const Offset(0, -5),
+            ),
+          ],
+        ),
+        child: SafeArea(
+          child: ElevatedButton.icon(
+            onPressed: () => _navigateToAddOrEdit(),
+            icon: const Icon(Icons.add_rounded, color: Colors.white),
+            label: const Text('Add New Address'),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEmptyState() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.location_off_outlined,
+              size: 60, color: Colors.grey.shade400),
+          const SizedBox(height: 16),
+          const Text(
+            'No addresses found',
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w800,
+              color: StorkTheme.textMain,
+            ),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Add a delivery address to start checking out.',
+            style: TextStyle(color: StorkTheme.textMuted),
+          ),
+        ],
+      ),
     );
   }
 }

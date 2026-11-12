@@ -5,97 +5,143 @@ import '../config/api_config.dart';
 import '../models/cart_model.dart';
 import '../models/chat_models.dart';
 
-class ApiService {
-  static Future<Map<String, dynamic>> sendOtp(String email) async {
-    try {
-      final response = await http.post(
-        Uri.parse('${ApiConfig.baseUrl}/send-otp'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-        body: jsonEncode({'email': email}),
-      );
+typedef JsonMap = Map<String, dynamic>;
 
-      final data = jsonDecode(response.body);
-      if (response.statusCode == 200) {
-        return {'success': true, 'data': data};
-      } else {
-        String errMsg = data['message'] ?? 'Failed to send verification code.';
-        if (data['errors'] != null) {
-          final errors = data['errors'] as Map<String, dynamic>;
-          errMsg = errors.values.first[0].toString();
+class ApiService {
+  static Map<int, JsonMap> _sellerByUserIdCache = {};
+  static Map<int, JsonMap> _sellerByProfileIdCache = {};
+
+  static String _extractError(dynamic data, String fallback) {
+    if (data is Map) {
+      if (data['errors'] is Map) {
+        final errors = data['errors'] as Map;
+        if (errors.isNotEmpty) {
+          final firstVal = errors.values.first;
+          if (firstVal is List && firstVal.isNotEmpty) {
+            return firstVal.first.toString();
+          }
+          return firstVal.toString();
         }
-        return {'success': false, 'message': errMsg};
       }
-    } catch (e) {
-      return {'success': false, 'message': 'Network error: $e'};
+      if (data['message'] != null && data['message'].toString().isNotEmpty) {
+        return data['message'].toString();
+      }
     }
+    return fallback;
   }
 
-  static Future<Map<String, dynamic>> verifyOtp(
-      String email, String code) async {
+  static Future<JsonMap> sendOtp(String email) async {
     try {
-      final response = await http.post(
-        Uri.parse('${ApiConfig.baseUrl}/verify-otp'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-        body: jsonEncode({'email': email, 'code': code}),
-      );
+      final response = await http
+          .post(
+            Uri.parse('${ApiConfig.baseUrl}/send-otp'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            },
+            body: jsonEncode({'email': email}),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       final data = jsonDecode(response.body);
       if (response.statusCode == 200) {
-        return {'success': true, 'data': data};
+        return {
+          'success': true,
+          'data': data,
+          'cooldown': data['cooldown'] ?? 60,
+        };
       } else {
         return {
           'success': false,
-          'message': data['message'] ?? 'Invalid code.'
+          'message': _extractError(data, 'Failed to send verification code.'),
+          'cooldown': data['cooldown'] ?? 0,
         };
       }
-    } catch (e) {
-      return {'success': false, 'message': 'Network error: $e'};
+    } catch (_) {
+      return {
+        'success': false,
+        'message': 'Unable to connect to server. Please check your internet.',
+      };
     }
   }
 
-  static Future<Map<String, dynamic>> login({
+  static Future<JsonMap> verifyOtp(String email, String code) async {
+    try {
+      final response = await http
+          .post(
+            Uri.parse('${ApiConfig.baseUrl}/verify-otp'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            },
+            body: jsonEncode({'email': email, 'code': code}),
+          )
+          .timeout(ApiConfig.requestTimeout);
+
+      final data = jsonDecode(response.body);
+      if (response.statusCode == 200) {
+        return {
+          'success': true,
+          'data': data,
+          'verification_token': data['verification_token'],
+        };
+      } else {
+        return {
+          'success': false,
+          'message':
+              _extractError(data, 'Invalid or expired verification code.'),
+        };
+      }
+    } catch (_) {
+      return {
+        'success': false,
+        'message': 'Unable to connect to server. Please check your internet.',
+      };
+    }
+  }
+
+  static Future<JsonMap> login({
     required String email,
     required String password,
   }) async {
     try {
-      final response = await http.post(
-        Uri.parse('${ApiConfig.baseUrl}/login'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-        body: jsonEncode({
-          'email': email,
-          'password': password,
-        }),
-      );
+      final response = await http
+          .post(
+            Uri.parse('${ApiConfig.baseUrl}/login'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            },
+            body: jsonEncode({
+              'email': email,
+              'password': password,
+            }),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       final data = jsonDecode(response.body);
       if (response.statusCode == 200) {
-        final role = data['user']?['role'] ?? '';
+        final role = data['user']?['role']?.toString() ?? 'Buyer';
         if (role.toLowerCase() != 'buyer') {
           return {
             'success': false,
             'message':
-                'You have a $role account. Please access your account on a desktop to view the dashboard.'
+                'You have a $role account. Please sign in through the web $role Portal.',
           };
         }
         return {'success': true, 'data': data};
       } else {
         return {
           'success': false,
-          'message':
-              data['message'] ?? 'Login failed. Please check credentials.'
+          'message': _extractError(
+              data, 'Login failed. Please check your credentials.'),
         };
       }
-    } catch (e) {
-      return {'success': false, 'message': 'Network error: $e'};
+    } catch (_) {
+      return {
+        'success': false,
+        'message': 'Unable to connect to server. Please check your internet.',
+      };
     }
   }
 
@@ -108,77 +154,148 @@ class ApiService {
           'Accept': 'application/json',
           'Authorization': 'Bearer $token',
         },
-      );
+      ).timeout(const Duration(seconds: 8));
 
       final prefs = await SharedPreferences.getInstance();
-      await prefs.clear();
+      await prefs.remove('storkia_auth_token');
+      await prefs.remove('storkia_auth_user');
 
       return response.statusCode == 200;
-    } catch (e) {
+    } catch (_) {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.clear();
+      await prefs.remove('storkia_auth_token');
+      await prefs.remove('storkia_auth_user');
       return false;
     }
   }
 
-  static Future<Map<String, dynamic>> register({
+  static Future<JsonMap> register({
     required String firstName,
     required String lastName,
     String? middleInitial,
     required String sex,
     required String birthday,
     required String email,
+    String? verificationToken,
     required String password,
     required String passwordConfirmation,
   }) async {
     try {
-      final response = await http.post(
-        Uri.parse('${ApiConfig.baseUrl}/register'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-        body: jsonEncode({
-          'first_name': firstName,
-          'last_name': lastName,
-          'middle_initial': middleInitial,
-          'sex': sex,
-          'birthday': birthday,
-          'email': email,
-          'password': password,
-          'password_confirmation': passwordConfirmation,
-        }),
-      );
+      final response = await http
+          .post(
+            Uri.parse('${ApiConfig.baseUrl}/register'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            },
+            body: jsonEncode({
+              'first_name': firstName,
+              'last_name': lastName,
+              'middle_initial': middleInitial,
+              'sex': sex,
+              'birthday': birthday,
+              'email': email,
+              'verification_token': verificationToken,
+              'password': password,
+              'password_confirmation': passwordConfirmation,
+            }),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       final data = jsonDecode(response.body);
       if (response.statusCode == 201 || response.statusCode == 200) {
         return {'success': true, 'data': data};
       } else {
-        String errMsg = data['message'] ?? 'Registration failed.';
-        if (data['errors'] != null) {
-          final errors = data['errors'] as Map<String, dynamic>;
-          errMsg = errors.values.first[0].toString();
-        }
-        return {'success': false, 'message': errMsg};
+        return {
+          'success': false,
+          'message': _extractError(data, 'Registration failed.'),
+        };
       }
-    } catch (e) {
-      return {'success': false, 'message': 'Network error: $e'};
+    } catch (_) {
+      return {
+        'success': false,
+        'message': 'Unable to connect to server. Please check your internet.',
+      };
     }
   }
 
-  static Future<Map<String, dynamic>> getProducts(String token,
-      {int page = 1,
-      int perPage = 6,
-      String? category,
-      String? subcategory}) async {
+  static Future<JsonMap> getSanctionStatus(String token) async {
+    try {
+      final response = await http.get(
+        Uri.parse('${ApiConfig.baseUrl}/account/sanction'),
+        headers: {
+          'Accept': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+      ).timeout(ApiConfig.requestTimeout);
+
+      final data = jsonDecode(response.body);
+      if (response.statusCode == 200 && data['success'] == true) {
+        return {'success': true, 'data': data['data']};
+      }
+      return {
+        'success': false,
+        'message': _extractError(data, 'Failed to load account status.'),
+      };
+    } catch (_) {
+      return {'success': false, 'message': 'Network error occurred.'};
+    }
+  }
+
+  static Future<JsonMap> submitSanctionAppeal({
+    required String token,
+    required String explanation,
+    String? photoPath,
+  }) async {
+    try {
+      final request = http.MultipartRequest(
+        'POST',
+        Uri.parse('${ApiConfig.baseUrl}/account/sanction/appeal'),
+      );
+      request.headers['Authorization'] = 'Bearer $token';
+      request.headers['Accept'] = 'application/json';
+      request.fields['appeal_explanation'] = explanation;
+
+      if (photoPath != null && photoPath.isNotEmpty) {
+        request.files.add(
+          await http.MultipartFile.fromPath('supporting_photo', photoPath),
+        );
+      }
+
+      final streamed = await request.send().timeout(ApiConfig.requestTimeout);
+      final response = await http.Response.fromStream(streamed);
+      final data = jsonDecode(response.body);
+
+      if (response.statusCode == 200 && data['success'] == true) {
+        return {'success': true, 'data': data};
+      }
+      return {
+        'success': false,
+        'message': _extractError(data, 'Failed to submit appeal.'),
+      };
+    } catch (_) {
+      return {'success': false, 'message': 'Network error occurred.'};
+    }
+  }
+
+  static Future<JsonMap> getProducts(
+    String token, {
+    int page = 1,
+    int perPage = 10,
+    String? category,
+    String? subcategory,
+    int? sellerId,
+  }) async {
     try {
       String url = '${ApiConfig.baseUrl}/products?page=$page&per_page=$perPage';
-
       if (category != null && category.isNotEmpty) {
         url += '&category=${Uri.encodeComponent(category)}';
       }
       if (subcategory != null && subcategory.isNotEmpty) {
         url += '&subcategory=${Uri.encodeComponent(subcategory)}';
+      }
+      if (sellerId != null) {
+        url += '&seller_id=$sellerId';
       }
 
       final response = await http.get(
@@ -188,7 +305,7 @@ class ApiService {
           'Accept': 'application/json',
           'Authorization': 'Bearer $token',
         },
-      );
+      ).timeout(ApiConfig.requestTimeout);
 
       final data = jsonDecode(response.body);
       if (response.statusCode == 200) {
@@ -196,15 +313,18 @@ class ApiService {
       } else {
         return {
           'success': false,
-          'message': data['message'] ?? 'Failed to fetch products.'
+          'message': _extractError(data, 'Failed to fetch products.'),
         };
       }
-    } catch (e) {
-      return {'success': false, 'message': 'Network error: $e'};
+    } catch (_) {
+      return {
+        'success': false,
+        'message': 'Unable to load products. Please check your connection.',
+      };
     }
   }
 
-  static Future<Map<String, dynamic>> getCartItems(String token) async {
+  static Future<JsonMap> getCartItems(String token) async {
     try {
       final response = await http.get(
         Uri.parse('${ApiConfig.baseUrl}/cart'),
@@ -213,26 +333,29 @@ class ApiService {
           'Accept': 'application/json',
           'Authorization': 'Bearer $token',
         },
-      );
+      ).timeout(ApiConfig.requestTimeout);
 
       final data = jsonDecode(response.body);
       if (response.statusCode == 200) {
-        List items = data['data'] ?? [];
-        List<CartItem> cartItems =
-            items.map((e) => CartItem.fromJson(e)).toList();
+        final List<dynamic> items =
+            data['data'] is List ? data['data'] as List<dynamic> : <dynamic>[];
+        final List<CartItem> cartItems = [
+          for (final e in items)
+            if (e is Map) CartItem.fromJson(Map<String, dynamic>.from(e)),
+        ];
         return {'success': true, 'data': cartItems};
       } else {
         return {
           'success': false,
-          'message': data['message'] ?? 'Failed to load cart'
+          'message': _extractError(data, 'Failed to load cart'),
         };
       }
-    } catch (e) {
-      return {'success': false, 'message': 'Network error: $e'};
+    } catch (_) {
+      return {'success': false, 'message': 'Network error occurred.'};
     }
   }
 
-  static Future<Map<String, dynamic>> addToCart({
+  static Future<JsonMap> addToCart({
     required String token,
     required int productId,
     required int quantity,
@@ -240,20 +363,22 @@ class ApiService {
     String? subVariant,
   }) async {
     try {
-      final response = await http.post(
-        Uri.parse('${ApiConfig.baseUrl}/cart'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
-        body: jsonEncode({
-          'product_id': productId,
-          'quantity': quantity,
-          'variant': variant,
-          'sub_variant': subVariant,
-        }),
-      );
+      final response = await http
+          .post(
+            Uri.parse('${ApiConfig.baseUrl}/cart'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+              'Authorization': 'Bearer $token',
+            },
+            body: jsonEncode({
+              'product_id': productId,
+              'quantity': quantity,
+              'variant': variant,
+              'sub_variant': subVariant,
+            }),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       final data = jsonDecode(response.body);
       if (response.statusCode == 201 || response.statusCode == 200) {
@@ -261,26 +386,28 @@ class ApiService {
       } else {
         return {
           'success': false,
-          'message': data['message'] ?? 'Failed to add item'
+          'message': _extractError(data, 'Failed to add item to cart.'),
         };
       }
-    } catch (e) {
-      return {'success': false, 'message': 'Network error: $e'};
+    } catch (_) {
+      return {'success': false, 'message': 'Network error occurred.'};
     }
   }
 
-  static Future<Map<String, dynamic>> updateCartQuantity(
+  static Future<JsonMap> updateCartQuantity(
       String token, int cartId, int quantity) async {
     try {
-      final response = await http.put(
-        Uri.parse('${ApiConfig.baseUrl}/cart/$cartId'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
-        body: jsonEncode({'quantity': quantity}),
-      );
+      final response = await http
+          .put(
+            Uri.parse('${ApiConfig.baseUrl}/cart/$cartId'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+              'Authorization': 'Bearer $token',
+            },
+            body: jsonEncode({'quantity': quantity}),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       final data = jsonDecode(response.body);
       if (response.statusCode == 200) {
@@ -288,16 +415,15 @@ class ApiService {
       } else {
         return {
           'success': false,
-          'message': data['message'] ?? 'Failed to update item'
+          'message': _extractError(data, 'Failed to update quantity.'),
         };
       }
-    } catch (e) {
-      return {'success': false, 'message': 'Network error: $e'};
+    } catch (_) {
+      return {'success': false, 'message': 'Network error occurred.'};
     }
   }
 
-  static Future<Map<String, dynamic>> removeCartItem(
-      String token, int cartId) async {
+  static Future<JsonMap> removeCartItem(String token, int cartId) async {
     try {
       final response = await http.delete(
         Uri.parse('${ApiConfig.baseUrl}/cart/$cartId'),
@@ -306,7 +432,7 @@ class ApiService {
           'Accept': 'application/json',
           'Authorization': 'Bearer $token',
         },
-      );
+      ).timeout(ApiConfig.requestTimeout);
 
       final data = jsonDecode(response.body);
       if (response.statusCode == 200) {
@@ -314,90 +440,198 @@ class ApiService {
       } else {
         return {
           'success': false,
-          'message': data['message'] ?? 'Failed to remove item'
+          'message': _extractError(data, 'Failed to remove item.'),
         };
       }
-    } catch (e) {
-      return {'success': false, 'message': 'Network error: $e'};
+    } catch (_) {
+      return {'success': false, 'message': 'Network error occurred.'};
     }
   }
 
-  static Future<Map<String, dynamic>> fetchContacts(String token,
-      {int? contactId}) async {
+  static Future<void> _ensureSellerDirectoryCache(String token) async {
+    try {
+      final response = await http.get(
+        Uri.parse('${ApiConfig.baseUrl}/sellers'),
+        headers: {
+          'Accept': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+      ).timeout(const Duration(seconds: 8));
+
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body);
+        List<dynamic> rawSellers = [];
+        if (body is Map) {
+          final d = body['data'];
+          if (d is List) {
+            rawSellers = d;
+          } else if (d is Map) {
+            if (d['sellers'] is List) {
+              rawSellers = d['sellers'] as List<dynamic>;
+            } else if (d['data'] is List) {
+              rawSellers = d['data'] as List<dynamic>;
+            }
+          }
+        }
+        final Map<int, JsonMap> byUser = {};
+        final Map<int, JsonMap> byProfile = {};
+        for (final item in rawSellers) {
+          if (item is Map) {
+            final map = Map<String, dynamic>.from(item);
+            final int uid =
+                int.tryParse(map['user_id']?.toString() ?? '0') ?? 0;
+            final int pid = int.tryParse(map['id']?.toString() ?? '0') ?? 0;
+            if (uid > 0) byUser[uid] = map;
+            if (pid > 0) byProfile[pid] = map;
+          }
+        }
+        if (byUser.isNotEmpty) {
+          _sellerByUserIdCache = byUser;
+          _sellerByProfileIdCache = byProfile;
+        }
+      }
+    } catch (_) {}
+  }
+
+  static Future<JsonMap> fetchContacts(String token, {int? contactId}) async {
     try {
       String url = '${ApiConfig.baseUrl}/messages/contacts';
       if (contactId != null) {
         url += '?contact=$contactId';
       }
-
       final response = await http.get(
         Uri.parse(url),
         headers: {
           'Accept': 'application/json',
           'Authorization': 'Bearer $token',
         },
-      );
+      ).timeout(ApiConfig.requestTimeout);
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-
-        List rawList = [];
+        List<dynamic> rawList = [];
         if (data is Map && data['success'] == true && data['data'] != null) {
-          rawList = data['data'] is List
-              ? data['data']
-              : (data['data'] as Map).values.toList();
+          final d = data['data'];
+          if (d is List) {
+            rawList = d;
+          } else if (d is Map) {
+            if (d['contacts'] is List) {
+              rawList = d['contacts'] as List<dynamic>;
+            } else {
+              rawList = d.values.toList();
+            }
+          }
+        } else if (data is Map && data['contacts'] is List) {
+          rawList = data['contacts'] as List<dynamic>;
         } else if (data is List) {
           rawList = data;
         }
 
-        List<ChatContact> contacts = rawList.map((e) {
-          return ChatContact.fromJson(Map<String, dynamic>.from(e));
-        }).toList();
+        List<ChatContact> contacts = [
+          for (final e in rawList)
+            if (e is Map) ChatContact.fromJson(Map<String, dynamic>.from(e)),
+        ];
+
+        final bool needsSellerLookup = contacts.any((c) =>
+                (c.businessName == null || c.businessName!.isEmpty) &&
+                c.firstName.isEmpty) ||
+            (contactId != null && !contacts.any((c) => c.id == contactId));
+
+        if (needsSellerLookup || _sellerByUserIdCache.isEmpty) {
+          await _ensureSellerDirectoryCache(token);
+        }
+
+        contacts = [
+          for (final c in contacts)
+            if (_sellerByUserIdCache.containsKey(c.id) ||
+                _sellerByProfileIdCache.containsKey(c.id))
+              c.copyWith(
+                businessName: (c.businessName != null &&
+                        c.businessName!.trim().isNotEmpty)
+                    ? c.businessName
+                    : (_sellerByUserIdCache[c.id]?['business_name'] ??
+                            _sellerByProfileIdCache[c.id]?['business_name'])
+                        ?.toString(),
+                logoPath: (c.logoPath != null && c.logoPath!.trim().isNotEmpty)
+                    ? c.logoPath
+                    : (_sellerByUserIdCache[c.id]?['logo_path'] ??
+                            _sellerByProfileIdCache[c.id]?['logo_path'])
+                        ?.toString(),
+              )
+            else
+              c,
+        ];
+
+        if (contactId != null && !contacts.any((c) => c.id == contactId)) {
+          final sellerMatch = _sellerByUserIdCache[contactId] ??
+              _sellerByProfileIdCache[contactId];
+          if (sellerMatch != null) {
+            contacts.insert(
+              0,
+              ChatContact(
+                id: int.tryParse(sellerMatch['user_id']?.toString() ?? '') ??
+                    contactId,
+                firstName: '',
+                lastName: '',
+                role: 'Seller',
+                businessName: sellerMatch['business_name']?.toString(),
+                logoPath: sellerMatch['logo_path']?.toString(),
+              ),
+            );
+          }
+        }
 
         return {'success': true, 'data': contacts};
       }
       return {
         'success': false,
-        'message': 'Failed to load contacts: ${response.statusCode}'
+        'message': 'Failed to load contacts: ${response.statusCode}',
       };
-    } catch (e) {
-      return {'success': false, 'message': 'Network error: $e'};
+    } catch (_) {
+      return {'success': false, 'message': 'Network error occurred.'};
     }
   }
 
-  static Future<Map<String, dynamic>> fetchUnreadMessageCount(
-      String token) async {
+  static Future<JsonMap> fetchUnreadMessageCount(String token) async {
     try {
       final response = await http.get(
-        Uri.parse('${ApiConfig.baseUrl}/messages/unread-count'),
+        Uri.parse('${ApiConfig.baseUrl}/messages/contacts'),
         headers: {
           'Accept': 'application/json',
           'Authorization': 'Bearer $token',
         },
-      );
+      ).timeout(ApiConfig.requestTimeout);
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        if (data is Map) {
-          int count = 0;
-          if (data['data'] != null &&
-              data['data'] is Map &&
-              data['data']['count'] != null) {
-            count = int.tryParse(data['data']['count'].toString()) ?? 0;
-          } else if (data['count'] != null) {
-            count = int.tryParse(data['count'].toString()) ?? 0;
-          }
-          return {'success': true, 'count': count};
+        List<dynamic> rawList = [];
+        if (data is Map && data['data'] is List) {
+          rawList = data['data'] as List<dynamic>;
+        } else if (data is Map &&
+            data['data'] is Map &&
+            data['data']['contacts'] is List) {
+          rawList = data['data']['contacts'] as List<dynamic>;
+        } else if (data is List) {
+          rawList = data;
         }
+        int totalUnread = 0;
+        for (final item in rawList) {
+          if (item is Map) {
+            totalUnread += int.tryParse(
+                    (item['unread_count'] ?? item['unread'] ?? '0')
+                        .toString()) ??
+                0;
+          }
+        }
+        return {'success': true, 'count': totalUnread};
       }
       return {'success': false, 'count': 0};
-    } catch (e) {
+    } catch (_) {
       return {'success': false, 'count': 0};
     }
   }
 
-  static Future<Map<String, dynamic>> fetchMessages(
-      String token, int contactId) async {
+  static Future<JsonMap> fetchMessages(String token, int contactId) async {
     try {
       final response = await http.get(
         Uri.parse('${ApiConfig.baseUrl}/messages/fetch/$contactId'),
@@ -405,73 +639,116 @@ class ApiService {
           'Accept': 'application/json',
           'Authorization': 'Bearer $token',
         },
-      );
+      ).timeout(ApiConfig.requestTimeout);
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
+        List<dynamic> rawList = [];
+        JsonMap? contactInfo;
 
-        List rawList = [];
         if (data is Map && data['success'] == true && data['data'] != null) {
-          rawList = data['data'] is List
-              ? data['data']
-              : (data['data'] as Map).values.toList();
+          final d = data['data'];
+          if (d is List) {
+            rawList = d;
+          } else if (d is Map) {
+            if (d['messages'] is List) {
+              rawList = d['messages'] as List<dynamic>;
+            } else {
+              rawList = d.values.toList();
+            }
+            if (d['contact'] is Map) {
+              contactInfo = Map<String, dynamic>.from(d['contact'] as Map);
+            }
+          }
+          if (data['contact'] is Map) {
+            contactInfo = Map<String, dynamic>.from(data['contact'] as Map);
+          }
         } else if (data is List) {
           rawList = data;
         }
 
-        List<ChatMessage> messages = rawList.map((e) {
-          return ChatMessage.fromJson(Map<String, dynamic>.from(e));
-        }).toList();
+        final List<ChatMessage> messages = [
+          for (final e in rawList)
+            if (e is Map) ChatMessage.fromJson(Map<String, dynamic>.from(e)),
+        ];
 
-        return {'success': true, 'data': messages};
+        return {
+          'success': true,
+          'data': messages,
+          if (contactInfo != null) 'contact': ChatContact.fromJson(contactInfo),
+        };
       }
       return {'success': false, 'message': 'Failed to load messages'};
-    } catch (e) {
-      return {'success': false, 'message': 'Network error: $e'};
+    } catch (_) {
+      return {'success': false, 'message': 'Network error occurred.'};
     }
   }
 
-  static Future<Map<String, dynamic>> sendMessage(
-      String token, int receiverId, String message) async {
+  static Future<JsonMap> sendMessage(
+    String token,
+    int receiverId,
+    String message, {
+    String? attachmentPath,
+    int? productId,
+  }) async {
     try {
-      final response = await http.post(
-        Uri.parse('${ApiConfig.baseUrl}/messages'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
-        body: jsonEncode({
-          'receiver_id': receiverId,
-          'message': message,
-        }),
-      );
+      http.Response response;
+      if (attachmentPath != null && attachmentPath.isNotEmpty) {
+        final req = http.MultipartRequest(
+          'POST',
+          Uri.parse('${ApiConfig.baseUrl}/messages'),
+        );
+        req.headers['Authorization'] = 'Bearer $token';
+        req.headers['Accept'] = 'application/json';
+        req.fields['receiver_id'] = '$receiverId';
+        req.fields['message'] =
+            message.isNotEmpty ? message : 'Sent an attachment';
+        if (productId != null) {
+          req.fields['product_id'] = '$productId';
+        }
+        req.files.add(
+          await http.MultipartFile.fromPath('attachment', attachmentPath),
+        );
+        final streamed = await req.send().timeout(ApiConfig.requestTimeout);
+        response = await http.Response.fromStream(streamed);
+      } else {
+        response = await http
+            .post(
+              Uri.parse('${ApiConfig.baseUrl}/messages'),
+              headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'Authorization': 'Bearer $token',
+              },
+              body: jsonEncode({
+                'receiver_id': receiverId,
+                'message': message,
+                if (productId != null) 'product_id': productId,
+              }),
+            )
+            .timeout(ApiConfig.requestTimeout);
+      }
 
       final data = jsonDecode(response.body);
-
       if (response.statusCode == 200 || response.statusCode == 201) {
-        Map<String, dynamic>? msgData;
+        JsonMap? msgData;
         if (data is Map) {
-          if (data.containsKey('data') && data['data'] is Map) {
-            msgData = Map<String, dynamic>.from(data['data']);
+          if (data['data'] is Map) {
+            msgData = Map<String, dynamic>.from(data['data'] as Map);
           } else {
             msgData = Map<String, dynamic>.from(data);
           }
         }
-
         if (msgData != null && !msgData.containsKey('error')) {
           return {'success': true, 'data': ChatMessage.fromJson(msgData)};
         }
       }
-
       return {
         'success': false,
-        'message': (data is Map && data.containsKey('message'))
-            ? data['message']
-            : 'Failed to send message'
+        'message': _extractError(data, 'Failed to send message'),
       };
-    } catch (e) {
-      return {'success': false, 'message': 'Network error: $e'};
+    } catch (_) {
+      return {'success': false, 'message': 'Network error occurred.'};
     }
   }
 
@@ -483,7 +760,7 @@ class ApiService {
           'Accept': 'application/json',
           'Authorization': 'Bearer $token',
         },
-      );
+      ).timeout(const Duration(seconds: 10));
     } catch (_) {}
   }
 }

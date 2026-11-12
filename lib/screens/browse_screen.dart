@@ -1,170 +1,319 @@
 import 'package:flutter/material.dart';
+import '../config/api_config.dart';
+import '../config/app_routes.dart';
+import '../config/app_theme.dart';
 import 'category_products_screen.dart';
+import 'search_screen.dart';
+import 'sellers_directory_screen.dart';
 
 class BrowseScreen extends StatelessWidget {
   final String token;
-  final String baseUrl; // Added to pass down to CategoryProductsScreen
+  final String baseUrl;
 
-  BrowseScreen(
-      {super.key,
-      required this.token,
-      this.baseUrl = 'https://dev.storkia.shop'});
+  const BrowseScreen({
+    super.key,
+    required this.token,
+    this.baseUrl = ApiConfig.domainUrl,
+  });
 
-  final List<Map<String, dynamic>> categories = [
+  static const List<Map<String, dynamic>> categories = [
     {
       'name': 'Pet',
       'slug': 'pet',
-      'icon': Icons.pets,
+      'subtitle': 'Food, litter & grooming',
+      'icon': Icons.pets_rounded,
     },
     {
       'name': 'Kids',
       'slug': 'kids',
-      'icon': Icons.child_care,
+      'subtitle': 'Baby gear, toys & clothes',
+      'icon': Icons.child_care_rounded,
     },
     {
       'name': 'Electronics',
       'slug': 'electronics',
-      'icon': Icons.devices,
+      'subtitle': 'Phones, laptops & audio',
+      'icon': Icons.devices_rounded,
     },
     {
       'name': 'Home & Garden',
       'slug': 'home-garden',
-      'icon': Icons.home,
+      'subtitle': 'Kitchen, decor & tools',
+      'icon': Icons.chair_outlined,
     },
     {
       'name': 'Women\'s',
       'slug': 'womens',
-      'icon': Icons.woman,
+      'subtitle': 'Dresses, tops & shoes',
+      'icon': Icons.checkroom_rounded,
     },
     {
       'name': 'Men\'s',
       'slug': 'mens',
-      'icon': Icons.man,
+      'subtitle': 'Shirts, activewear & gear',
+      'icon': Icons.dry_cleaning_rounded,
     },
     {
       'name': 'Health & Beauty',
       'slug': 'health-beauty',
-      'icon': Icons.health_and_safety,
+      'subtitle': 'Skincare, hair & makeup',
+      'icon': Icons.spa_outlined,
     },
     {
       'name': 'Books & Media',
       'slug': 'books-media',
-      'icon': Icons.book,
+      'subtitle': 'Books, music & gaming',
+      'icon': Icons.menu_book_rounded,
     },
     {
       'name': 'Sports & Outdoors',
       'slug': 'sports-outdoors',
-      'icon': Icons.sports_soccer,
+      'subtitle': 'Fitness, camping & cycling',
+      'icon': Icons.sports_basketball_outlined,
     },
     {
       'name': 'Food & Gourmet',
       'slug': 'food-gourmet',
-      'icon': Icons.restaurant,
+      'subtitle': 'Coffee, snacks & organic',
+      'icon': Icons.bakery_dining_outlined,
     },
     {
       'name': 'Furniture & Office',
       'slug': 'furniture-office',
-      'icon': Icons.chair,
+      'subtitle': 'Desks, chairs & lighting',
+      'icon': Icons.desk_rounded,
     },
     {
       'name': 'Jewelry & Watches',
       'slug': 'jewelry-watches',
-      'icon': Icons.watch,
+      'subtitle': 'Necklaces, rings & watches',
+      'icon': Icons.watch_outlined,
     },
   ];
 
   @override
   Widget build(BuildContext context) {
+    final domain = ApiConfig.resolveBaseDomain(baseUrl);
+    final width = MediaQuery.sizeOf(context).width;
+    final crossAxisCount = width >= 700 ? 4 : (width >= 480 ? 3 : 2);
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 16.0),
-          width: double.infinity,
-          decoration: BoxDecoration(
-            color: Colors.white,
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.05),
-                blurRadius: 4,
-                offset: const Offset(0, 2),
-              )
-            ],
-          ),
-          child: const Text(
-            'Browse Categories',
-            style: TextStyle(
-              fontSize: 20,
-              fontWeight: FontWeight.bold,
-              color: Color(0xFF292524),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          decoration: const BoxDecoration(
+            color: StorkTheme.surface,
+            border: Border(
+              bottom: BorderSide(color: StorkTheme.borderSubtle, width: 1),
             ),
           ),
-        ),
-        Expanded(
-          child: GridView.builder(
-            padding: const EdgeInsets.all(16.0),
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 3,
-              childAspectRatio: 0.85,
-              crossAxisSpacing: 16,
-              mainAxisSpacing: 16,
-            ),
-            itemCount: categories.length,
-            itemBuilder: (context, index) {
-              final category = categories[index];
-              return GestureDetector(
-                onTap: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) => CategoryProductsScreen(
-                        slug: category[
-                            'slug'], // Pass slug instead of categoryName
-                        baseUrl: baseUrl, // Pass baseUrl
-                        token: token,
-                      ),
-                    ),
-                  );
-                },
+          child: Row(
+            children: [
+              const Expanded(
                 child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Container(
-                      height: 60,
-                      width: 60,
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(16),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withOpacity(0.05),
-                            blurRadius: 10,
-                            offset: const Offset(0, 4),
-                          )
-                        ],
-                      ),
-                      child: Icon(
-                        category['icon'],
-                        size: 32,
-                        color: const Color(0xFFCF4173),
+                    Text(
+                      'Browse Categories',
+                      style: TextStyle(
+                        fontSize: 19,
+                        fontWeight: FontWeight.w800,
+                        color: StorkTheme.primaryDark,
+                        letterSpacing: -0.3,
                       ),
                     ),
-                    const SizedBox(height: 8),
+                    SizedBox(height: 2),
                     Text(
-                      category['name'],
-                      textAlign: TextAlign.center,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
+                      'Explore 12 curated department catalogs',
+                      style: TextStyle(
                         fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: Color(0xFF292524),
+                        color: StorkTheme.textMuted,
                       ),
                     ),
                   ],
                 ),
-              );
-            },
+              ),
+              IconButton(
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    StorkRoute.fade(
+                      SearchScreen(baseUrl: domain, token: token),
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.search_rounded,
+                    color: StorkTheme.textMain),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: CustomScrollView(
+            slivers: [
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
+                  child: InkWell(
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        StorkRoute.fade(
+                          SellersDirectoryScreen(
+                            baseUrl: domain,
+                            token: token,
+                          ),
+                        ),
+                      );
+                    },
+                    borderRadius: BorderRadius.circular(18),
+                    child: Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                          colors: [StorkTheme.primaryDark, StorkTheme.primary],
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                        ),
+                        borderRadius: BorderRadius.circular(18),
+                      ),
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 44,
+                            height: 44,
+                            decoration: BoxDecoration(
+                              color: Colors.white.withValues(alpha: 0.16),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: const Icon(
+                              Icons.storefront_rounded,
+                              color: Colors.white,
+                              size: 24,
+                            ),
+                          ),
+                          const SizedBox(width: 14),
+                          const Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Explore Official Stores',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                                SizedBox(height: 2),
+                                Text(
+                                  'Filter verified merchants by category or A–Z index',
+                                  style: TextStyle(
+                                    color: StorkTheme.brandLight,
+                                    fontSize: 11.5,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const Icon(
+                            Icons.arrow_forward_ios_rounded,
+                            color: Colors.white,
+                            size: 16,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              SliverPadding(
+                padding: const EdgeInsets.all(16),
+                sliver: SliverGrid(
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: crossAxisCount,
+                    childAspectRatio: 1.35,
+                    crossAxisSpacing: 12,
+                    mainAxisSpacing: 12,
+                  ),
+                  delegate: SliverChildBuilderDelegate(
+                    (context, index) {
+                      final category = categories[index];
+                      return InkWell(
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            StorkRoute.fade(
+                              CategoryProductsScreen(
+                                slug: category['slug'] as String,
+                                baseUrl: domain,
+                                token: token,
+                              ),
+                            ),
+                          );
+                        },
+                        borderRadius: BorderRadius.circular(16),
+                        child: Container(
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: StorkTheme.surface,
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: StorkTheme.borderSubtle),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Container(
+                                width: 40,
+                                height: 40,
+                                decoration: BoxDecoration(
+                                  color:
+                                      StorkTheme.primary.withValues(alpha: 0.1),
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: Icon(
+                                  category['icon'] as IconData,
+                                  size: 22,
+                                  color: StorkTheme.primary,
+                                ),
+                              ),
+                              Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    category['name'] as String,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      fontSize: 13.5,
+                                      fontWeight: FontWeight.w800,
+                                      color: StorkTheme.textMain,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    category['subtitle'] as String,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      color: StorkTheme.textMuted,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                    childCount: categories.length,
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       ],

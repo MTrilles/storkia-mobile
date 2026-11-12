@@ -1,8 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../config/api_config.dart';
+import '../config/app_routes.dart';
+import '../config/app_theme.dart';
 import '../models/product_model.dart';
+import '../providers/wishlist_provider.dart';
 import '../screens/product_show.dart';
 
-class ProductCard extends StatelessWidget {
+class ProductCard extends ConsumerWidget {
   final Product product;
   final String baseUrl;
   final String token;
@@ -14,14 +19,34 @@ class ProductCard extends StatelessWidget {
     required this.token,
   });
 
+  String _formatMoney(double amount) {
+    final parts = amount.toStringAsFixed(2).split('.');
+    final intPart = parts[0].replaceAllMapped(
+      RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'),
+      (Match m) => '${m[1]},',
+    );
+    return '$intPart.${parts[1]}';
+  }
+
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final wishlistState = ref.watch(wishlistProvider);
+    final isFavorite =
+        wishlistState.productIds.contains(product.id) || product.isWishlisted;
+
+    final imageUrl = product.pictures.isNotEmpty
+        ? ApiConfig.storageUrl(product.pictures.first, baseUrl)
+        : '';
+    final storeName = product.sellerProfile?.businessName ?? '';
+    final isVacation = product.isStoreOnVacation;
+    final isSoldOut = product.stockQuantity <= 0;
+
     return GestureDetector(
       onTap: () {
         Navigator.push(
           context,
-          MaterialPageRoute(
-            builder: (context) => ProductShowScreen(
+          StorkRoute.fade(
+            ProductShowScreen(
               product: product,
               baseUrl: baseUrl,
               token: token,
@@ -31,119 +56,234 @@ class ProductCard extends StatelessWidget {
       },
       child: Container(
         decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: Colors.grey.shade200),
+          color: StorkTheme.surface,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: StorkTheme.borderSubtle),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.02),
-              blurRadius: 4,
-              offset: const Offset(0, 2),
-            )
+              color: Colors.black.withValues(alpha: 0.025),
+              blurRadius: 8,
+              offset: const Offset(0, 3),
+            ),
           ],
         ),
-        child: Stack(
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  child: Container(
-                    width: double.infinity,
-                    decoration: const BoxDecoration(
-                      color: Color(0xFFF5F5F4),
-                      borderRadius:
-                          BorderRadius.vertical(top: Radius.circular(12)),
-                    ),
-                    child: product.pictures.isNotEmpty
-                        ? ClipRRect(
-                            borderRadius: const BorderRadius.vertical(
-                                top: Radius.circular(12)),
-                            child: Image.network(
-                              '$baseUrl/storage/${product.pictures[0]}',
-                              fit: BoxFit.cover,
-                              errorBuilder: (context, error, stackTrace) =>
-                                  const Icon(Icons.image_not_supported,
-                                      color: Colors.grey),
+            Expanded(
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  Container(
+                    color: StorkTheme.surfaceSubtle,
+                    child: imageUrl.isNotEmpty
+                        ? Image.network(
+                            imageUrl,
+                            fit: BoxFit.cover,
+                            errorBuilder: (context, error, stackTrace) =>
+                                const Center(
+                              child: Icon(
+                                Icons.image_not_supported_outlined,
+                                color: StorkTheme.textMuted,
+                                size: 30,
+                              ),
                             ),
                           )
-                        : const Icon(Icons.image, size: 50, color: Colors.grey),
+                        : const Center(
+                            child: Icon(
+                              Icons.inventory_2_outlined,
+                              size: 36,
+                              color: StorkTheme.textMuted,
+                            ),
+                          ),
                   ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.all(8.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        product.name,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: Color(0xFF292524),
+                  if (product.discount > 0)
+                    Positioned(
+                      top: 8,
+                      left: 8,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 7,
+                          vertical: 3,
+                        ),
+                        decoration: BoxDecoration(
+                          color: StorkTheme.danger,
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          '-${product.discount.toStringAsFixed(0)}%',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 10,
+                            fontWeight: FontWeight.w800,
+                          ),
                         ),
                       ),
-                      const SizedBox(height: 4),
-                      if (product.discount > 0) ...[
-                        Row(
-                          crossAxisAlignment: CrossAxisAlignment.end,
-                          children: [
-                            Text(
-                              '₱${product.discountedPrice.toStringAsFixed(2)}',
-                              style: const TextStyle(
-                                fontSize: 14,
-                                fontWeight: FontWeight.bold,
-                                color: Color(0xFFDC2626),
-                              ),
-                            ),
-                            const SizedBox(width: 4),
-                            Text(
-                              '₱${product.price.toStringAsFixed(2)}',
-                              style: const TextStyle(
-                                fontSize: 10,
-                                decoration: TextDecoration.lineThrough,
-                                color: Color(0xFF78716C),
-                              ),
-                            ),
-                          ],
+                    ),
+                  if (isSoldOut || isVacation)
+                    Positioned(
+                      bottom: 8,
+                      left: 8,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 3,
                         ),
-                      ] else ...[
-                        Text(
-                          '₱${product.price.toStringAsFixed(2)}',
+                        decoration: BoxDecoration(
+                          color: isSoldOut
+                              ? Colors.black.withValues(alpha: 0.75)
+                              : StorkTheme.warning,
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          isSoldOut ? 'SOLD OUT' : 'ON VACATION',
                           style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 9,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
+                    ),
+                  if (token.isNotEmpty)
+                    Positioned(
+                      top: 6,
+                      right: 6,
+                      child: Material(
+                        color: Colors.white.withValues(alpha: 0.9),
+                        shape: const CircleBorder(),
+                        clipBehavior: Clip.hardEdge,
+                        child: InkWell(
+                          onTap: () {
+                            ref
+                                .read(wishlistProvider.notifier)
+                                .toggleWishlist(baseUrl, token, product);
+                          },
+                          child: Padding(
+                            padding: const EdgeInsets.all(6),
+                            child: Icon(
+                              isFavorite
+                                  ? Icons.favorite_rounded
+                                  : Icons.favorite_border_rounded,
+                              size: 17,
+                              color: isFavorite
+                                  ? StorkTheme.danger
+                                  : StorkTheme.textMuted,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(10, 8, 10, 9),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (storeName.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 2),
+                      child: Text(
+                        storeName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w600,
+                          color: StorkTheme.textMuted,
+                        ),
+                      ),
+                    ),
+                  Text(
+                    product.name,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w700,
+                      color: StorkTheme.textMain,
+                      height: 1.22,
+                    ),
+                  ),
+                  const SizedBox(height: 5),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.baseline,
+                    textBaseline: TextBaseline.alphabetic,
+                    children: [
+                      Flexible(
+                        child: Text(
+                          '₱${_formatMoney(product.discountedPrice)}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
                             fontSize: 14,
-                            fontWeight: FontWeight.bold,
-                            color: Color(0xFF292524),
+                            fontWeight: FontWeight.w800,
+                            color: product.discount > 0
+                                ? StorkTheme.price
+                                : StorkTheme.primary,
+                          ),
+                        ),
+                      ),
+                      if (product.discount > 0) ...[
+                        const SizedBox(width: 4),
+                        Flexible(
+                          child: Text(
+                            '₱${_formatMoney(product.price)}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 10,
+                              decoration: TextDecoration.lineThrough,
+                              color: StorkTheme.textMuted,
+                            ),
                           ),
                         ),
                       ],
                     ],
                   ),
-                ),
-              ],
-            ),
-            if (product.discount > 0)
-              Positioned(
-                top: 8,
-                left: 8,
-                child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFDC2626),
-                    borderRadius: BorderRadius.circular(4),
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      if (product.avgRating > 0) ...[
+                        const Icon(
+                          Icons.star_rounded,
+                          size: 12.5,
+                          color: Colors.amber,
+                        ),
+                        const SizedBox(width: 2),
+                        Text(
+                          product.avgRating.toStringAsFixed(1),
+                          style: const TextStyle(
+                            fontSize: 10.5,
+                            fontWeight: FontWeight.w700,
+                            color: StorkTheme.textMain,
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                      ],
+                      Expanded(
+                        child: Text(
+                          product.soldCount > 0
+                              ? '${product.soldCount} sold'
+                              : (product.category ?? 'In Stock'),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 10,
+                            color: StorkTheme.textMuted,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                  child: Text(
-                    '-${product.discount.toStringAsFixed(0)}%',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 10,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
+                ],
               ),
+            ),
           ],
         ),
       ),

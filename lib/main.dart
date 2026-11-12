@@ -1,8 +1,20 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'config/app_theme.dart';
 import 'screens/splash_screen.dart';
 
 void main() {
-  runApp(const StorkiaMobileApp());
+  WidgetsFlutterBinding.ensureInitialized();
+  SystemChrome.setSystemUIOverlayStyle(
+    const SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent,
+      statusBarIconBrightness: Brightness.dark,
+      systemNavigationBarColor: StorkTheme.surface,
+      systemNavigationBarIconBrightness: Brightness.dark,
+    ),
+  );
+  runApp(const ProviderScope(child: StorkiaMobileApp()));
 }
 
 class StorkiaMobileApp extends StatelessWidget {
@@ -13,14 +25,7 @@ class StorkiaMobileApp extends StatelessWidget {
     return MaterialApp(
       title: 'Storkia',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF881337),
-          primary: const Color(0xFF881337),
-        ),
-        useMaterial3: true,
-        scaffoldBackgroundColor: const Color(0xFFFAFAFA),
-      ),
+      theme: StorkTheme.lightTheme,
       home: const SplashScreen(),
     );
   }

@@ -1,5 +1,5 @@
 name: storkia_mobile
-description: "A new Flutter project."
+description: "Storkia Buyer Mobile Application."
 publish_to: 'none'
 version: 1.0.0+1
 
@@ -14,6 +14,8 @@ dependencies:
   shared_preferences: ^2.3.2
   laravel_echo: ^1.0.0-beta.1
   pusher_client_fixed: ^0.0.5
+  flutter_riverpod: ^2.6.1
+  image_picker: ^1.1.2
 
 dev_dependencies:
   flutter_test:
@@ -27,15 +29,12 @@ flutter:
   assets:
     - assets/
 
-# App Icon Configuration
 flutter_launcher_icons:
   android: "launcher_icon"
   ios: true
   image_path: "assets/icon.png"
   min_sdk_android: 21
 
-# Native Splash Screen Configuration
-# This makes the OS launch screen perfectly blank to match your Flutter screen background.
 flutter_native_splash:
   color: "#FAFAFA"
   android_12:

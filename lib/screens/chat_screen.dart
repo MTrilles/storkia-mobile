@@ -1,5 +1,8 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
+import '../config/api_config.dart';
+import '../config/app_theme.dart';
 import '../models/chat_models.dart';
 import '../services/api_service.dart';
 import '../services/websocket_service.dart';
@@ -10,119 +13,171 @@ class ChatScreen extends StatefulWidget {
   final int authUserId;
 
   const ChatScreen({
-    Key? key,
+    super.key,
     required this.contact,
     required this.token,
     required this.authUserId,
-  }) : super(key: key);
+  });
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
-class _ChatScreenState extends State<ChatScreen> {
+class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   final TextEditingController _msgController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
+
+  late ChatContact _contact;
   List<ChatMessage> messages = [];
   bool isSending = false;
   bool isFetching = true;
+  XFile? _attachment;
   Timer? _pollingTimer;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _contact = widget.contact;
     _fetchMessages();
+
     WebSocketService.listenToChat(widget.authUserId, _handleRealTimeMessage);
 
-    // Silent background polling to ensure instant sync if WebSockets fail
     _pollingTimer = Timer.periodic(const Duration(seconds: 3), (_) {
       _fetchMessagesSilently();
     });
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _fetchMessagesSilently();
+    }
+  }
+
   void _handleRealTimeMessage(dynamic event) {
-    if (event['message'] != null) {
-      final msg = ChatMessage.fromJson(event['message']);
-      if (msg.userId == widget.contact.id) {
+    if (event is Map && event['message'] is Map) {
+      final msg = ChatMessage.fromJson(
+          Map<String, dynamic>.from(event['message'] as Map));
+      if (msg.userId == _contact.id) {
         if (mounted) {
           setState(() {
             messages.add(msg);
           });
           _scrollToBottom();
-          ApiService.markAsRead(widget.token, widget.contact.id);
+          ApiService.markAsRead(widget.token, _contact.id);
         }
       }
     }
   }
 
   Future<void> _fetchMessages() async {
-    final res = await ApiService.fetchMessages(widget.token, widget.contact.id);
+    final res = await ApiService.fetchMessages(widget.token, _contact.id);
+    if (!mounted) return;
 
-    if (mounted) {
-      setState(() {
-        isFetching = false;
-      });
-    }
-
-    if (res['success']) {
-      setState(() {
-        messages = res['data'];
-      });
-      _scrollToBottom();
-      ApiService.markAsRead(widget.token, widget.contact.id);
-    } else {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(res['message'] ?? 'Failed to load messages')),
+    setState(() {
+      isFetching = false;
+      if (res['contact'] is ChatContact) {
+        final fetchedContact = res['contact'] as ChatContact;
+        _contact = _contact.copyWith(
+          businessName: fetchedContact.businessName ?? _contact.businessName,
+          firstName: fetchedContact.firstName.isNotEmpty
+              ? fetchedContact.firstName
+              : _contact.firstName,
+          lastName: fetchedContact.lastName.isNotEmpty
+              ? fetchedContact.lastName
+              : _contact.lastName,
+          logoPath: fetchedContact.logoPath ?? _contact.logoPath,
         );
       }
+    });
+
+    if (res['success'] == true) {
+      setState(() {
+        messages = List<ChatMessage>.from(res['data'] ?? []);
+      });
+      _scrollToBottom();
+      ApiService.markAsRead(widget.token, _contact.id);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(res['message'] ?? 'Failed to load messages')),
+      );
     }
   }
 
   Future<void> _fetchMessagesSilently() async {
-    final res = await ApiService.fetchMessages(widget.token, widget.contact.id);
-    if (res['success']) {
-      final List<ChatMessage> newMessages = res['data'];
-      if (newMessages.length != messages.length) {
-        if (mounted) {
-          setState(() {
-            messages = newMessages;
-          });
-          _scrollToBottom();
-          ApiService.markAsRead(widget.token, widget.contact.id);
-        }
+    final res = await ApiService.fetchMessages(widget.token, _contact.id);
+    if (!mounted || res['success'] != true) return;
+
+    if (res['contact'] is ChatContact) {
+      final fetchedContact = res['contact'] as ChatContact;
+      if ((_contact.businessName == null || _contact.businessName!.isEmpty) &&
+          fetchedContact.businessName != null) {
+        setState(() {
+          _contact = _contact.copyWith(
+            businessName: fetchedContact.businessName,
+            logoPath: fetchedContact.logoPath ?? _contact.logoPath,
+          );
+        });
       }
+    }
+
+    final List<ChatMessage> newMessages =
+        List<ChatMessage>.from(res['data'] ?? []);
+    if (newMessages.length != messages.length) {
+      setState(() {
+        messages = newMessages;
+      });
+      _scrollToBottom();
+      ApiService.markAsRead(widget.token, _contact.id);
+    }
+  }
+
+  Future<void> _pickAttachment() async {
+    final picker = ImagePicker();
+    final picked = await picker.pickImage(
+      source: ImageSource.gallery,
+      imageQuality: 85,
+    );
+    if (picked != null) {
+      setState(() => _attachment = picked);
     }
   }
 
   Future<void> _sendMessage() async {
     final text = _msgController.text.trim();
-    if (text.isEmpty || isSending) return;
+    if ((text.isEmpty && _attachment == null) || isSending) return;
 
     setState(() => isSending = true);
     final backup = text;
+    final fileToSend = _attachment;
     _msgController.clear();
+    setState(() => _attachment = null);
 
-    final res =
-        await ApiService.sendMessage(widget.token, widget.contact.id, text);
+    final res = await ApiService.sendMessage(
+      widget.token,
+      _contact.id,
+      text,
+      attachmentPath: fileToSend?.path,
+    );
 
-    if (res['success']) {
-      if (mounted) {
-        setState(() {
-          messages.add(res['data']);
-        });
-        _scrollToBottom();
-      }
+    if (!mounted) return;
+
+    if (res['success'] == true && res['data'] is ChatMessage) {
+      setState(() {
+        messages.add(res['data'] as ChatMessage);
+        isSending = false;
+      });
+      _scrollToBottom();
     } else {
       _msgController.text = backup;
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text(res['message'] ?? 'Failed to send message')));
-      }
-    }
-
-    if (mounted) {
-      setState(() => isSending = false);
+      setState(() {
+        _attachment = fileToSend;
+        isSending = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(res['message'] ?? 'Failed to send message')),
+      );
     }
   }
 
@@ -131,7 +186,7 @@ class _ChatScreenState extends State<ChatScreen> {
       if (_scrollController.hasClients) {
         _scrollController.animateTo(
           _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 300),
+          duration: const Duration(milliseconds: 280),
           curve: Curves.easeOut,
         );
       }
@@ -140,6 +195,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _pollingTimer?.cancel();
     _msgController.dispose();
     _scrollController.dispose();
@@ -148,37 +204,32 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   Widget build(BuildContext context) {
-    String displayName = (widget.contact.businessName != null &&
-            widget.contact.businessName!.isNotEmpty)
-        ? widget.contact.businessName!
-        : '${widget.contact.firstName} ${widget.contact.lastName}'.trim();
-    if (displayName.isEmpty) displayName = 'User';
-
-    bool hasLogo =
-        widget.contact.logoPath != null && widget.contact.logoPath!.isNotEmpty;
+    final String displayName = _contact.displayName;
+    final String logoUrl =
+        (_contact.logoPath != null && _contact.logoPath!.trim().isNotEmpty)
+            ? ApiConfig.storageUrl(_contact.logoPath, ApiConfig.domainUrl)
+            : '';
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF7F7F9),
+      backgroundColor: StorkTheme.surfaceSubtle,
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        elevation: 1,
-        iconTheme: const IconThemeData(color: Colors.black),
         title: Row(
           children: [
             CircleAvatar(
               radius: 18,
-              backgroundColor: const Color(0xFFCF4173).withOpacity(0.2),
-              backgroundImage: hasLogo
-                  ? NetworkImage(
-                      'https://dev.storkia.shop/storage/${widget.contact.logoPath}')
-                  : null,
-              child: !hasLogo
+              backgroundColor: StorkTheme.primary.withValues(alpha: 0.14),
+              backgroundImage:
+                  logoUrl.isNotEmpty ? NetworkImage(logoUrl) : null,
+              child: logoUrl.isEmpty
                   ? Text(
-                      displayName.substring(0, 1).toUpperCase(),
+                      displayName.isNotEmpty
+                          ? displayName[0].toUpperCase()
+                          : 'S',
                       style: const TextStyle(
-                          color: Color(0xFFCF4173),
-                          fontWeight: FontWeight.bold,
-                          fontSize: 14),
+                        color: StorkTheme.primary,
+                        fontWeight: FontWeight.w900,
+                        fontSize: 14,
+                      ),
                     )
                   : null,
             ),
@@ -192,9 +243,10 @@ class _ChatScreenState extends State<ChatScreen> {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
-                        color: Colors.black,
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold),
+                      color: StorkTheme.textMain,
+                      fontSize: 15.5,
+                      fontWeight: FontWeight.w800,
+                    ),
                   ),
                   Row(
                     children: [
@@ -202,16 +254,24 @@ class _ChatScreenState extends State<ChatScreen> {
                         width: 6,
                         height: 6,
                         decoration: const BoxDecoration(
-                            color: Colors.green, shape: BoxShape.circle),
+                          color: StorkTheme.success,
+                          shape: BoxShape.circle,
+                        ),
                       ),
                       const SizedBox(width: 4),
-                      const Text('Active now',
-                          style: TextStyle(color: Colors.green, fontSize: 11)),
+                      const Text(
+                        'Official Store • Active now',
+                        style: TextStyle(
+                          color: StorkTheme.success,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
                     ],
-                  )
+                  ),
                 ],
               ),
-            )
+            ),
           ],
         ),
       ),
@@ -220,7 +280,8 @@ class _ChatScreenState extends State<ChatScreen> {
           Expanded(
             child: isFetching
                 ? const Center(
-                    child: CircularProgressIndicator(color: Color(0xFFCF4173)))
+                    child: CircularProgressIndicator(color: StorkTheme.primary),
+                  )
                 : ListView.builder(
                     controller: _scrollController,
                     padding: const EdgeInsets.all(16),
@@ -232,49 +293,80 @@ class _ChatScreenState extends State<ChatScreen> {
                     },
                   ),
           ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              border: Border(top: BorderSide(color: Colors.grey[200]!)),
-            ),
-            child: SafeArea(
+          if (_attachment != null)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+              color: StorkTheme.surface,
               child: Row(
                 children: [
+                  const Icon(Icons.image_outlined,
+                      size: 18, color: StorkTheme.primary),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      _attachment!.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => setState(() => _attachment = null),
+                    icon: const Icon(Icons.close_rounded, size: 18),
+                  ),
+                ],
+              ),
+            ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: const BoxDecoration(
+              color: StorkTheme.surface,
+              border: Border(top: BorderSide(color: StorkTheme.borderSubtle)),
+            ),
+            child: SafeArea(
+              top: false,
+              child: Row(
+                children: [
+                  IconButton(
+                    onPressed: _pickAttachment,
+                    icon: const Icon(
+                      Icons.photo_outlined,
+                      color: StorkTheme.textMuted,
+                    ),
+                  ),
                   Expanded(
                     child: TextField(
                       controller: _msgController,
                       maxLines: 4,
                       minLines: 1,
-                      decoration: InputDecoration(
+                      decoration: const InputDecoration(
                         hintText: 'Type a message...',
-                        hintStyle: TextStyle(color: Colors.grey[500]),
-                        filled: true,
-                        fillColor: Colors.grey[100],
-                        contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 20, vertical: 12),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(30),
-                          borderSide: BorderSide.none,
-                        ),
                       ),
+                      onSubmitted: (_) => _sendMessage(),
                     ),
                   ),
-                  const SizedBox(width: 10),
+                  const SizedBox(width: 8),
                   GestureDetector(
                     onTap: _sendMessage,
                     child: CircleAvatar(
-                      radius: 24,
+                      radius: 22,
                       backgroundColor:
-                          isSending ? Colors.grey : const Color(0xFFCF4173),
-                      child: const Icon(Icons.send_rounded,
-                          color: Colors.white, size: 20),
+                          isSending ? Colors.grey : StorkTheme.primary,
+                      child: const Icon(
+                        Icons.send_rounded,
+                        color: Colors.white,
+                        size: 18,
+                      ),
                     ),
-                  )
+                  ),
                 ],
               ),
             ),
-          )
+          ),
         ],
       ),
     );
@@ -289,6 +381,11 @@ class _ChatBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final String attachmentUrl =
+        (msg.attachmentPath != null && msg.attachmentPath!.isNotEmpty)
+            ? ApiConfig.storageUrl(msg.attachmentPath, ApiConfig.domainUrl)
+            : '';
+
     return Align(
       alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
@@ -299,30 +396,62 @@ class _ChatBubble extends StatelessWidget {
           children: [
             Container(
               constraints: BoxConstraints(
-                  maxWidth: MediaQuery.of(context).size.width * 0.75),
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                maxWidth: MediaQuery.sizeOf(context).width * 0.76,
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 11),
               decoration: BoxDecoration(
-                color: isMe ? const Color(0xFFCF4173) : Colors.white,
+                color: isMe ? StorkTheme.primary : StorkTheme.surface,
                 borderRadius: BorderRadius.circular(20).copyWith(
                   bottomRight: isMe ? const Radius.circular(4) : null,
                   bottomLeft: !isMe ? const Radius.circular(4) : null,
                 ),
-                border: !isMe ? Border.all(color: Colors.grey[200]!) : null,
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.02),
-                    blurRadius: 4,
-                    offset: const Offset(0, 2),
-                  )
-                ],
+                border:
+                    !isMe ? Border.all(color: StorkTheme.borderSubtle) : null,
               ),
-              child: Text(
-                msg.message,
-                style: TextStyle(
-                  color: isMe ? Colors.white : Colors.black87,
-                  fontSize: 15,
-                  height: 1.3,
-                ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (msg.product != null) ...[
+                    Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: isMe
+                            ? Colors.black.withValues(alpha: 0.16)
+                            : StorkTheme.surfaceSubtle,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Text(
+                        'Product Inquiry: ${msg.product!['name'] ?? ''}',
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w800,
+                          color: isMe ? Colors.white : StorkTheme.primaryDark,
+                        ),
+                      ),
+                    ),
+                  ],
+                  if (attachmentUrl.isNotEmpty) ...[
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Image.network(
+                        attachmentUrl,
+                        height: 150,
+                        fit: BoxFit.cover,
+                      ),
+                    ),
+                    if (msg.message.isNotEmpty) const SizedBox(height: 6),
+                  ],
+                  if (msg.message.isNotEmpty)
+                    Text(
+                      msg.message,
+                      style: TextStyle(
+                        color: isMe ? Colors.white : StorkTheme.textMain,
+                        fontSize: 14.5,
+                        height: 1.35,
+                      ),
+                    ),
+                ],
               ),
             ),
             const SizedBox(height: 4),
@@ -331,18 +460,23 @@ class _ChatBubble extends StatelessWidget {
               children: [
                 Text(
                   msg.time,
-                  style: TextStyle(
-                    color: Colors.grey[400],
-                    fontSize: 11,
+                  style: const TextStyle(
+                    color: StorkTheme.textMuted,
+                    fontSize: 10.5,
                     fontWeight: FontWeight.w500,
                   ),
                 ),
                 if (isMe) ...[
                   const SizedBox(width: 4),
-                  Icon(Icons.done_all, size: 14, color: Colors.grey[400]),
-                ]
+                  Icon(
+                    Icons.done_all_rounded,
+                    size: 14,
+                    color:
+                        msg.isRead ? StorkTheme.primary : StorkTheme.textMuted,
+                  ),
+                ],
               ],
-            )
+            ),
           ],
         ),
       ),

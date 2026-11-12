@@ -1,8 +1,21 @@
-import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import 'dart:async';
 import 'dart:convert';
+import 'dart:core';
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:http/http.dart' as http;
+import 'package:image_picker/image_picker.dart';
+import '../config/api_config.dart';
+import '../config/app_routes.dart';
+import '../config/app_theme.dart';
+import '../providers/global_counters_provider.dart';
+import 'cart_screen.dart';
+import 'leave_review_screen.dart';
 
-class OrderDetailsScreen extends StatefulWidget {
+typedef JsonMap = Map<String, dynamic>;
+
+class OrderDetailsScreen extends ConsumerStatefulWidget {
   final int orderId;
   final String baseUrl;
   final String token;
@@ -15,64 +28,354 @@ class OrderDetailsScreen extends StatefulWidget {
   });
 
   @override
-  State<OrderDetailsScreen> createState() => _OrderDetailsScreenState();
+  ConsumerState<OrderDetailsScreen> createState() => _OrderDetailsScreenState();
 }
 
-class _OrderDetailsScreenState extends State<OrderDetailsScreen> {
+class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
+    with WidgetsBindingObserver {
   bool _isLoading = true;
-  Map<String, dynamic>? _orderData;
+  Timer? _autoSyncTimer;
+
+  JsonMap? _orderData;
+  JsonMap? _liveTrackingData;
+  JsonMap _cancellationQuota = {
+    'window_days': 7,
+    'limit_by_buyer': 5,
+    'used_by_buyer': 0,
+    'remaining_buyer': 5,
+  };
+  bool _isIdentityVerified = false;
+  int _unreadDeliveryChatCount = 0;
+
+  String get _domain => ApiConfig.resolveBaseDomain(widget.baseUrl);
 
   @override
   void initState() {
     super.initState();
-    _fetchOrderDetails();
+    WidgetsBinding.instance.addObserver(this);
+    _fetchAllOrderData();
+    _autoSyncTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      _fetchAllOrderData(silent: true);
+    });
   }
 
-  Future<void> _fetchOrderDetails() async {
-    setState(() => _isLoading = true);
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _autoSyncTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _fetchAllOrderData(silent: true);
+    }
+  }
+
+  List<dynamic> _extractList(dynamic value) {
+    if (value is List) {
+      return List<dynamic>.from(value);
+    }
+    return <dynamic>[];
+  }
+
+  String _formatMoney(dynamic raw) {
+    final val = double.tryParse(raw?.toString() ?? '0') ?? 0.0;
+    final parts = val.toStringAsFixed(2).split('.');
+    final intPart = parts[0].replaceAllMapped(
+      RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'),
+      (Match m) => '${m[1]},',
+    );
+    return '$intPart.${parts[1]}';
+  }
+
+  Future<void> _fetchAllOrderData({bool silent = false}) async {
+    await Future.wait([
+      _fetchOrderDetails(silent: silent),
+      _fetchLiveTrackingSilently(),
+    ]);
+  }
+
+  Future<void> _fetchOrderDetails({bool silent = false}) async {
+    if (!silent) {
+      setState(() => _isLoading = true);
+    }
     try {
       final response = await http.get(
-        Uri.parse('${widget.baseUrl}/api/v1/orders/${widget.orderId}'),
+        Uri.parse('$_domain/api/v1/orders/${widget.orderId}'),
         headers: {
           'Authorization': 'Bearer ${widget.token}',
           'Accept': 'application/json',
         },
-      );
+      ).timeout(ApiConfig.requestTimeout);
+
+      if (!mounted) return;
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
-        if (data['success']) {
+        if (data is Map && data['success'] == true && data['data'] is Map) {
           setState(() {
-            _orderData = data['data'];
+            _orderData = Map<String, dynamic>.from(data['data'] as Map);
+            if (data['cancellation_quota'] is Map) {
+              _cancellationQuota =
+                  Map<String, dynamic>.from(data['cancellation_quota'] as Map);
+            }
+            _isIdentityVerified = data['is_identity_verified'] == true;
             _isLoading = false;
           });
+          return;
         }
-      } else {
-        _showError('Failed to load order details.');
       }
-    } catch (e) {
+      if (!silent) _showError('Failed to load order details.');
+    } catch (_) {
+      if (!silent) _showError('Network error occurred.');
+    }
+  }
+
+  Future<void> _fetchLiveTrackingSilently() async {
+    try {
+      final response = await http.get(
+        Uri.parse('$_domain/api/v1/orders/${widget.orderId}/live-tracking'),
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Accept': 'application/json',
+        },
+      ).timeout(ApiConfig.requestTimeout);
+
+      if (!mounted || response.statusCode != 200) return;
+      final body = json.decode(response.body);
+      if (body is Map && body['success'] == true && body['data'] is Map) {
+        setState(() {
+          _liveTrackingData = Map<String, dynamic>.from(body['data'] as Map);
+        });
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _openOrderInvoiceModal() async {
+    _showLoadingDialog();
+    try {
+      final response = await http.get(
+        Uri.parse('$_domain/api/v1/orders/${widget.orderId}/invoice'),
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Accept': 'application/json',
+        },
+      ).timeout(ApiConfig.requestTimeout);
+
+      if (!mounted) return;
+      Navigator.pop(context);
+
+      final body = json.decode(response.body);
+      if (response.statusCode == 200 &&
+          body is Map &&
+          body['success'] == true &&
+          body['data'] is Map) {
+        final inv = Map<String, dynamic>.from(body['data'] as Map);
+        final List<dynamic> items = inv['items'] is List
+            ? List<dynamic>.from(inv['items'] as List)
+            : <dynamic>[];
+
+        showModalBottomSheet<void>(
+          context: context,
+          isScrollControlled: true,
+          builder: (modalContext) {
+            return DraggableScrollableSheet(
+              expand: false,
+              initialChildSize: 0.82,
+              maxChildSize: 0.94,
+              minChildSize: 0.5,
+              builder: (ctx, scrollCtrl) {
+                return ListView(
+                  controller: scrollCtrl,
+                  padding: const EdgeInsets.all(20),
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              inv['invoice_number']?.toString() ?? 'INVOICE',
+                              style: const TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w900,
+                                color: StorkTheme.primaryDark,
+                              ),
+                            ),
+                            Text(
+                              'Issued: ${inv['issued_at'] ?? ''}',
+                              style: const TextStyle(
+                                fontSize: 11.5,
+                                color: StorkTheme.textMuted,
+                              ),
+                            ),
+                          ],
+                        ),
+                        IconButton(
+                          onPressed: () => Navigator.pop(modalContext),
+                          icon: const Icon(Icons.close_rounded),
+                        ),
+                      ],
+                    ),
+                    const Divider(height: 24),
+                    _buildInfoRow(
+                        'Store:', inv['seller']?['business_name'] ?? 'Store'),
+                    _buildInfoRow(
+                        'Store Address:', inv['seller']?['address'] ?? ''),
+                    _buildInfoRow('Buyer:',
+                        inv['buyer']?['recipient_name'] ?? 'Recipient'),
+                    _buildInfoRow(
+                        'Delivery Address:', inv['buyer']?['address'] ?? ''),
+                    _buildInfoRow('Payment Method:',
+                        '${inv['payment_method'] ?? 'COD'} (${inv['payment_status'] ?? ''})'),
+                    if (inv['payment_reference'] != null)
+                      _buildInfoRow(
+                          'Payment Ref:', inv['payment_reference'].toString()),
+                    const Divider(height: 24),
+                    const Text(
+                      'ORDER LINE ITEMS',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                        color: StorkTheme.textMuted,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    for (final raw in items)
+                      if (raw is Map)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  '${raw['product_name']}${raw['variant'] != null ? ' (${raw['variant']})' : ''} × ${raw['quantity']}',
+                                  style: const TextStyle(
+                                    fontSize: 12.5,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                '₱${_formatMoney(raw['line_total'])}',
+                                style: const TextStyle(
+                                  fontSize: 12.5,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                    const Divider(height: 24),
+                    _buildInfoRow('Original Merchandise Subtotal:',
+                        '₱${_formatMoney(inv['original_subtotal'])}'),
+                    if ((double.tryParse(
+                                inv['store_voucher_discount']?.toString() ??
+                                    '0') ??
+                            0) >
+                        0)
+                      _buildInfoRow('Store & Bundle Discount:',
+                          '-₱${_formatMoney(inv['store_voucher_discount'])}'),
+                    if ((double.tryParse(
+                                inv['platform_voucher_discount']?.toString() ??
+                                    '0') ??
+                            0) >
+                        0)
+                      _buildInfoRow('Platform Voucher Discount:',
+                          '-₱${_formatMoney(inv['platform_voucher_discount'])}'),
+                    if ((double.tryParse(
+                                inv['coins_discount_amount']?.toString() ??
+                                    '0') ??
+                            0) >
+                        0)
+                      _buildInfoRow(
+                          'Storkia Coins (${inv['coins_used']} Coins):',
+                          '-₱${_formatMoney(inv['coins_discount_amount'])}'),
+                    _buildInfoRow('Net Merchandise Subtotal:',
+                        '₱${_formatMoney(inv['net_subtotal'])}'),
+                    _buildInfoRow('Net Shipping Fee:',
+                        '₱${_formatMoney(inv['net_shipping_fee'])}'),
+                    const Divider(height: 20),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Total Invoice Amount',
+                          style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w900,
+                            color: StorkTheme.primaryDark,
+                          ),
+                        ),
+                        Text(
+                          '₱${_formatMoney(inv['total_amount'])}',
+                          style: const TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w900,
+                            color: StorkTheme.primary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                );
+              },
+            );
+          },
+        );
+      } else {
+        _showError('Unable to load order invoice.');
+      }
+    } catch (_) {
+      if (mounted) Navigator.pop(context);
       _showError('Network error occurred.');
     }
+  }
+
+  Future<void> _openDeliveryRiderChatSheet() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => _DeliveryRiderChatBottomSheet(
+        orderId: widget.orderId,
+        domain: _domain,
+        token: widget.token,
+      ),
+    );
+    setState(() => _unreadDeliveryChatCount = 0);
   }
 
   Future<void> _confirmReceipt() async {
     final bool? confirm = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Confirm Receipt'),
+      builder: (dialogContext) => AlertDialog(
+        title: const Text(
+          'Confirm Order Received',
+          style: TextStyle(fontWeight: FontWeight.w800, fontSize: 17),
+        ),
         content: const Text(
-            'Are you sure you have received the items in good condition? This will release the payment to the seller and complete the order.'),
+          'Have you inspected and received the items in good condition? Confirming will complete this order, award your Storkia Coins cashback, and release payment.',
+          style: TextStyle(fontSize: 13.5, color: StorkTheme.textMain),
+        ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel',
-                style: TextStyle(color: Color(0xFF78716C))),
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text(
+              'Cancel',
+              style: TextStyle(color: StorkTheme.textMuted),
+            ),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFCF4173)),
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Confirm', style: TextStyle(color: Colors.white)),
+              backgroundColor: StorkTheme.success,
+            ),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Confirm Receipt'),
           ),
         ],
       ),
@@ -81,121 +384,884 @@ class _OrderDetailsScreenState extends State<OrderDetailsScreen> {
     if (confirm != true) return;
 
     _showLoadingDialog();
-
     try {
       final response = await http.post(
-        Uri.parse(
-            '${widget.baseUrl}/api/v1/orders/${widget.orderId}/confirm-receipt'),
+        Uri.parse('$_domain/api/v1/orders/${widget.orderId}/confirm-receipt'),
         headers: {
           'Authorization': 'Bearer ${widget.token}',
           'Accept': 'application/json',
         },
-      );
+      ).timeout(ApiConfig.requestTimeout);
 
       if (!mounted) return;
-      Navigator.pop(context); // Dismiss loading
+      Navigator.pop(context);
 
       final data = json.decode(response.body);
-      if (response.statusCode == 200 && data['success']) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text('Order completed successfully!'),
-            backgroundColor: Color(0xFF10B981)));
-        _fetchOrderDetails();
+      if (response.statusCode == 200 &&
+          data is Map &&
+          data['success'] == true) {
+        syncAllBuyerCounters(ref, widget.token);
+        _showSuccess(
+          data['message']?.toString() ?? 'Order confirmed and completed!',
+        );
+        _fetchAllOrderData();
       } else {
-        _showError(data['message'] ?? 'Failed to confirm receipt.');
+        _showError(
+          data is Map
+              ? (data['message']?.toString() ?? 'Failed to confirm receipt.')
+              : 'Failed to confirm receipt.',
+        );
       }
-    } catch (e) {
+    } catch (_) {
       if (mounted) Navigator.pop(context);
-      _showError('Network error.');
+      _showError('Network error occurred.');
     }
   }
 
-  Future<void> _reportDispute() async {
-    final TextEditingController reasonController = TextEditingController();
-    final bool? submit = await showDialog<bool>(
+  Future<void> _openPreShipmentCancelSheet() async {
+    const List<String> reasons = [
+      'Changed my mind',
+      'Need to change delivery address',
+      'Forgot to apply voucher code',
+      'Ordered wrong item or variation',
+    ];
+    String selectedReason = reasons.first;
+    final notesController = TextEditingController();
+    bool isSubmitting = false;
+
+    await showModalBottomSheet(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Report an Issue'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-                'Please describe the issue with your delivery (minimum 10 characters):',
-                style: TextStyle(fontSize: 13, color: Color(0xFF78716C))),
-            const SizedBox(height: 12),
-            TextField(
-              controller: reasonController,
-              maxLines: 3,
-              decoration: const InputDecoration(
-                border: OutlineInputBorder(),
-                hintText: 'e.g., Damaged item, missing parts, wrong variant...',
+      isScrollControlled: true,
+      builder: (modalContext) {
+        return StatefulBuilder(
+          builder: (ctx, setModalState) {
+            return Padding(
+              padding: EdgeInsets.only(
+                left: 20,
+                right: 20,
+                top: 20,
+                bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
               ),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Expanded(
+                          child: Text(
+                            'Cancel Order #${_orderData?['seller_order_number'] ?? ''}',
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w800,
+                              color: StorkTheme.primaryDark,
+                            ),
+                          ),
+                        ),
+                        IconButton(
+                          onPressed: () => Navigator.pop(modalContext),
+                          icon: const Icon(Icons.close_rounded),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      'SELECT CANCELLATION REASON *',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                        color: StorkTheme.textMuted,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    for (final reason in reasons)
+                      InkWell(
+                        onTap: () =>
+                            setModalState(() => selectedReason = reason),
+                        borderRadius: BorderRadius.circular(10),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          child: Row(
+                            children: [
+                              Icon(
+                                selectedReason == reason
+                                    ? Icons.radio_button_checked_rounded
+                                    : Icons.radio_button_off_rounded,
+                                color: selectedReason == reason
+                                    ? StorkTheme.primary
+                                    : StorkTheme.textMuted,
+                                size: 20,
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  reason,
+                                  style: const TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: notesController,
+                      maxLines: 2,
+                      maxLength: 500,
+                      decoration: const InputDecoration(
+                        labelText: 'Additional Notes (Optional)',
+                        counterText: '',
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton(
+                            onPressed: () => Navigator.pop(modalContext),
+                            child: const Text('Keep Order'),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: StorkTheme.danger,
+                            ),
+                            onPressed: isSubmitting
+                                ? null
+                                : () async {
+                                    setModalState(() => isSubmitting = true);
+                                    try {
+                                      final response = await http
+                                          .post(
+                                            Uri.parse(
+                                                '$_domain/api/v1/orders/${widget.orderId}/cancel'),
+                                            headers: {
+                                              'Authorization':
+                                                  'Bearer ${widget.token}',
+                                              'Accept': 'application/json',
+                                              'Content-Type':
+                                                  'application/json',
+                                            },
+                                            body: json.encode({
+                                              'cancel_reason': selectedReason,
+                                              'cancel_notes':
+                                                  notesController.text.trim(),
+                                            }),
+                                          )
+                                          .timeout(ApiConfig.requestTimeout);
+
+                                      final data = json.decode(response.body);
+                                      if (response.statusCode == 200 &&
+                                          data is Map &&
+                                          data['success'] == true) {
+                                        syncAllBuyerCounters(ref, widget.token);
+                                        if (modalContext.mounted) {
+                                          Navigator.pop(modalContext);
+                                        }
+                                        _showSuccess(
+                                          data['message']?.toString() ??
+                                              'Order cancelled successfully.',
+                                        );
+                                        _fetchAllOrderData();
+                                      } else {
+                                        String err = data is Map
+                                            ? (data['message']?.toString() ??
+                                                'Unable to cancel order.')
+                                            : 'Unable to cancel order.';
+                                        if (data is Map &&
+                                            data['errors'] is Map &&
+                                            (data['errors'] as Map)
+                                                .isNotEmpty) {
+                                          final first = (data['errors'] as Map)
+                                              .values
+                                              .first;
+                                          if (first is List &&
+                                              first.isNotEmpty) {
+                                            err = first.first.toString();
+                                          }
+                                        }
+                                        _showError(err);
+                                      }
+                                    } catch (_) {
+                                      _showError('Network error occurred.');
+                                    } finally {
+                                      if (modalContext.mounted) {
+                                        setModalState(
+                                            () => isSubmitting = false);
+                                      }
+                                    }
+                                  },
+                            child: isSubmitting
+                                ? const SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(
+                                      color: Colors.white,
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Text('Confirm Cancel'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _openReturnRefundModal() async {
+    if (!_isIdentityVerified) {
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text(
+            'Valid ID Verification Required',
+            style: TextStyle(
+              fontWeight: FontWeight.w800,
+              fontSize: 17,
+              color: StorkTheme.primaryDark,
+            ),
+          ),
+          content: const Text(
+            'To protect both buyers and merchants from fraudulent claims, Storkia requires an approved Valid Government ID on your account before submitting a Return & Refund request.\n\nPlease complete Identity Verification under Account Settings first.',
+            style: TextStyle(
+              fontSize: 13.5,
+              color: StorkTheme.textMain,
+              height: 1.45,
+            ),
+          ),
+          actions: [
+            ElevatedButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Understood'),
             ),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel',
-                style: TextStyle(color: Color(0xFF78716C))),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFE11D48)),
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Submit', style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
-    );
-
-    if (submit != true) return;
-
-    final reason = reasonController.text.trim();
-    if (reason.length < 10) {
-      _showError('Reason must be at least 10 characters.');
+      );
       return;
     }
 
-    _showLoadingDialog();
+    const List<String> issueCategories = [
+      'Damaged item',
+      'Wrong item or variation received',
+      'Missing quantity / incomplete parcel',
+      'Defective or not working',
+    ];
+    String selectedCategory = issueCategories.first;
+    String refundMethod = 'WALLET';
+    final accountNameCtrl = TextEditingController();
+    final accountPhoneCtrl = TextEditingController();
+    final reasonCtrl = TextEditingController();
+    List<XFile> evidenceFiles = <XFile>[];
+    String? formError;
+    bool isSubmitting = false;
 
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (modalContext) {
+        return StatefulBuilder(
+          builder: (ctx, setModalState) {
+            void sanitizeRefundPhone(String val) {
+              String digits = val.replaceAll(RegExp(r'\D'), '');
+              if (digits.startsWith('63') && digits.length == 12) {
+                digits = '0${digits.substring(2)}';
+              } else if (digits.startsWith('9') && digits.length == 10) {
+                digits = '0$digits';
+              }
+              if (digits.length > 11) {
+                digits = digits.substring(0, 11);
+              }
+              if (accountPhoneCtrl.text != digits) {
+                accountPhoneCtrl.value = TextEditingValue(
+                  text: digits,
+                  selection: TextSelection.collapsed(offset: digits.length),
+                );
+              }
+            }
+
+            return Padding(
+              padding: EdgeInsets.only(
+                left: 20,
+                right: 20,
+                top: 18,
+                bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Request Return & Refund',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w800,
+                            color: StorkTheme.primaryDark,
+                          ),
+                        ),
+                        IconButton(
+                          onPressed: () => Navigator.pop(modalContext),
+                          icon: const Icon(Icons.close_rounded),
+                        ),
+                      ],
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: StorkTheme.success.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: StorkTheme.success.withValues(alpha: 0.3),
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text(
+                            '✓ Valid Government ID Verified',
+                            style: TextStyle(
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w800,
+                              color: StorkTheme.success,
+                            ),
+                          ),
+                          Text(
+                            'Refundable: ₱${_formatMoney(_orderData?['total_amount'])}',
+                            style: const TextStyle(
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w800,
+                              color: StorkTheme.primaryDark,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      initialValue: selectedCategory,
+                      decoration: const InputDecoration(
+                        labelText: 'Issue Category *',
+                      ),
+                      items: issueCategories
+                          .map((c) => DropdownMenuItem<String>(
+                                value: c,
+                                child: Text(
+                                  c,
+                                  style: const TextStyle(fontSize: 13),
+                                ),
+                              ))
+                          .toList(),
+                      onChanged: (val) {
+                        if (val != null) {
+                          setModalState(() => selectedCategory = val);
+                        }
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'REFUND PAYOUT DESTINATION *',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                        color: StorkTheme.textMuted,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: InkWell(
+                            onTap: () =>
+                                setModalState(() => refundMethod = 'WALLET'),
+                            borderRadius: BorderRadius.circular(12),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(vertical: 11),
+                              decoration: BoxDecoration(
+                                color: refundMethod == 'WALLET'
+                                    ? StorkTheme.primary.withValues(alpha: 0.08)
+                                    : StorkTheme.surface,
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: refundMethod == 'WALLET'
+                                      ? StorkTheme.primary
+                                      : StorkTheme.borderSubtle,
+                                  width: refundMethod == 'WALLET' ? 1.6 : 1,
+                                ),
+                              ),
+                              alignment: Alignment.center,
+                              child: Text(
+                                'Instant E-Wallet',
+                                style: TextStyle(
+                                  fontSize: 12.5,
+                                  fontWeight: FontWeight.w800,
+                                  color: refundMethod == 'WALLET'
+                                      ? StorkTheme.primary
+                                      : StorkTheme.textMain,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: InkWell(
+                            onTap: () =>
+                                setModalState(() => refundMethod = 'GCASH'),
+                            borderRadius: BorderRadius.circular(12),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(vertical: 11),
+                              decoration: BoxDecoration(
+                                color: refundMethod == 'GCASH'
+                                    ? StorkTheme.info.withValues(alpha: 0.08)
+                                    : StorkTheme.surface,
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: refundMethod == 'GCASH'
+                                      ? StorkTheme.info
+                                      : StorkTheme.borderSubtle,
+                                  width: refundMethod == 'GCASH' ? 1.6 : 1,
+                                ),
+                              ),
+                              alignment: Alignment.center,
+                              child: Text(
+                                'GCash Refund',
+                                style: TextStyle(
+                                  fontSize: 12.5,
+                                  fontWeight: FontWeight.w800,
+                                  color: refundMethod == 'GCASH'
+                                      ? StorkTheme.info
+                                      : StorkTheme.textMain,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    if (refundMethod == 'GCASH') ...[
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: accountNameCtrl,
+                              decoration: const InputDecoration(
+                                labelText: 'GCash Account Name *',
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: TextField(
+                              controller: accountPhoneCtrl,
+                              keyboardType: TextInputType.phone,
+                              maxLength: 11,
+                              onChanged: sanitizeRefundPhone,
+                              decoration: const InputDecoration(
+                                labelText: 'GCash Number (09...)*',
+                                counterText: '',
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: reasonCtrl,
+                      maxLines: 3,
+                      maxLength: 1000,
+                      decoration: const InputDecoration(
+                        labelText: 'Describe the Issue (10+ characters) *',
+                        counterText: '',
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    OutlinedButton.icon(
+                      onPressed: () async {
+                        final picker = ImagePicker();
+                        final picked = await picker.pickMultiImage(
+                          imageQuality: 85,
+                        );
+                        if (picked.isNotEmpty) {
+                          if (picked.length > 5) {
+                            setModalState(() {
+                              formError =
+                                  'You may upload a maximum of 5 evidence photos.';
+                            });
+                            return;
+                          }
+                          for (final f in picked) {
+                            final len = await f.length();
+                            if (len > 5 * 1024 * 1024) {
+                              setModalState(() {
+                                formError =
+                                    'Each evidence photo must not exceed 5MB.';
+                              });
+                              return;
+                            }
+                          }
+                          setModalState(() {
+                            evidenceFiles = picked;
+                            formError = null;
+                          });
+                        }
+                      },
+                      icon: const Icon(Icons.photo_library_outlined, size: 18),
+                      label: Text(
+                        evidenceFiles.isEmpty
+                            ? 'Upload 1 to 5 Evidence Photos (Max 5MB)*'
+                            : '${evidenceFiles.length} evidence photo(s) selected',
+                      ),
+                    ),
+                    if (evidenceFiles.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: evidenceFiles.map((f) {
+                          return ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: Image.file(
+                              File(f.path),
+                              width: 52,
+                              height: 52,
+                              fit: BoxFit.cover,
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                    ],
+                    if (formError != null) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        formError!,
+                        style: const TextStyle(
+                          color: StorkTheme.danger,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 16),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 48,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: StorkTheme.danger,
+                        ),
+                        onPressed: isSubmitting
+                            ? null
+                            : () async {
+                                sanitizeRefundPhone(accountPhoneCtrl.text);
+                                final reasonText = reasonCtrl.text.trim();
+                                if (reasonText.length < 10) {
+                                  setModalState(() {
+                                    formError =
+                                        'Please provide at least 10 characters explaining the issue.';
+                                  });
+                                  return;
+                                }
+                                if (refundMethod == 'GCASH') {
+                                  if (accountNameCtrl.text.trim().isEmpty) {
+                                    setModalState(() {
+                                      formError =
+                                          'Please enter your GCash account name.';
+                                    });
+                                    return;
+                                  }
+                                  if (!RegExp(r'^09\d{9}$')
+                                      .hasMatch(accountPhoneCtrl.text.trim())) {
+                                    setModalState(() {
+                                      formError =
+                                          'Enter a valid 11-digit GCash number starting with 09.';
+                                    });
+                                    return;
+                                  }
+                                }
+                                if (evidenceFiles.isEmpty ||
+                                    evidenceFiles.length > 5) {
+                                  setModalState(() {
+                                    formError =
+                                        'Please attach between 1 and 5 evidence photos.';
+                                  });
+                                  return;
+                                }
+
+                                setModalState(() {
+                                  isSubmitting = true;
+                                  formError = null;
+                                });
+
+                                try {
+                                  final req = http.MultipartRequest(
+                                    'POST',
+                                    Uri.parse(
+                                        '$_domain/api/v1/orders/${widget.orderId}/report-dispute'),
+                                  );
+                                  req.headers['Authorization'] =
+                                      'Bearer ${widget.token}';
+                                  req.headers['Accept'] = 'application/json';
+
+                                  req.fields['dispute_reason_category'] =
+                                      selectedCategory;
+                                  req.fields['dispute_reason'] = reasonText;
+                                  req.fields['refund_method'] = refundMethod;
+                                  if (refundMethod == 'GCASH') {
+                                    req.fields['refund_account_name'] =
+                                        accountNameCtrl.text.trim();
+                                    req.fields['refund_account_number'] =
+                                        accountPhoneCtrl.text.trim();
+                                  }
+
+                                  for (final f in evidenceFiles) {
+                                    req.files.add(
+                                      await http.MultipartFile.fromPath(
+                                        'evidence_photos[]',
+                                        f.path,
+                                      ),
+                                    );
+                                  }
+
+                                  final streamed = await req
+                                      .send()
+                                      .timeout(ApiConfig.requestTimeout);
+                                  final res =
+                                      await http.Response.fromStream(streamed);
+                                  final data = json.decode(res.body);
+
+                                  if (res.statusCode == 200 &&
+                                      data is Map &&
+                                      data['success'] == true) {
+                                    if (modalContext.mounted) {
+                                      Navigator.pop(modalContext);
+                                    }
+                                    _showSuccess(
+                                      data['message']?.toString() ??
+                                          'Return & Refund request submitted.',
+                                    );
+                                    _fetchAllOrderData();
+                                  } else {
+                                    String err = data is Map
+                                        ? (data['message']?.toString() ??
+                                            'Failed to submit return request.')
+                                        : 'Failed to submit return request.';
+                                    if (data is Map &&
+                                        data['errors'] is Map &&
+                                        (data['errors'] as Map).isNotEmpty) {
+                                      final first =
+                                          (data['errors'] as Map).values.first;
+                                      if (first is List && first.isNotEmpty) {
+                                        err = first.first.toString();
+                                      }
+                                    }
+                                    setModalState(() => formError = err);
+                                  }
+                                } catch (_) {
+                                  setModalState(() =>
+                                      formError = 'Network error occurred.');
+                                } finally {
+                                  if (modalContext.mounted) {
+                                    setModalState(() => isSubmitting = false);
+                                  }
+                                }
+                              },
+                        child: isSubmitting
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  color: Colors.white,
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Text('Submit Return & Refund'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _escalateDisputeToAdmin() async {
+    _showLoadingDialog();
     try {
       final response = await http.post(
-        Uri.parse(
-            '${widget.baseUrl}/api/v1/orders/${widget.orderId}/report-dispute'),
+        Uri.parse('$_domain/api/v1/orders/${widget.orderId}/escalate-dispute'),
         headers: {
           'Authorization': 'Bearer ${widget.token}',
           'Accept': 'application/json',
-          'Content-Type': 'application/json',
         },
-        body: json.encode({'dispute_reason': reason}),
-      );
+      ).timeout(ApiConfig.requestTimeout);
 
       if (!mounted) return;
-      Navigator.pop(context); // Dismiss loading
+      Navigator.pop(context);
 
       final data = json.decode(response.body);
-      if (response.statusCode == 200 && data['success']) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text('Dispute reported successfully.'),
-            backgroundColor: Color(0xFFE11D48)));
-        _fetchOrderDetails();
+      if (response.statusCode == 200 &&
+          data is Map &&
+          data['success'] == true) {
+        _showSuccess(
+          data['message']?.toString() ??
+              'Dispute escalated to Storkia Admin for final review.',
+        );
+        _fetchAllOrderData();
       } else {
-        _showError(data['message'] ?? 'Failed to report dispute.');
+        _showError(
+          data is Map
+              ? (data['message']?.toString() ?? 'Unable to escalate dispute.')
+              : 'Unable to escalate dispute.',
+        );
       }
-    } catch (e) {
+    } catch (_) {
       if (mounted) Navigator.pop(context);
-      _showError('Network error.');
+      _showError('Network error occurred.');
     }
   }
 
+  Future<void> _buyAgain() async {
+    _showLoadingDialog();
+    try {
+      final response = await http.post(
+        Uri.parse('$_domain/api/v1/orders/${widget.orderId}/buy-again'),
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Accept': 'application/json',
+        },
+      ).timeout(ApiConfig.requestTimeout);
+
+      if (!mounted) return;
+      Navigator.pop(context);
+
+      final data = json.decode(response.body);
+      if (response.statusCode == 200 &&
+          data is Map &&
+          data['success'] == true) {
+        ref.read(cartCountProvider.notifier).fetchCartCount(widget.token);
+        _showSuccess(
+          data['message']?.toString() ?? 'Items added to your Shopping Cart!',
+        );
+        Navigator.push(
+          context,
+          StorkRoute.fade(
+            CartScreen(baseUrl: _domain, token: widget.token),
+          ),
+        );
+      } else {
+        _showError(
+          data is Map
+              ? (data['message']?.toString() ??
+                  'Items are currently out of stock.')
+              : 'Items are currently out of stock.',
+        );
+      }
+    } catch (_) {
+      if (mounted) Navigator.pop(context);
+      _showError('Network error occurred.');
+    }
+  }
+
+  void _showNetworkImagePreview(String title, String imageUrl,
+      {bool requiresAuth = false}) {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => Dialog(
+        backgroundColor: StorkTheme.surface,
+        insetPadding: const EdgeInsets.all(16),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w800,
+                        color: StorkTheme.primaryDark,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.pop(dialogContext),
+                    icon: const Icon(Icons.close_rounded),
+                  ),
+                ],
+              ),
+              const Divider(height: 16),
+              ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight: MediaQuery.sizeOf(dialogContext).height * 0.62,
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(14),
+                  child: InteractiveViewer(
+                    child: Image.network(
+                      imageUrl,
+                      headers: requiresAuth
+                          ? {'Authorization': 'Bearer ${widget.token}'}
+                          : null,
+                      fit: BoxFit.contain,
+                      errorBuilder: (_, __, ___) => const Padding(
+                        padding: EdgeInsets.all(32),
+                        child: Text('Unable to load image preview.'),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   void _showLoadingDialog() {
-    showDialog(
+    showDialog<void>(
       context: context,
       barrierDismissible: false,
       builder: (_) => const Center(
-          child: CircularProgressIndicator(color: Color(0xFFCF4173))),
+        child: CircularProgressIndicator(color: StorkTheme.primary),
+      ),
+    );
+  }
+
+  void _showSuccess(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: StorkTheme.success,
+      ),
     );
   }
 
@@ -204,7 +1270,9 @@ class _OrderDetailsScreenState extends State<OrderDetailsScreen> {
     setState(() => _isLoading = false);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-          content: Text(message), backgroundColor: const Color(0xFFE11D48)),
+        content: Text(message),
+        backgroundColor: StorkTheme.danger,
+      ),
     );
   }
 
@@ -212,9 +1280,11 @@ class _OrderDetailsScreenState extends State<OrderDetailsScreen> {
   Widget build(BuildContext context) {
     if (_isLoading) {
       return const Scaffold(
-          backgroundColor: Color(0xFFF5F5F4),
-          body: Center(
-              child: CircularProgressIndicator(color: Color(0xFFCF4173))));
+        backgroundColor: StorkTheme.surfaceSubtle,
+        body: Center(
+          child: CircularProgressIndicator(color: StorkTheme.primary),
+        ),
+      );
     }
 
     if (_orderData == null) {
@@ -224,316 +1294,1390 @@ class _OrderDetailsScreenState extends State<OrderDetailsScreen> {
       );
     }
 
-    final status = _orderData!['status'] ?? 'pending';
-    final isDelivered = status == 'delivered';
+    final String status = _orderData!['status']?.toString() ?? 'pending';
+    final String statusLabel = _orderData!['status_label']?.toString() ??
+        status.replaceAll('_', ' ').toUpperCase();
+    final String payMethod =
+        _orderData!['effective_payment_method']?.toString() ?? 'COD';
+    final String payStatus =
+        _orderData!['payment_status']?.toString().toUpperCase() ?? 'UNPAID';
+    final bool isRated = _orderData!['is_rated_by_buyer'] == true ||
+        _orderData!['service_rating'] != null;
+    final bool canCancelPreShipment =
+        _orderData!['can_buyer_cancel_pre_shipment'] == true;
+    final bool hasUnresolvedDispute =
+        _orderData!['has_unresolved_dispute'] == true;
+    final JsonMap? extra = _orderData!['extra'] is Map
+        ? Map<String, dynamic>.from(_orderData!['extra'] as Map)
+        : null;
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F5F4),
+      backgroundColor: StorkTheme.surfaceSubtle,
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        foregroundColor: const Color(0xFF292524),
-        elevation: 0.5,
-        title: const Text('Order Details',
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+        title: Text(
+          'Order #${_orderData!['seller_order_number'] ?? ''}',
+          style: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.w800),
+        ),
+        actions: [
+          IconButton(
+            onPressed: _openOrderInvoiceModal,
+            tooltip: 'Order Invoice',
+            icon: const Icon(Icons.receipt_long_rounded),
+          ),
+        ],
       ),
-      body: SingleChildScrollView(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+      body: RefreshIndicator(
+        color: StorkTheme.primary,
+        onRefresh: () => _fetchAllOrderData(),
+        child: ListView(
+          padding: const EdgeInsets.all(14),
           children: [
-            _buildStatusBanner(status),
-            const SizedBox(height: 8),
-            _buildDeliveryAddress(),
-            const SizedBox(height: 8),
-            _buildOrderItems(),
-            const SizedBox(height: 8),
-            _buildOrderSummary(),
-            const SizedBox(height: 8),
-            _buildOrderMeta(),
+            _buildStatusHeaderBanner(statusLabel, payMethod, payStatus),
+            const SizedBox(height: 12),
+            if (_liveTrackingData != null &&
+                _liveTrackingData!['has_shipment'] == true) ...[
+              _buildLiveTrackingAndRiderChatCard(),
+              const SizedBox(height: 12),
+            ],
+            if (status == 'completed') ...[
+              _buildCompletedBanner(isRated, extra),
+              const SizedBox(height: 12),
+            ],
+            if (canCancelPreShipment) ...[
+              _buildPreShipmentCancelBanner(),
+              const SizedBox(height: 12),
+            ],
+            if (status == 'delivered' && !hasUnresolvedDispute) ...[
+              _buildDeliveredConfirmationBanner(),
+              const SizedBox(height: 12),
+            ],
+            if (hasUnresolvedDispute ||
+                status == 'disputed' ||
+                extra?['seller_return_decision'] != null) ...[
+              _buildDisputeStatusCard(extra),
+              const SizedBox(height: 12),
+            ],
+            _buildDeliveryAddressCard(),
+            const SizedBox(height: 12),
+            _buildShipmentAndPaymentInfoCard(payMethod, payStatus),
+            const SizedBox(height: 12),
+            _buildPurchasedItemsAndSummaryCard(payMethod, extra),
+            const SizedBox(height: 12),
+            _buildTrackingTimelineCard(),
             const SizedBox(height: 24),
           ],
         ),
       ),
-      bottomNavigationBar: isDelivered ? _buildActionBottomBar() : null,
     );
   }
 
-  Widget _buildStatusBanner(String status) {
-    final readableStatus = status.replaceAll('_', ' ').toUpperCase();
+  Widget _buildStatusHeaderBanner(
+      String statusLabel, String payMethod, String payStatus) {
     return Container(
-      width: double.infinity,
-      color: const Color(0xFFCF4173),
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [StorkTheme.primaryDark, StorkTheme.primary],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(20),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(readableStatus,
-              style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold)),
-          const SizedBox(height: 4),
-          const Text('Thank you for shopping with Storkia!',
-              style: TextStyle(color: Colors.white70, fontSize: 13)),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  '${payMethod == 'WALLET' ? 'STORKIA E-WALLET' : payMethod} ($payStatus)',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+              Flexible(
+                child: Text(
+                  'Parent: ${_orderData!['order'] is Map ? (_orderData!['order']['order_number'] ?? 'N/A') : 'N/A'}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.85),
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            statusLabel,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 18,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildDeliveryAddress() {
-    final address = _orderData!['delivery_address_snapshot'] ?? {};
+  Widget _buildLiveTrackingAndRiderChatCard() {
+    final track = _liveTrackingData!;
+    final JsonMap? driver = track['driver'] is Map
+        ? Map<String, dynamic>.from(track['driver'] as Map)
+        : null;
+    final bool isLive = track['is_live_active'] == true;
+    final double? distMeters =
+        double.tryParse(track['distance_meters']?.toString() ?? '');
+    final int? etaMin = int.tryParse(track['eta_minutes']?.toString() ?? '');
+    final String shipStatus = track['status']?.toString() ?? '';
+    final bool canChatWithRider = driver != null &&
+        driver['role']?.toString() == 'Rider' &&
+        ['rider_assigned', 'out_for_delivery', 'delivery_failed']
+            .contains(shipStatus);
+
     return Container(
-      color: Colors.white,
       padding: const EdgeInsets.all(16),
-      child: Row(
+      decoration: BoxDecoration(
+        color: StorkTheme.surface,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: isLive
+              ? StorkTheme.success.withValues(alpha: 0.45)
+              : StorkTheme.borderSubtle,
+          width: isLive ? 1.5 : 1,
+        ),
+      ),
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Icon(Icons.location_on, color: Color(0xFFCF4173), size: 24),
-          const SizedBox(width: 12),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 9,
+                    height: 9,
+                    decoration: BoxDecoration(
+                      color: isLive ? StorkTheme.success : StorkTheme.info,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    isLive ? 'LIVE GPS TRACKING ACTIVE' : 'SHIPMENT ROUTE',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w900,
+                      color:
+                          isLive ? StorkTheme.success : StorkTheme.primaryDark,
+                    ),
+                  ),
+                ],
+              ),
+              if (etaMin != null)
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: StorkTheme.primary.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    'ETA ~$etaMin min${distMeters != null ? ' (${(distMeters / 1000).toStringAsFixed(1)} km)' : ''}',
+                    style: const TextStyle(
+                      fontSize: 10.5,
+                      fontWeight: FontWeight.w800,
+                      color: StorkTheme.primary,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          if (driver != null) ...[
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: StorkTheme.surfaceSubtle,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: StorkTheme.borderSubtle),
+              ),
+              child: Row(
+                children: [
+                  CircleAvatar(
+                    radius: 20,
+                    backgroundColor: StorkTheme.primary.withValues(alpha: 0.12),
+                    child: Icon(
+                      driver['role'] == 'Rider'
+                          ? Icons.two_wheeler_rounded
+                          : Icons.local_shipping_rounded,
+                      color: StorkTheme.primary,
+                      size: 20,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '${driver['role']}: ${driver['name'] ?? 'Assigned Driver'}',
+                          style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w800,
+                            color: StorkTheme.textMain,
+                          ),
+                        ),
+                        Text(
+                          '${driver['vehicle_type'] ?? 'Vehicle'} • Plate: ${driver['plate_number'] ?? 'N/A'}',
+                          style: const TextStyle(
+                            fontSize: 11.5,
+                            color: StorkTheme.textMuted,
+                          ),
+                        ),
+                        if (driver['latitude'] != null &&
+                            driver['longitude'] != null)
+                          Text(
+                            'GPS: ${double.tryParse(driver['latitude'].toString())?.toStringAsFixed(4)}, ${double.tryParse(driver['longitude'].toString())?.toStringAsFixed(4)}',
+                            style: const TextStyle(
+                              fontSize: 10.5,
+                              color: StorkTheme.primaryDark,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                  if (canChatWithRider)
+                    ElevatedButton.icon(
+                      onPressed: _openDeliveryRiderChatSheet,
+                      icon: const Icon(Icons.chat_rounded, size: 15),
+                      label: Text(
+                        _unreadDeliveryChatCount > 0
+                            ? 'Chat ($_unreadDeliveryChatCount)'
+                            : 'Chat Rider',
+                        style: const TextStyle(fontSize: 11.5),
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 8),
+                        minimumSize: const Size(0, 34),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ] else
+            Text(
+              'Sorting Hub: ${track['sorting_hub']?['name'] ?? 'Partner Hub'} → ${track['destination']?['address'] ?? ''}',
+              style: const TextStyle(
+                fontSize: 12,
+                color: StorkTheme.textMuted,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCompletedBanner(bool isRated, JsonMap? extra) {
+    final JsonMap? serviceRating = _orderData!['service_rating'] is Map
+        ? Map<String, dynamic>.from(_orderData!['service_rating'] as Map)
+        : null;
+    final int coinsEarned =
+        int.tryParse(extra?['coins_earned_on_completion']?.toString() ?? '0') ??
+            0;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: isRated
+            ? StorkTheme.success.withValues(alpha: 0.08)
+            : StorkTheme.warning.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: isRated
+              ? StorkTheme.success.withValues(alpha: 0.35)
+              : StorkTheme.warning.withValues(alpha: 0.4),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            isRated
+                ? 'ORDER COMPLETED & RATED (${serviceRating?['overall_average_rating'] ?? '5.0'} ★)'
+                : 'NEXT STEP: RATE YOUR ORDER (+UP TO 10 COINS PER ITEM)',
+            style: TextStyle(
+              fontSize: 10.5,
+              fontWeight: FontWeight.w800,
+              color: isRated ? StorkTheme.success : const Color(0xFF92400E),
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            isRated
+                ? 'Thank You for Rating This Order!'
+                : 'Order Received! Rate Product, Condition, Seller, Logistics & Rider',
+            style: const TextStyle(
+              fontSize: 14.5,
+              fontWeight: FontWeight.w800,
+              color: StorkTheme.textMain,
+            ),
+          ),
+          if (coinsEarned > 0) ...[
+            const SizedBox(height: 4),
+            Text(
+              'You earned +$coinsEarned Storkia Coins completion cashback on this order!',
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w800,
+                color: StorkTheme.success,
+              ),
+            ),
+          ],
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: isRated
+                ? ElevatedButton.icon(
+                    onPressed: _buyAgain,
+                    icon: const Icon(Icons.replay_rounded, size: 18),
+                    label: const Text('Buy Again'),
+                  )
+                : ElevatedButton.icon(
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        StorkRoute.fade(
+                          LeaveReviewScreen(
+                            sellerOrder: _orderData!,
+                            baseUrl: _domain,
+                            token: widget.token,
+                          ),
+                        ),
+                      ).then((_) => _fetchAllOrderData());
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: StorkTheme.warning,
+                    ),
+                    icon: const Icon(Icons.star_rounded, size: 18),
+                    label: const Text('To Rate Order & Services'),
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPreShipmentCancelBanner() {
+    final int remaining = int.tryParse(
+            _cancellationQuota['remaining_buyer']?.toString() ?? '5') ??
+        5;
+    final int limit =
+        int.tryParse(_cancellationQuota['limit_by_buyer']?.toString() ?? '5') ??
+            5;
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: StorkTheme.surface,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: StorkTheme.borderSubtle),
+      ),
+      child: Row(
+        children: [
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('Delivery Address',
-                    style:
-                        TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                const SizedBox(height: 8),
+                const Text(
+                  'Need to cancel this order before shipment?',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w800,
+                    color: StorkTheme.textMain,
+                  ),
+                ),
+                const SizedBox(height: 2),
                 Text(
-                    '${address['recipient_name'] ?? ''} | ${address['phone_number'] ?? ''}',
-                    style: const TextStyle(
-                        fontSize: 13, color: Color(0xFF292524))),
-                const SizedBox(height: 4),
-                Text(address['full_address'] ?? 'No address provided',
-                    style: const TextStyle(
-                        fontSize: 13, color: Color(0xFF78716C))),
+                  '7-day buyer cancellation quota remaining: $remaining of $limit',
+                  style: const TextStyle(
+                    fontSize: 11.5,
+                    color: StorkTheme.textMuted,
+                  ),
+                ),
               ],
             ),
-          )
+          ),
+          const SizedBox(width: 10),
+          OutlinedButton(
+            onPressed: _openPreShipmentCancelSheet,
+            style: OutlinedButton.styleFrom(
+              foregroundColor: StorkTheme.danger,
+              side: const BorderSide(color: StorkTheme.danger),
+            ),
+            child: const Text('Cancel Order'),
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildOrderItems() {
-    final items = _orderData!['items'] as List? ?? [];
-    final seller = _orderData!['seller_profile'] ?? {};
-
+  Widget _buildDeliveredConfirmationBanner() {
     return Container(
-      color: Colors.white,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: StorkTheme.info.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: StorkTheme.info.withValues(alpha: 0.3),
+        ),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Row(
-              children: [
-                const Icon(Icons.storefront,
-                    size: 18, color: Color(0xFF78716C)),
-                const SizedBox(width: 8),
-                Text(seller['business_name'] ?? 'Store',
-                    style: const TextStyle(
-                        fontWeight: FontWeight.bold, fontSize: 14)),
-              ],
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Expanded(
+                child: Text(
+                  'Package Delivered — Confirm or Request Return',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w800,
+                    color: StorkTheme.textMain,
+                  ),
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: _isIdentityVerified
+                      ? StorkTheme.success.withValues(alpha: 0.14)
+                      : StorkTheme.warning.withValues(alpha: 0.16),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  _isIdentityVerified
+                      ? 'Valid ID Verified ✓'
+                      : 'Valid ID Required for Refund',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    color: _isIdentityVerified
+                        ? StorkTheme.success
+                        : const Color(0xFF92400E),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            'Please inspect your items. Confirming receipt completes the order, awards Storkia Coins cashback, and unlocks 5-point ratings.',
+            style: TextStyle(
+              fontSize: 12,
+              color: StorkTheme.textMuted,
+              height: 1.35,
             ),
           ),
-          const Divider(height: 1),
-          ...items.map((item) => Padding(
-                padding: const EdgeInsets.all(16),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: _openReturnRefundModal,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: StorkTheme.danger,
+                    side: const BorderSide(color: StorkTheme.danger),
+                  ),
+                  child: const Text('Return / Refund'),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: _confirmReceipt,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: StorkTheme.success,
+                  ),
+                  child: const Text('Order Received'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDisputeStatusCard(JsonMap? extra) {
+    final bool isEscalated = extra?['is_escalated_to_admin'] == true;
+    final String? decision = extra?['seller_return_decision']?.toString();
+    final String? declineReason =
+        extra?['seller_return_Decision_reason']?.toString() ??
+            extra?['seller_return_decision_reason']?.toString();
+    final List<dynamic> evidencePhotos =
+        _extractList(extra?['dispute_evidence_photos']);
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: StorkTheme.danger.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: StorkTheme.danger.withValues(alpha: 0.3),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Expanded(
+                child: Text(
+                  'Return / Refund Dispute Status',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w800,
+                    color: StorkTheme.danger,
+                  ),
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: StorkTheme.surface,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                      color: StorkTheme.danger.withValues(alpha: 0.35)),
+                ),
+                child: Text(
+                  isEscalated
+                      ? 'ESCALATED TO ADMIN'
+                      : (decision != null
+                          ? 'SELLER: ${decision.toUpperCase()}'
+                          : 'AWAITING SELLER REVIEW'),
+                  style: const TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    color: StorkTheme.danger,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            '"${_orderData!['dispute_reason'] ?? ''}"',
+            style: const TextStyle(
+              fontSize: 12.5,
+              fontStyle: FontStyle.italic,
+              color: StorkTheme.textMain,
+            ),
+          ),
+          if (extra?['refund_method'] != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              'Refund Payout: ${extra!['refund_method'] == 'WALLET' ? 'Instant Storkia E-Wallet' : extra['refund_method']} • ₱${_formatMoney(extra['refund_amount'] ?? _orderData!['total_amount'])}',
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: StorkTheme.primaryDark,
+              ),
+            ),
+          ],
+          if (evidencePhotos.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: evidencePhotos.map((p) {
+                final url = ApiConfig.storageUrl(p.toString(), _domain);
+                return GestureDetector(
+                  onTap: () =>
+                      _showNetworkImagePreview('Dispute Evidence Photo', url),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: Image.network(
+                      url,
+                      width: 54,
+                      height: 54,
+                      fit: BoxFit.cover,
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
+          ],
+          if (decision == 'rejected') ...[
+            const Divider(height: 20),
+            Text(
+              'Seller Declined Return Request: "${declineReason ?? 'Declined'}"',
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: StorkTheme.danger,
+              ),
+            ),
+            if (!isEscalated) ...[
+              const SizedBox(height: 10),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: StorkTheme.danger,
+                  ),
+                  onPressed: _escalateDisputeToAdmin,
+                  child: const Text('Escalate to Storkia Admin'),
+                ),
+              ),
+            ],
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDeliveryAddressCard() {
+    final JsonMap address = _orderData!['delivery_address_snapshot'] is Map
+        ? Map<String, dynamic>.from(
+            _orderData!['delivery_address_snapshot'] as Map)
+        : <String, dynamic>{};
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: StorkTheme.surface,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: StorkTheme.borderSubtle),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'DELIVERY ADDRESS SNAPSHOT',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w800,
+              color: StorkTheme.textMuted,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            '${address['recipient_name'] ?? 'Recipient'}  •  ${address['phone_number'] ?? ''}',
+            style: const TextStyle(
+              fontSize: 13.5,
+              fontWeight: FontWeight.w800,
+              color: StorkTheme.textMain,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            address['full_address']?.toString() ?? 'No address provided',
+            style: const TextStyle(
+              fontSize: 12.5,
+              color: StorkTheme.textMuted,
+              height: 1.35,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildShipmentAndPaymentInfoCard(String payMethod, String payStatus) {
+    final JsonMap? shipment = _orderData!['shipment'] is Map
+        ? Map<String, dynamic>.from(_orderData!['shipment'] as Map)
+        : null;
+    final List<dynamic> packages = _extractList(shipment?['packages']);
+    final List<dynamic> proofs = _extractList(shipment?['delivery_proofs']);
+    final JsonMap? latestProof = proofs.isNotEmpty && proofs.first is Map
+        ? Map<String, dynamic>.from(proofs.first as Map)
+        : null;
+
+    final String pkgRefs = [
+      for (final p in packages)
+        if (p is Map &&
+            (p['package_reference']?.toString().isNotEmpty ?? false))
+          p['package_reference'].toString(),
+    ].join(', ');
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: StorkTheme.surface,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: StorkTheme.borderSubtle),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'SHIPMENT & PAYMENT INFO',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w800,
+              color: StorkTheme.textMuted,
+            ),
+          ),
+          const SizedBox(height: 10),
+          _buildInfoRow(
+            'Seller Store:',
+            (_orderData!['seller_profile'] is Map
+                    ? _orderData!['seller_profile']['business_name']?.toString()
+                    : null) ??
+                'N/A',
+          ),
+          _buildInfoRow(
+            'Logistics Provider:',
+            (_orderData!['logistics_profile'] is Map
+                    ? _orderData!['logistics_profile']['business_name']
+                        ?.toString()
+                    : null) ??
+                'Awaiting Seller Selection',
+          ),
+          _buildInfoRow(
+            'Tracking Number:',
+            shipment?['tracking_number']?.toString() ?? 'Not generated yet',
+          ),
+          if (pkgRefs.isNotEmpty)
+            _buildInfoRow('Package Reference(s):', pkgRefs),
+          _buildInfoRow(
+            'Payment Method:',
+            '${payMethod == 'WALLET' ? 'Storkia E-Wallet' : payMethod} ($payStatus)',
+          ),
+          const Divider(height: 18),
+          Wrap(
+            spacing: 10,
+            runSpacing: 8,
+            children: [
+              OutlinedButton.icon(
+                onPressed: _openOrderInvoiceModal,
+                icon: const Icon(Icons.receipt_long_rounded, size: 16),
+                label: const Text('View Order Invoice'),
+              ),
+              if (latestProof != null && latestProof['id'] != null)
+                OutlinedButton.icon(
+                  onPressed: () => _showNetworkImagePreview(
+                    'Proof of Delivery',
+                    '$_domain/api/v1/orders/proof/${latestProof['id']}',
+                    requiresAuth: true,
+                  ),
+                  icon: const Icon(Icons.photo_camera_back_rounded, size: 16),
+                  label: const Text('Inspect Delivery Photo'),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInfoRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 12,
+              color: StorkTheme.textMuted,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              value,
+              textAlign: TextAlign.right,
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: StorkTheme.textMain,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPurchasedItemsAndSummaryCard(String payMethod, JsonMap? extra) {
+    final List<dynamic> items = _extractList(_orderData!['items']);
+    final double storeDisc =
+        double.tryParse(extra?['store_voucher_discount']?.toString() ?? '0') ??
+            0.0;
+    final double platDisc = double.tryParse(
+            extra?['platform_voucher_discount']?.toString() ?? '0') ??
+        0.0;
+    final double shipDisc = double.tryParse(
+            extra?['shipping_voucher_discount']?.toString() ?? '0') ??
+        0.0;
+    final int coinsUsed =
+        int.tryParse(extra?['coins_used']?.toString() ?? '0') ?? 0;
+    final double coinsDisc =
+        double.tryParse(extra?['coins_discount_amount']?.toString() ?? '0') ??
+            0.0;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: StorkTheme.surface,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: StorkTheme.borderSubtle),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            color: StorkTheme.surfaceSubtle.withValues(alpha: 0.6),
+            child: const Text(
+              'Purchased Items',
+              style: TextStyle(
+                fontSize: 13.5,
+                fontWeight: FontWeight.w800,
+                color: StorkTheme.primaryDark,
+              ),
+            ),
+          ),
+          for (final rawItem in items)
+            if (rawItem is Map)
+              Padding(
+                padding: const EdgeInsets.all(14),
                 child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Container(
-                      width: 64,
-                      height: 64,
+                      width: 56,
+                      height: 56,
                       decoration: BoxDecoration(
-                        border: Border.all(color: Colors.grey.shade200),
-                        borderRadius: BorderRadius.circular(8),
+                        color: StorkTheme.surfaceSubtle,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: StorkTheme.borderSubtle),
                       ),
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(8),
-                        child: item['product_image'] != null
-                            ? Image.network(
-                                '${widget.baseUrl}/storage/${item['product_image']}',
-                                fit: BoxFit.cover)
-                            : const Icon(Icons.image, color: Colors.grey),
-                      ),
+                      child: rawItem['product_image'] != null
+                          ? ClipRRect(
+                              borderRadius: BorderRadius.circular(9),
+                              child: Image.network(
+                                ApiConfig.storageUrl(
+                                    rawItem['product_image'].toString(),
+                                    _domain),
+                                fit: BoxFit.cover,
+                              ),
+                            )
+                          : const Icon(Icons.inventory_2_outlined,
+                              color: StorkTheme.textMuted),
                     ),
                     const SizedBox(width: 12),
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(item['product_name'] ?? '',
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontSize: 14)),
-                          const SizedBox(height: 4),
-                          if (item['variant_name'] != null)
-                            Text(
-                              '${item['variant_name']}${item['sub_variant_name'] != null ? ' - ${item['sub_variant_name']}' : ''}',
-                              style: const TextStyle(
-                                  fontSize: 12, color: Color(0xFF78716C)),
+                          Text(
+                            rawItem['product_name']?.toString() ?? '',
+                            style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                              color: StorkTheme.textMain,
                             ),
-                          const SizedBox(height: 4),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text(
-                                '₱${double.tryParse(item['discounted_unit_price'].toString())?.toStringAsFixed(2) ?? '0.00'}',
-                                style: const TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    color: Color(0xFFCF4173)),
+                          ),
+                          if (rawItem['variant_name'] != null)
+                            Text(
+                              [
+                                rawItem['variant_name'],
+                                rawItem['sub_variant_name']
+                              ]
+                                  .where((e) =>
+                                      e != null && e.toString().isNotEmpty)
+                                  .join(' / '),
+                              style: const TextStyle(
+                                fontSize: 11.5,
+                                color: StorkTheme.textMuted,
                               ),
-                              Text('x${item['quantity']}',
-                                  style: const TextStyle(
-                                      fontSize: 13, color: Color(0xFF78716C))),
-                            ],
-                          )
+                            ),
+                          Text(
+                            '₱${_formatMoney(rawItem['discounted_unit_price'])} × ${rawItem['quantity']}',
+                            style: const TextStyle(
+                              fontSize: 11.5,
+                              color: StorkTheme.textMuted,
+                            ),
+                          ),
                         ],
                       ),
-                    )
+                    ),
+                    Text(
+                      '₱${_formatMoney(rawItem['line_total'])}',
+                      style: const TextStyle(
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w800,
+                        color: StorkTheme.textMain,
+                      ),
+                    ),
                   ],
                 ),
-              )),
+              ),
           const Divider(height: 1),
           Padding(
             padding: const EdgeInsets.all(16),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            child: Column(
               children: [
-                const Text('Total Items', style: TextStyle(fontSize: 14)),
-                Text('${items.length}',
-                    style: const TextStyle(
-                        fontSize: 14, fontWeight: FontWeight.bold)),
+                if (storeDisc > 0)
+                  _buildInfoRow(
+                    'Store / Bundle Discount:',
+                    '-₱${_formatMoney(storeDisc)}',
+                  ),
+                if (platDisc > 0)
+                  _buildInfoRow(
+                    'Platform Voucher (${extra?['platform_voucher_code'] ?? ''}):',
+                    '-₱${_formatMoney(platDisc)}',
+                  ),
+                if (coinsDisc > 0)
+                  _buildInfoRow(
+                    'Storkia Coins ($coinsUsed Coins):',
+                    '-₱${_formatMoney(coinsDisc)}',
+                  ),
+                _buildInfoRow(
+                  'Net Product Subtotal:',
+                  '₱${_formatMoney(_orderData!['subtotal_amount'])}',
+                ),
+                _buildInfoRow(
+                  'Shipping Fee (${_orderData!['total_weight'] ?? '0'} kg):',
+                  shipDisc > 0
+                      ? '₱${_formatMoney(_orderData!['shipping_fee'])} (-₱${_formatMoney(shipDisc)})'
+                      : '₱${_formatMoney(_orderData!['shipping_fee'])}',
+                ),
+                const Divider(height: 18),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Total Order Amount (${payMethod == 'WALLET' ? 'E-Wallet' : payMethod}):',
+                        style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w800,
+                          color: StorkTheme.primaryDark,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      '₱${_formatMoney(_orderData!['total_amount'])}',
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w900,
+                        color: StorkTheme.primary,
+                      ),
+                    ),
+                  ],
+                ),
               ],
             ),
-          )
-        ],
-      ),
-    );
-  }
-
-  Widget _buildOrderSummary() {
-    return Container(
-      color: Colors.white,
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              const Text('Merchandise Subtotal',
-                  style: TextStyle(color: Color(0xFF78716C), fontSize: 13)),
-              Text(
-                  '₱${double.tryParse(_orderData!['subtotal_amount'].toString())?.toStringAsFixed(2) ?? '0.00'}',
-                  style: const TextStyle(fontSize: 13)),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              const Text('Shipping Fee',
-                  style: TextStyle(color: Color(0xFF78716C), fontSize: 13)),
-              Text(
-                  '₱${double.tryParse(_orderData!['shipping_fee'].toString())?.toStringAsFixed(2) ?? '0.00'}',
-                  style: const TextStyle(fontSize: 13)),
-            ],
-          ),
-          const Divider(height: 24),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              const Text('Order Total',
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-              Text(
-                '₱${double.tryParse(_orderData!['total_amount'].toString())?.toStringAsFixed(2) ?? '0.00'}',
-                style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 18,
-                    color: Color(0xFFCF4173)),
-              ),
-            ],
           ),
         ],
       ),
     );
   }
 
-  Widget _buildOrderMeta() {
-    return Container(
-      color: Colors.white,
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              const Text('Order Number',
-                  style: TextStyle(color: Color(0xFF78716C), fontSize: 13)),
-              Text(_orderData!['seller_order_number'] ?? '',
-                  style: const TextStyle(
-                      fontSize: 13, fontWeight: FontWeight.bold)),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              const Text('Time Placed',
-                  style: TextStyle(color: Color(0xFF78716C), fontSize: 13)),
-              Text(_orderData!['created_at'] ?? '',
-                  style: const TextStyle(fontSize: 13)),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
+  Widget _buildTrackingTimelineCard() {
+    final List<dynamic> histories =
+        _extractList(_orderData!['status_histories']);
 
-  Widget _buildActionBottomBar() {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Colors.white,
-        boxShadow: [
-          BoxShadow(
-              color: Colors.black.withOpacity(0.05),
-              blurRadius: 10,
-              offset: const Offset(0, -5))
+        color: StorkTheme.surface,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: StorkTheme.borderSubtle),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.local_shipping_outlined,
+                  color: StorkTheme.primary, size: 19),
+              SizedBox(width: 8),
+              Text(
+                'Order & Shipment Timeline',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w800,
+                  color: StorkTheme.primaryDark,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          if (histories.isEmpty)
+            const Text(
+              'No status logs recorded yet.',
+              style: TextStyle(fontSize: 12.5, color: StorkTheme.textMuted),
+            )
+          else
+            ListView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: histories.length,
+              itemBuilder: (context, index) {
+                final rawHistory = histories[index];
+                if (rawHistory is! Map) return const SizedBox.shrink();
+                final history = Map<String, dynamic>.from(rawHistory);
+                final bool isLatest = index == 0;
+                final String statusTitle = (history['to_status'] ?? '')
+                    .toString()
+                    .replaceAll('_', ' ')
+                    .toUpperCase();
+                final String remarks = history['remarks']?.toString() ?? '';
+                final String createdAt =
+                    history['created_at']?.toString() ?? '';
+
+                return Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Column(
+                      children: [
+                        Container(
+                          width: 13,
+                          height: 13,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: isLatest
+                                ? StorkTheme.primary
+                                : StorkTheme.borderSubtle,
+                          ),
+                        ),
+                        if (index != histories.length - 1)
+                          Container(
+                            width: 2,
+                            height: 44,
+                            color: StorkTheme.borderSubtle,
+                          ),
+                      ],
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Padding(
+                        padding: const EdgeInsets.only(bottom: 14),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              statusTitle,
+                              style: TextStyle(
+                                fontSize: 12.5,
+                                fontWeight: isLatest
+                                    ? FontWeight.w800
+                                    : FontWeight.w600,
+                                color: isLatest
+                                    ? StorkTheme.textMain
+                                    : StorkTheme.textMuted,
+                              ),
+                            ),
+                            if (remarks.isNotEmpty) ...[
+                              const SizedBox(height: 2),
+                              Text(
+                                remarks,
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  color: StorkTheme.textMuted,
+                                ),
+                              ),
+                            ],
+                            const SizedBox(height: 2),
+                            Text(
+                              createdAt,
+                              style: const TextStyle(
+                                fontSize: 10.5,
+                                color: StorkTheme.textMuted,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              },
+            ),
         ],
       ),
-      child: SafeArea(
-        child: Row(
+    );
+  }
+}
+
+class _DeliveryRiderChatBottomSheet extends StatefulWidget {
+  final int orderId;
+  final String domain;
+  final String token;
+
+  const _DeliveryRiderChatBottomSheet({
+    required this.orderId,
+    required this.domain,
+    required this.token,
+  });
+
+  @override
+  State<_DeliveryRiderChatBottomSheet> createState() =>
+      _DeliveryRiderChatBottomSheetState();
+}
+
+class _DeliveryRiderChatBottomSheetState
+    extends State<_DeliveryRiderChatBottomSheet> {
+  final TextEditingController _msgCtrl = TextEditingController();
+  Timer? _pollTimer;
+  bool _isLoading = true;
+  bool _isSending = false;
+  bool _canSend = false;
+  JsonMap? _rider;
+  List<JsonMap> _messages = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchChat();
+    _pollTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+      _fetchChat(silent: true);
+    });
+  }
+
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    _msgCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _fetchChat({bool silent = false}) async {
+    try {
+      final response = await http.get(
+        Uri.parse(
+            '${widget.domain}/api/v1/orders/${widget.orderId}/delivery-chat'),
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Accept': 'application/json',
+        },
+      ).timeout(ApiConfig.requestTimeout);
+
+      if (!mounted || response.statusCode != 200) return;
+      final body = json.decode(response.body);
+      if (body is Map && body['success'] == true) {
+        final List<dynamic> rawMsgs = body['messages'] is List
+            ? List<dynamic>.from(body['messages'] as List)
+            : <dynamic>[];
+        setState(() {
+          _canSend = body['can_send'] == true;
+          _rider = body['rider'] is Map
+              ? Map<String, dynamic>.from(body['rider'] as Map)
+              : null;
+          _messages = [
+            for (final m in rawMsgs)
+              if (m is Map) Map<String, dynamic>.from(m),
+          ];
+          _isLoading = false;
+        });
+      }
+    } catch (_) {
+      if (mounted && !silent) {
+        setState(() => _isLoading = false);
+      }
+    }
+  }
+
+  Future<void> _sendMessage() async {
+    final text = _msgCtrl.text.trim();
+    if (text.isEmpty || _isSending || !_canSend) return;
+    setState(() => _isSending = true);
+    _msgCtrl.clear();
+
+    try {
+      final response = await http
+          .post(
+            Uri.parse(
+                '${widget.domain}/api/v1/orders/${widget.orderId}/delivery-chat'),
+            headers: {
+              'Authorization': 'Bearer ${widget.token}',
+              'Accept': 'application/json',
+              'Content-Type': 'application/json',
+            },
+            body: json.encode({'message': text}),
+          )
+          .timeout(ApiConfig.requestTimeout);
+
+      if (!mounted) return;
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        _fetchChat(silent: true);
+      } else {
+        _msgCtrl.text = text;
+      }
+    } catch (_) {
+      _msgCtrl.text = text;
+    } finally {
+      if (mounted) setState(() => _isSending = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom,
+      ),
+      child: SizedBox(
+        height: MediaQuery.sizeOf(context).height * 0.68,
+        child: Column(
           children: [
-            Expanded(
-              child: OutlinedButton(
-                onPressed: _reportDispute,
-                style: OutlinedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  foregroundColor: const Color(0xFFE11D48),
-                  side: const BorderSide(color: Color(0xFFE11D48)),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8)),
-                ),
-                child: const Text('Return / Refund',
-                    style: TextStyle(fontWeight: FontWeight.bold)),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 16, 12, 10),
+              child: Row(
+                children: [
+                  const Icon(Icons.two_wheeler_rounded,
+                      color: StorkTheme.primary),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          _rider != null
+                              ? 'Delivery Chat: ${_rider!['name'] ?? 'Rider'}'
+                              : 'Buyer-Rider Delivery Chat',
+                          style: const TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w800,
+                            color: StorkTheme.primaryDark,
+                          ),
+                        ),
+                        if (_rider != null)
+                          Text(
+                            '${_rider!['vehicle_type'] ?? ''} • Plate: ${_rider!['plate_number'] ?? ''}',
+                            style: const TextStyle(
+                              fontSize: 11.5,
+                              color: StorkTheme.textMuted,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close_rounded),
+                  ),
+                ],
               ),
             ),
-            const SizedBox(width: 12),
+            const Divider(height: 1),
             Expanded(
-              flex: 2,
-              child: ElevatedButton(
-                onPressed: _confirmReceipt,
-                style: ElevatedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  backgroundColor: const Color(0xFFCF4173),
-                  foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8)),
+              child: _isLoading
+                  ? const Center(
+                      child:
+                          CircularProgressIndicator(color: StorkTheme.primary),
+                    )
+                  : _messages.isEmpty
+                      ? const Center(
+                          child: Padding(
+                            padding: EdgeInsets.all(24),
+                            child: Text(
+                              'Send a doorstep landmark or delivery note to your assigned Rider.',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 12.5,
+                                color: StorkTheme.textMuted,
+                              ),
+                            ),
+                          ),
+                        )
+                      : ListView.builder(
+                          padding: const EdgeInsets.all(16),
+                          itemCount: _messages.length,
+                          itemBuilder: (context, index) {
+                            final m = _messages[index];
+                            final bool isBuyer =
+                                m['sender_type']?.toString() == 'buyer';
+                            return Align(
+                              alignment: isBuyer
+                                  ? Alignment.centerRight
+                                  : Alignment.centerLeft,
+                              child: Container(
+                                margin: const EdgeInsets.only(bottom: 10),
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 14, vertical: 10),
+                                constraints: BoxConstraints(
+                                  maxWidth:
+                                      MediaQuery.sizeOf(context).width * 0.72,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: isBuyer
+                                      ? StorkTheme.primary
+                                      : StorkTheme.surfaceSubtle,
+                                  borderRadius: BorderRadius.circular(16),
+                                ),
+                                child: Text(
+                                  m['message']?.toString() ?? '',
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    color: isBuyer
+                                        ? Colors.white
+                                        : StorkTheme.textMain,
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+            ),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: const BoxDecoration(
+                color: StorkTheme.surface,
+                border: Border(top: BorderSide(color: StorkTheme.borderSubtle)),
+              ),
+              child: SafeArea(
+                top: false,
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _msgCtrl,
+                        enabled: _canSend,
+                        decoration: InputDecoration(
+                          hintText: _canSend
+                              ? 'Message your delivery rider...'
+                              : 'Chat active only during active rider delivery',
+                        ),
+                        onSubmitted: (_) => _sendMessage(),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton(
+                      onPressed:
+                          (_canSend && !_isSending) ? _sendMessage : null,
+                      icon: const Icon(
+                        Icons.send_rounded,
+                        color: StorkTheme.primary,
+                      ),
+                    ),
+                  ],
                 ),
-                child: const Text('Confirm Receipt',
-                    style: TextStyle(fontWeight: FontWeight.bold)),
               ),
             ),
           ],
