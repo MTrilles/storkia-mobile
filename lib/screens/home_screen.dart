@@ -32,6 +32,7 @@ import 'super_deals_screen.dart';
 import 'trends_screen.dart';
 
 typedef JsonMap = Map<String, dynamic>;
+typedef IntProductMap = Map<int, Product>;
 
 class HomeScreen extends ConsumerStatefulWidget {
   final UserModel user;
@@ -287,7 +288,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         if (_products.isEmpty) {
           _products = firstPageProducts;
         } else {
-          final Map<int, Product> freshById = {
+          final IntProductMap freshById = {
             for (final p in firstPageProducts) p.id: p
           };
           for (int i = 0; i < _products.length; i++) {
@@ -512,15 +513,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       ),
       child: Row(
         children: [
-          Image.asset(
-            'assets/icon.webp',
-            width: 30,
-            height: 30,
-            fit: BoxFit.contain,
-            errorBuilder: (_, __, ___) => const Icon(
-              Icons.storefront_rounded,
-              color: StorkTheme.primary,
-              size: 28,
+          Container(
+            padding: const EdgeInsets.all(5),
+            decoration: BoxDecoration(
+              color: StorkTheme.brandLight.withValues(alpha: 0.35),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Image.asset(
+              'assets/icon.webp',
+              width: 24,
+              height: 24,
+              fit: BoxFit.contain,
+              errorBuilder: (_, __, ___) => const Icon(
+                Icons.storefront_rounded,
+                color: StorkTheme.primary,
+                size: 22,
+              ),
             ),
           ),
           const SizedBox(width: 10),
@@ -538,11 +546,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                 );
               },
               child: Container(
-                height: 38,
+                height: 40,
                 padding: const EdgeInsets.symmetric(horizontal: 12),
                 decoration: BoxDecoration(
                   color: StorkTheme.surfaceSubtle,
-                  borderRadius: BorderRadius.circular(12),
+                  borderRadius: BorderRadius.circular(14),
                   border: Border.all(color: StorkTheme.borderSubtle),
                 ),
                 child: const Row(
@@ -550,7 +558,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                     Icon(
                       Icons.search_rounded,
                       size: 18,
-                      color: StorkTheme.textMuted,
+                      color: StorkTheme.primary,
                     ),
                     SizedBox(width: 8),
                     Expanded(
@@ -560,6 +568,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
                           fontSize: 12.5,
+                          fontWeight: FontWeight.w500,
                           color: StorkTheme.textMuted,
                         ),
                       ),
@@ -640,7 +649,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       child: Column(
         children: [
           SizedBox(
-            height: 162,
+            height: 168,
             child: PageView.builder(
               controller: _bannerController,
               itemCount: slides.length,
@@ -662,14 +671,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   child: Container(
                     margin: const EdgeInsets.symmetric(horizontal: 2),
                     decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(20),
+                      borderRadius: BorderRadius.circular(22),
                       gradient: LinearGradient(
                         colors: isEven
-                            ? [StorkTheme.primaryDark, StorkTheme.primary]
-                            : [const Color(0xFF292524), StorkTheme.primaryDark],
+                            ? const [StorkTheme.primaryDark, StorkTheme.primary]
+                            : const [Color(0xFF292524), StorkTheme.primaryDark],
                         begin: Alignment.topLeft,
                         end: Alignment.bottomRight,
                       ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: StorkTheme.primaryDark.withValues(alpha: 0.16),
+                          blurRadius: 14,
+                          offset: const Offset(0, 6),
+                        ),
+                      ],
                     ),
                     clipBehavior: Clip.antiAlias,
                     child: Stack(
@@ -693,8 +709,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                             children: [
                               Container(
                                 padding: const EdgeInsets.symmetric(
-                                  horizontal: 9,
-                                  vertical: 3,
+                                  horizontal: 10,
+                                  vertical: 3.5,
                                 ),
                                 decoration: BoxDecoration(
                                   color: Colors.white.withValues(alpha: 0.18),
@@ -739,23 +755,34 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                                 ),
                               ],
                               const Spacer(),
-                              Row(
-                                children: [
-                                  Text(
-                                    ctaText,
-                                    style: const TextStyle(
-                                      color: StorkTheme.brandLight,
-                                      fontSize: 11.5,
-                                      fontWeight: FontWeight.w800,
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 4,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Colors.black.withValues(alpha: 0.22),
+                                  borderRadius: BorderRadius.circular(14),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(
+                                      ctaText,
+                                      style: const TextStyle(
+                                        color: StorkTheme.brandLight,
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w800,
+                                      ),
                                     ),
-                                  ),
-                                  const SizedBox(width: 4),
-                                  const Icon(
-                                    Icons.arrow_forward_rounded,
-                                    size: 14,
-                                    color: StorkTheme.brandLight,
-                                  ),
-                                ],
+                                    const SizedBox(width: 4),
+                                    const Icon(
+                                      Icons.arrow_forward_rounded,
+                                      size: 13,
+                                      color: StorkTheme.brandLight,
+                                    ),
+                                  ],
+                                ),
                               ),
                             ],
                           ),
@@ -776,7 +803,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                 duration: const Duration(milliseconds: 220),
                 margin: const EdgeInsets.symmetric(horizontal: 3),
                 height: 5,
-                width: active ? 18 : 5,
+                width: active ? 20 : 6,
                 decoration: BoxDecoration(
                   color: active ? StorkTheme.primary : StorkTheme.borderSubtle,
                   borderRadius: BorderRadius.circular(4),
@@ -890,7 +917,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
       child: SizedBox(
-        height: 82,
+        height: 88,
         child: ListView.separated(
           scrollDirection: Axis.horizontal,
           itemCount: items.length,
@@ -900,29 +927,30 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             final Color color = item['color'] as Color;
             return InkWell(
               onTap: item['onTap'] as VoidCallback,
-              borderRadius: BorderRadius.circular(16),
+              borderRadius: BorderRadius.circular(18),
               child: Container(
-                width: 96,
+                width: 98,
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
                 decoration: BoxDecoration(
                   color: StorkTheme.surface,
-                  borderRadius: BorderRadius.circular(16),
+                  borderRadius: BorderRadius.circular(18),
                   border: Border.all(color: StorkTheme.borderSubtle),
+                  boxShadow: StorkTheme.softCardShadow,
                 ),
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Container(
-                      width: 32,
-                      height: 32,
+                      width: 34,
+                      height: 34,
                       decoration: BoxDecoration(
                         color: color.withValues(alpha: 0.12),
-                        borderRadius: BorderRadius.circular(10),
+                        borderRadius: BorderRadius.circular(11),
                       ),
                       child: Icon(
                         item['icon'] as IconData,
                         color: color,
-                        size: 18,
+                        size: 19,
                       ),
                     ),
                     const SizedBox(height: 5),
@@ -967,34 +995,42 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Row(
-                children: [
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                    decoration: BoxDecoration(
-                      color: StorkTheme.danger,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: const Text(
-                      '⚡ SUPER DEALS',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 10,
-                        fontWeight: FontWeight.w900,
+              Expanded(
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                          colors: [StorkTheme.danger, StorkTheme.primary],
+                        ),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Text(
+                        '⚡ SUPER DEALS',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w900,
+                        ),
                       ),
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  const Text(
-                    'Limited Slot Offers',
-                    style: TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w800,
-                      color: StorkTheme.primaryDark,
+                    const SizedBox(width: 8),
+                    const Flexible(
+                      child: Text(
+                        'Limited Slot Offers',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w800,
+                          color: StorkTheme.primaryDark,
+                        ),
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
               GestureDetector(
                 onTap: () {
@@ -1018,7 +1054,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           ),
         ),
         SizedBox(
-          height: 228,
+          height: 234,
           child: ListView.separated(
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -1071,13 +1107,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   );
                 },
                 child: Container(
-                  width: 156,
+                  width: 158,
                   decoration: BoxDecoration(
                     color: StorkTheme.surface,
-                    borderRadius: BorderRadius.circular(16),
+                    borderRadius: BorderRadius.circular(18),
                     border: Border.all(
                       color: StorkTheme.primary.withValues(alpha: 0.35),
                     ),
+                    boxShadow: StorkTheme.softCardShadow,
                   ),
                   clipBehavior: Clip.antiAlias,
                   child: Column(
@@ -1121,7 +1158,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                         ),
                       ),
                       Padding(
-                        padding: const EdgeInsets.all(9),
+                        padding: const EdgeInsets.all(10),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           mainAxisSize: MainAxisSize.min,
@@ -1171,7 +1208,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                               borderRadius: BorderRadius.circular(6),
                               child: LinearProgressIndicator(
                                 value: soldRatio,
-                                minHeight: 11,
+                                minHeight: 10,
                                 backgroundColor:
                                     StorkTheme.primary.withValues(alpha: 0.14),
                                 valueColor: const AlwaysStoppedAnimation<Color>(
@@ -1242,7 +1279,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                     style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.w800,
-                      color: StorkTheme.textMain,
+                      color: StorkTheme.primaryDark,
                     ),
                   ),
                 ],
@@ -1269,7 +1306,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           ),
         ),
         SizedBox(
-          height: 238,
+          height: 242,
           child: ListView.separated(
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -1277,7 +1314,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             separatorBuilder: (_, __) => const SizedBox(width: 12),
             itemBuilder: (context, index) {
               return SizedBox(
-                width: 158,
+                width: 160,
                 child: ProductCard(
                   product: trendingProducts[index],
                   baseUrl: _baseUrl,
@@ -1303,10 +1340,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               const Text(
-                'OUR SELLERS',
+                'OUR OFFICIAL SELLERS',
                 style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w800,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w900,
                   color: StorkTheme.primaryDark,
                   letterSpacing: 0.5,
                 ),
@@ -1327,7 +1364,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   'All Verified Stores →',
                   style: TextStyle(
                     fontSize: 11.5,
-                    fontWeight: FontWeight.w700,
+                    fontWeight: FontWeight.w800,
                     color: StorkTheme.primary,
                   ),
                 ),
@@ -1336,7 +1373,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           ),
         ),
         SizedBox(
-          height: 112,
+          height: 114,
           child: ListView.separated(
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -1362,12 +1399,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   );
                 },
                 child: Container(
-                  width: 150,
+                  width: 156,
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
                     color: StorkTheme.surface,
-                    borderRadius: BorderRadius.circular(16),
+                    borderRadius: BorderRadius.circular(18),
                     border: Border.all(color: StorkTheme.borderSubtle),
+                    boxShadow: StorkTheme.softCardShadow,
                   ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -1403,7 +1441,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                               overflow: TextOverflow.ellipsis,
                               style: const TextStyle(
                                 fontSize: 12,
-                                fontWeight: FontWeight.w700,
+                                fontWeight: FontWeight.w800,
                                 color: StorkTheme.textMain,
                                 height: 1.2,
                               ),
@@ -1472,14 +1510,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                 style: const TextStyle(
                   fontSize: 16,
                   fontWeight: FontWeight.w800,
-                  color: StorkTheme.textMain,
+                  color: StorkTheme.primaryDark,
                 ),
               ),
             ],
           ),
         ),
         SizedBox(
-          height: 238,
+          height: 242,
           child: ListView.separated(
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -1487,7 +1525,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             separatorBuilder: (_, __) => const SizedBox(width: 12),
             itemBuilder: (context, index) {
               return SizedBox(
-                width: 158,
+                width: 160,
                 child: ProductCard(
                   product: items[index],
                   baseUrl: _baseUrl,
@@ -1508,6 +1546,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     final rewardState = ref.watch(rewardSummaryProvider);
     final screenWidth = MediaQuery.sizeOf(context).width;
     final gridCols = screenWidth >= 700 ? 3 : 2;
+    final aspectRatio = screenWidth < 350 ? 0.63 : 0.68;
 
     return Stack(
       children: [
@@ -1594,7 +1633,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                                         style: TextStyle(
                                           fontSize: 16,
                                           fontWeight: FontWeight.w800,
-                                          color: StorkTheme.textMain,
+                                          color: StorkTheme.primaryDark,
                                         ),
                                       ),
                                     ),
@@ -1621,7 +1660,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                                         gridDelegate:
                                             SliverGridDelegateWithFixedCrossAxisCount(
                                           crossAxisCount: gridCols,
-                                          childAspectRatio: 0.68,
+                                          childAspectRatio: aspectRatio,
                                           crossAxisSpacing: 12,
                                           mainAxisSpacing: 12,
                                         ),
@@ -1742,7 +1781,7 @@ class _TopIconBadgeButton extends StatelessWidget {
       icon: Stack(
         clipBehavior: Clip.none,
         children: [
-          Icon(icon, color: StorkTheme.textMain, size: 23),
+          Icon(icon, color: StorkTheme.primaryDark, size: 22),
           if (badgeCount > 0)
             Positioned(
               right: -5,

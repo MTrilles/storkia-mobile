@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
@@ -37,6 +38,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
   String _avatarUrl = '';
   bool _canChangeUsername = true;
   String? _nextUsernameChangeDate;
+  String? _usernameError;
 
   String get _domain => ApiConfig.resolveBaseDomain(widget.baseUrl);
 
@@ -54,7 +56,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
         _avatarUrl = ApiConfig.storageUrl(cachedUser.avatarPath, _domain);
       }
     }
-    _fetchProfile();
+    _fetchProfile(silent: false);
     _autoSyncTimer = Timer.periodic(const Duration(seconds: 8), (_) {
       if (!_isSavingUsername && !_isUploadingAvatar) {
         _fetchProfile(silent: true);
@@ -77,8 +79,8 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
     }
   }
 
-  Future<void> _fetchProfile({bool silent = false}) async {
-    if (!silent) {
+  Future<void> _fetchProfile({bool silent = true}) async {
+    if (!silent && _username.isEmpty) {
       setState(() => _isLoading = true);
     }
     try {
@@ -96,16 +98,15 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
         final d = body is Map ? (body['data'] ?? body) : null;
         if (d is Map) {
           final JsonMap profileMap = d['profile'] is Map
-              ? Map<String, dynamic>.from(d['profile'] as Map)
+              ? JsonMap.from(d['profile'] as Map)
               : (d['buyer_profile'] is Map
-                  ? Map<String, dynamic>.from(d['buyer_profile'] as Map)
-                  : Map<String, dynamic>.from(d));
+                  ? JsonMap.from(d['buyer_profile'] as Map)
+                  : JsonMap.from(d));
 
-          final JsonMap? userMap = d['user'] is Map
-              ? Map<String, dynamic>.from(d['user'] as Map)
-              : null;
+          final JsonMap? userMap =
+              d['user'] is Map ? JsonMap.from(d['user'] as Map) : null;
           final JsonMap? nestedBuyerProfile = userMap?['buyer_profile'] is Map
-              ? Map<String, dynamic>.from(userMap!['buyer_profile'] as Map)
+              ? JsonMap.from(userMap!['buyer_profile'] as Map)
               : null;
 
           final String fetchedUsername = (profileMap['username'] ??
@@ -169,13 +170,25 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
   }
 
   Future<void> _updateUsername() async {
-    final clean = _usernameController.text.trim();
-    if (clean.length < 3) {
-      _showToast('Username must be at least 3 characters.');
+    final clean = _usernameController.text.trim().toLowerCase();
+    if (clean.length < 3 || clean.length > 30) {
+      setState(() {
+        _usernameError = 'Username must be between 3 and 30 characters.';
+      });
+      return;
+    }
+    if (!RegExp(r'^[a-z0-9_.]+$').hasMatch(clean)) {
+      setState(() {
+        _usernameError =
+            'Use only lowercase letters, numbers, underscores (_), or dots (.).';
+      });
       return;
     }
 
-    setState(() => _isSavingUsername = true);
+    setState(() {
+      _isSavingUsername = true;
+      _usernameError = null;
+    });
     try {
       final response = await http
           .patch(
@@ -213,10 +226,10 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
             err = first.first.toString();
           }
         }
-        _showToast(err);
+        setState(() => _usernameError = err);
       }
     } catch (_) {
-      _showToast('Network error occurred.');
+      setState(() => _usernameError = 'Network error occurred.');
     } finally {
       if (mounted) setState(() => _isSavingUsername = false);
     }
@@ -335,185 +348,352 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
       appBar: AppBar(
         title: const Text('Public Buyer Profile'),
       ),
-      body: _isLoading
+      body: _isLoading && _username.isEmpty
           ? const Center(
               child: CircularProgressIndicator(color: StorkTheme.primary),
             )
-          : ListView(
-              padding: const EdgeInsets.all(16),
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(
-                    color: StorkTheme.surface,
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: StorkTheme.borderSubtle),
-                  ),
-                  child: Column(
-                    children: [
-                      Stack(
-                        alignment: Alignment.bottomRight,
-                        children: [
-                          CircleAvatar(
-                            radius: 46,
-                            backgroundColor:
-                                StorkTheme.primary.withValues(alpha: 0.12),
-                            backgroundImage: effectiveAvatar.isNotEmpty
-                                ? NetworkImage(effectiveAvatar)
-                                : null,
-                            child: effectiveAvatar.isEmpty
-                                ? Text(
-                                    (user?.firstName.isNotEmpty ?? false)
-                                        ? user!.firstName[0].toUpperCase()
-                                        : 'B',
-                                    style: const TextStyle(
-                                      fontSize: 32,
-                                      fontWeight: FontWeight.w900,
+          : RefreshIndicator(
+              color: StorkTheme.primary,
+              onRefresh: () => _fetchProfile(silent: true),
+              child: ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(22),
+                    decoration: BoxDecoration(
+                      gradient: StorkTheme.brandGradient,
+                      borderRadius: BorderRadius.circular(24),
+                      boxShadow: [
+                        BoxShadow(
+                          color: StorkTheme.primaryDark.withValues(alpha: 0.18),
+                          blurRadius: 16,
+                          offset: const Offset(0, 6),
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      children: [
+                        GestureDetector(
+                          onTap:
+                              _isUploadingAvatar ? null : _pickAndUploadAvatar,
+                          child: Stack(
+                            alignment: Alignment.bottomRight,
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.all(3),
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  border: Border.all(
+                                    color: Colors.white.withValues(alpha: 0.55),
+                                    width: 2,
+                                  ),
+                                ),
+                                child: CircleAvatar(
+                                  radius: 46,
+                                  backgroundColor: Colors.white,
+                                  backgroundImage: effectiveAvatar.isNotEmpty
+                                      ? NetworkImage(effectiveAvatar)
+                                      : null,
+                                  child: effectiveAvatar.isEmpty
+                                      ? Text(
+                                          (user?.firstName.isNotEmpty ?? false)
+                                              ? user!.firstName[0].toUpperCase()
+                                              : 'B',
+                                          style: const TextStyle(
+                                            fontSize: 32,
+                                            fontWeight: FontWeight.w900,
+                                            color: StorkTheme.primary,
+                                          ),
+                                        )
+                                      : null,
+                                ),
+                              ),
+                              Container(
+                                width: 30,
+                                height: 30,
+                                decoration: BoxDecoration(
+                                  color: StorkTheme.primaryDark,
+                                  shape: BoxShape.circle,
+                                  border: Border.all(
+                                    color: Colors.white,
+                                    width: 2,
+                                  ),
+                                ),
+                                child: const Icon(
+                                  Icons.camera_alt_rounded,
+                                  size: 15,
+                                  color: Colors.white,
+                                ),
+                              ),
+                              if (_isUploadingAvatar)
+                                const Positioned.fill(
+                                  child: Center(
+                                    child: CircularProgressIndicator(
                                       color: StorkTheme.primary,
                                     ),
-                                  )
-                                : null,
+                                  ),
+                                ),
+                            ],
                           ),
-                          if (_isUploadingAvatar)
-                            const Positioned.fill(
-                              child: Center(
-                                child: CircularProgressIndicator(
-                                  color: StorkTheme.primary,
+                        ),
+                        const SizedBox(height: 14),
+                        Text(
+                          user?.fullName ?? 'Buyer',
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            fontSize: 19,
+                            fontWeight: FontWeight.w900,
+                            color: Colors.white,
+                          ),
+                        ),
+                        if (_username.isNotEmpty) ...[
+                          const SizedBox(height: 4),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 3,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withValues(alpha: 0.18),
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            child: Text(
+                              '@$_username',
+                              style: const TextStyle(
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w800,
+                                color: StorkTheme.brandLight,
+                              ),
+                            ),
+                          ),
+                        ],
+                        const SizedBox(height: 16),
+                        Wrap(
+                          spacing: 10,
+                          runSpacing: 8,
+                          alignment: WrapAlignment.center,
+                          children: [
+                            ElevatedButton.icon(
+                              onPressed: _isUploadingAvatar
+                                  ? null
+                                  : _pickAndUploadAvatar,
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.white,
+                                foregroundColor: StorkTheme.primaryDark,
+                              ),
+                              icon: const Icon(
+                                Icons.photo_camera_outlined,
+                                size: 17,
+                              ),
+                              label: Text(
+                                effectiveAvatar.isNotEmpty
+                                    ? 'Change Avatar'
+                                    : 'Upload Avatar',
+                              ),
+                            ),
+                            if (effectiveAvatar.isNotEmpty)
+                              OutlinedButton.icon(
+                                onPressed:
+                                    _isUploadingAvatar ? null : _removeAvatar,
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: Colors.white,
+                                  side: BorderSide(
+                                    color: Colors.white.withValues(alpha: 0.55),
+                                  ),
+                                ),
+                                icon: const Icon(
+                                  Icons.delete_outline_rounded,
+                                  size: 17,
+                                ),
+                                label: const Text('Remove'),
+                              ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Container(
+                    padding: const EdgeInsets.all(18),
+                    decoration: BoxDecoration(
+                      color: StorkTheme.surface,
+                      borderRadius: BorderRadius.circular(22),
+                      border: Border.all(color: StorkTheme.borderSubtle),
+                      boxShadow: StorkTheme.softCardShadow,
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Container(
+                              width: 34,
+                              height: 34,
+                              decoration: BoxDecoration(
+                                color:
+                                    StorkTheme.primary.withValues(alpha: 0.1),
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: const Icon(
+                                Icons.alternate_email_rounded,
+                                color: StorkTheme.primary,
+                                size: 18,
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            const Expanded(
+                              child: Text(
+                                'PUBLIC @USERNAME',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w900,
+                                  color: StorkTheme.primaryDark,
+                                  letterSpacing: 0.4,
                                 ),
                               ),
                             ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      Text(
-                        user?.fullName ?? 'Buyer',
-                        style: const TextStyle(
-                          fontSize: 17,
-                          fontWeight: FontWeight.w800,
-                          color: StorkTheme.textMain,
+                          ],
                         ),
-                      ),
-                      if (_username.isNotEmpty) ...[
-                        const SizedBox(height: 2),
-                        Text(
-                          '@$_username',
-                          style: const TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w700,
-                            color: StorkTheme.primary,
-                          ),
-                        ),
-                      ],
-                      const SizedBox(height: 14),
-                      Wrap(
-                        spacing: 10,
-                        runSpacing: 8,
-                        alignment: WrapAlignment.center,
-                        children: [
-                          ElevatedButton.icon(
-                            onPressed: _isUploadingAvatar
-                                ? null
-                                : _pickAndUploadAvatar,
-                            icon: const Icon(Icons.photo_camera_outlined,
-                                size: 17),
-                            label: Text(
-                              effectiveAvatar.isNotEmpty
-                                  ? 'Change Avatar'
-                                  : 'Upload Avatar',
-                            ),
-                          ),
-                          if (effectiveAvatar.isNotEmpty)
-                            OutlinedButton.icon(
-                              onPressed:
-                                  _isUploadingAvatar ? null : _removeAvatar,
-                              style: OutlinedButton.styleFrom(
-                                foregroundColor: StorkTheme.danger,
-                                side:
-                                    const BorderSide(color: StorkTheme.danger),
-                              ),
-                              icon: const Icon(Icons.delete_outline_rounded,
-                                  size: 17),
-                              label: const Text('Remove'),
-                            ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 16),
-                Container(
-                  padding: const EdgeInsets.all(18),
-                  decoration: BoxDecoration(
-                    color: StorkTheme.surface,
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: StorkTheme.borderSubtle),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'PUBLIC USERNAME',
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w800,
-                          color: StorkTheme.textMuted,
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      const Text(
-                        'Your username identifies your public profile across Storkia reviews and product Q&A.',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: StorkTheme.textMuted,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: _usernameController,
-                        enabled: _canChangeUsername && !_isSavingUsername,
-                        maxLength: 30,
-                        decoration: const InputDecoration(
-                          labelText: 'Username (letters, numbers, _ .)',
-                          prefixText: '@',
-                          counterText: '',
-                        ),
-                      ),
-                      if (!_canChangeUsername &&
-                          _nextUsernameChangeDate != null) ...[
                         const SizedBox(height: 8),
-                        Text(
-                          'Username can be changed again on $_nextUsernameChangeDate.',
-                          style: const TextStyle(
-                            fontSize: 11.5,
-                            fontWeight: FontWeight.w700,
-                            color: StorkTheme.warning,
+                        const Text(
+                          'Your username identifies your public profile across Storkia reviews and product Q&A.',
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            color: StorkTheme.textMuted,
+                            height: 1.38,
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+                        TextField(
+                          controller: _usernameController,
+                          enabled: _canChangeUsername && !_isSavingUsername,
+                          maxLength: 30,
+                          inputFormatters: [
+                            FilteringTextInputFormatter.allow(
+                              RegExp(r'[A-Za-z0-9_.]'),
+                            ),
+                            LengthLimitingTextInputFormatter(30),
+                          ],
+                          onChanged: (_) {
+                            if (_usernameError != null) {
+                              setState(() => _usernameError = null);
+                            }
+                          },
+                          decoration: const InputDecoration(
+                            labelText:
+                                'Username (3–30 chars: letters, numbers, _ .)',
+                            prefixText: '@',
+                            counterText: '',
+                            fillColor: StorkTheme.surfaceSubtle,
+                          ),
+                        ),
+                        if (_usernameError != null) ...[
+                          const SizedBox(height: 10),
+                          Container(
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              color: StorkTheme.danger.withValues(alpha: 0.08),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: StorkTheme.danger.withValues(alpha: 0.3),
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(
+                                  Icons.error_outline_rounded,
+                                  size: 16,
+                                  color: StorkTheme.danger,
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    _usernameError!,
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w700,
+                                      color: StorkTheme.danger,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                        if (!_canChangeUsername &&
+                            _nextUsernameChangeDate != null) ...[
+                          const SizedBox(height: 10),
+                          Container(
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              color: StorkTheme.warning.withValues(alpha: 0.12),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color:
+                                    StorkTheme.warning.withValues(alpha: 0.35),
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(
+                                  Icons.schedule_rounded,
+                                  size: 16,
+                                  color: Color(0xFF92400E),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    'Username can be changed again on $_nextUsernameChangeDate.',
+                                    style: const TextStyle(
+                                      fontSize: 11.5,
+                                      fontWeight: FontWeight.w700,
+                                      color: Color(0xFF92400E),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                        const SizedBox(height: 16),
+                        Container(
+                          width: double.infinity,
+                          height: 48,
+                          decoration: BoxDecoration(
+                            gradient: (!_canChangeUsername || _isSavingUsername)
+                                ? null
+                                : StorkTheme.brandGradient,
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: ElevatedButton(
+                            onPressed:
+                                (!_canChangeUsername || _isSavingUsername)
+                                    ? null
+                                    : _updateUsername,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.transparent,
+                              shadowColor: Colors.transparent,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                            ),
+                            child: _isSavingUsername
+                                ? const SizedBox(
+                                    width: 20,
+                                    height: 20,
+                                    child: CircularProgressIndicator(
+                                      color: Colors.white,
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Text('Save Username'),
                           ),
                         ),
                       ],
-                      const SizedBox(height: 14),
-                      SizedBox(
-                        width: double.infinity,
-                        height: 46,
-                        child: ElevatedButton(
-                          onPressed: (!_canChangeUsername || _isSavingUsername)
-                              ? null
-                              : _updateUsername,
-                          child: _isSavingUsername
-                              ? const SizedBox(
-                                  width: 20,
-                                  height: 20,
-                                  child: CircularProgressIndicator(
-                                    color: Colors.white,
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : const Text('Save Username'),
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
     );
   }

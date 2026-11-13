@@ -71,7 +71,6 @@ class _AddressSelectionScreenState extends State<AddressSelectionScreen>
       ).timeout(ApiConfig.requestTimeout);
 
       if (!mounted) return;
-
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         if (data['success'] == true && data['data'] is List) {
@@ -105,6 +104,7 @@ class _AddressSelectionScreenState extends State<AddressSelectionScreen>
           'Accept': 'application/json',
         },
       ).timeout(ApiConfig.requestTimeout);
+
       if (!mounted) return;
       final data = json.decode(response.body);
       if (response.statusCode == 200 && data['success'] == true) {
@@ -117,14 +117,22 @@ class _AddressSelectionScreenState extends State<AddressSelectionScreen>
     final bool? confirm = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Delete Address'),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+        title: const Text(
+          'Delete Address',
+          style: TextStyle(fontWeight: FontWeight.w800, fontSize: 17),
+        ),
         content: const Text(
-            'Are you sure you want to delete this address? This action cannot be undone.'),
+          'Are you sure you want to delete this address? This action cannot be undone.',
+          style: TextStyle(fontSize: 13.5, color: StorkTheme.textMain),
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel',
-                style: TextStyle(color: StorkTheme.textMuted)),
+            child: const Text(
+              'Cancel',
+              style: TextStyle(color: StorkTheme.textMuted),
+            ),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: StorkTheme.danger),
@@ -134,13 +142,10 @@ class _AddressSelectionScreenState extends State<AddressSelectionScreen>
         ],
       ),
     );
-
     if (confirm != true) return;
-
     setState(() {
       _addresses.removeWhere((a) => a.id == address.id);
     });
-
     try {
       final response = await http.delete(
         Uri.parse('$_domain/api/v1/addresses/${address.id}'),
@@ -199,11 +204,12 @@ class _AddressSelectionScreenState extends State<AddressSelectionScreen>
     return Scaffold(
       backgroundColor: StorkTheme.surfaceSubtle,
       appBar: AppBar(
-        title: const Text('Address Book'),
+        title: Text('Address Book (${_addresses.length})'),
       ),
       body: _isLoading && _addresses.isEmpty
           ? const Center(
-              child: CircularProgressIndicator(color: StorkTheme.primary))
+              child: CircularProgressIndicator(color: StorkTheme.primary),
+            )
           : _addresses.isEmpty
               ? _buildEmptyState()
               : ListView.separated(
@@ -213,12 +219,12 @@ class _AddressSelectionScreenState extends State<AddressSelectionScreen>
                   itemBuilder: (context, index) {
                     final address = _addresses[index];
                     final isSelected = address.id == _currentSelectedId;
-
-                    return GestureDetector(
+                    return InkWell(
                       onTap: () {
                         setState(() => _currentSelectedId = address.id);
                         Navigator.pop(context, address);
                       },
+                      borderRadius: BorderRadius.circular(20),
                       child: Container(
                         padding: const EdgeInsets.all(16),
                         decoration: BoxDecoration(
@@ -231,106 +237,195 @@ class _AddressSelectionScreenState extends State<AddressSelectionScreen>
                                 : StorkTheme.borderSubtle,
                             width: isSelected ? 2 : 1,
                           ),
-                          borderRadius: BorderRadius.circular(16),
+                          borderRadius: BorderRadius.circular(20),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.025),
+                              blurRadius: 10,
+                              offset: const Offset(0, 4),
+                            ),
+                          ],
                         ),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Expanded(
-                                  child: Text(
-                                    address.recipientName,
-                                    style: const TextStyle(
-                                      fontSize: 15.5,
-                                      fontWeight: FontWeight.w800,
-                                      color: StorkTheme.textMain,
-                                    ),
+                                Container(
+                                  width: 38,
+                                  height: 38,
+                                  decoration: BoxDecoration(
+                                    color: isSelected
+                                        ? StorkTheme.primary
+                                        : StorkTheme.primary
+                                            .withValues(alpha: 0.1),
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: Icon(
+                                    isSelected
+                                        ? Icons.check_rounded
+                                        : Icons.location_on_outlined,
+                                    color: isSelected
+                                        ? Colors.white
+                                        : StorkTheme.primary,
+                                    size: 20,
                                   ),
                                 ),
-                                if (address.isDefault)
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 8, vertical: 4),
-                                    decoration: BoxDecoration(
-                                      color: StorkTheme.primary,
-                                      borderRadius: BorderRadius.circular(6),
-                                    ),
-                                    child: const Text(
-                                      'Default',
-                                      style: TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 10,
-                                        fontWeight: FontWeight.w800,
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Wrap(
+                                        crossAxisAlignment:
+                                            WrapCrossAlignment.center,
+                                        spacing: 8,
+                                        runSpacing: 4,
+                                        children: [
+                                          Text(
+                                            address.recipientName,
+                                            style: const TextStyle(
+                                              fontSize: 15,
+                                              fontWeight: FontWeight.w800,
+                                              color: StorkTheme.textMain,
+                                            ),
+                                          ),
+                                          if (address.isDefault)
+                                            Container(
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                horizontal: 8,
+                                                vertical: 3,
+                                              ),
+                                              decoration: BoxDecoration(
+                                                gradient: const LinearGradient(
+                                                  colors: [
+                                                    StorkTheme.primaryDark,
+                                                    StorkTheme.primary,
+                                                  ],
+                                                ),
+                                                borderRadius:
+                                                    BorderRadius.circular(8),
+                                              ),
+                                              child: const Text(
+                                                'DEFAULT',
+                                                style: TextStyle(
+                                                  color: Colors.white,
+                                                  fontSize: 9.5,
+                                                  fontWeight: FontWeight.w900,
+                                                  letterSpacing: 0.4,
+                                                ),
+                                              ),
+                                            ),
+                                        ],
                                       ),
-                                    ),
-                                  )
-                                else
-                                  TextButton(
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        address.phoneNumber,
+                                        style: const TextStyle(
+                                          color: StorkTheme.textMuted,
+                                          fontSize: 12.5,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 10),
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: StorkTheme.surfaceSubtle,
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Text(
+                                address.fullAddress,
+                                style: const TextStyle(
+                                  color: StorkTheme.textMain,
+                                  fontSize: 13,
+                                  height: 1.4,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 10),
+                            Wrap(
+                              alignment: WrapAlignment.spaceBetween,
+                              crossAxisAlignment: WrapCrossAlignment.center,
+                              spacing: 8,
+                              runSpacing: 4,
+                              children: [
+                                if (!address.isDefault)
+                                  TextButton.icon(
                                     onPressed: () =>
                                         _setDefaultAddress(address),
                                     style: TextButton.styleFrom(
                                       visualDensity: VisualDensity.compact,
                                     ),
-                                    child: const Text(
+                                    icon: const Icon(
+                                      Icons.star_border_rounded,
+                                      size: 16,
+                                      color: StorkTheme.primaryDark,
+                                    ),
+                                    label: const Text(
                                       'Set Default',
                                       style: TextStyle(
-                                        fontSize: 11.5,
-                                        fontWeight: FontWeight.w700,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w800,
+                                        color: StorkTheme.primaryDark,
                                       ),
                                     ),
-                                  ),
-                              ],
-                            ),
-                            const SizedBox(height: 6),
-                            Text(
-                              address.phoneNumber,
-                              style: const TextStyle(
-                                color: StorkTheme.textMuted,
-                                fontSize: 13.5,
-                              ),
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              address.fullAddress,
-                              style: const TextStyle(
-                                color: StorkTheme.textMain,
-                                fontSize: 13.5,
-                                height: 1.4,
-                              ),
-                            ),
-                            const Divider(height: 22),
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.end,
-                              children: [
-                                TextButton.icon(
-                                  onPressed: () =>
-                                      _navigateToAddOrEdit(address),
-                                  icon: const Icon(Icons.edit_outlined,
-                                      size: 16, color: StorkTheme.primary),
-                                  label: const Text(
-                                    'Edit',
-                                    style: TextStyle(
-                                      color: StorkTheme.primary,
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w800,
+                                  )
+                                else
+                                  const SizedBox.shrink(),
+                                Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    TextButton.icon(
+                                      onPressed: () =>
+                                          _navigateToAddOrEdit(address),
+                                      style: TextButton.styleFrom(
+                                        visualDensity: VisualDensity.compact,
+                                      ),
+                                      icon: const Icon(
+                                        Icons.edit_outlined,
+                                        size: 16,
+                                        color: StorkTheme.primary,
+                                      ),
+                                      label: const Text(
+                                        'Edit',
+                                        style: TextStyle(
+                                          color: StorkTheme.primary,
+                                          fontSize: 12.5,
+                                          fontWeight: FontWeight.w800,
+                                        ),
+                                      ),
                                     ),
-                                  ),
-                                ),
-                                const SizedBox(width: 8),
-                                TextButton.icon(
-                                  onPressed: () => _deleteAddress(address),
-                                  icon: const Icon(Icons.delete_outline_rounded,
-                                      size: 16, color: StorkTheme.danger),
-                                  label: const Text(
-                                    'Delete',
-                                    style: TextStyle(
-                                      color: StorkTheme.danger,
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w800,
+                                    const SizedBox(width: 4),
+                                    TextButton.icon(
+                                      onPressed: () => _deleteAddress(address),
+                                      style: TextButton.styleFrom(
+                                        visualDensity: VisualDensity.compact,
+                                      ),
+                                      icon: const Icon(
+                                        Icons.delete_outline_rounded,
+                                        size: 16,
+                                        color: StorkTheme.danger,
+                                      ),
+                                      label: const Text(
+                                        'Delete',
+                                        style: TextStyle(
+                                          color: StorkTheme.danger,
+                                          fontSize: 12.5,
+                                          fontWeight: FontWeight.w800,
+                                        ),
+                                      ),
                                     ),
-                                  ),
+                                  ],
                                 ),
                               ],
                             ),
@@ -341,22 +436,28 @@ class _AddressSelectionScreenState extends State<AddressSelectionScreen>
                   },
                 ),
       bottomNavigationBar: Container(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         decoration: BoxDecoration(
           color: StorkTheme.surface,
+          border: const Border(top: BorderSide(color: StorkTheme.borderSubtle)),
           boxShadow: [
             BoxShadow(
               color: Colors.black.withValues(alpha: 0.05),
               blurRadius: 10,
-              offset: const Offset(0, -5),
+              offset: const Offset(0, -4),
             ),
           ],
         ),
         child: SafeArea(
-          child: ElevatedButton.icon(
-            onPressed: () => _navigateToAddOrEdit(),
-            icon: const Icon(Icons.add_rounded, color: Colors.white),
-            label: const Text('Add New Address'),
+          top: false,
+          child: SizedBox(
+            height: 50,
+            child: ElevatedButton.icon(
+              onPressed: () => _navigateToAddOrEdit(),
+              icon: const Icon(Icons.add_location_alt_outlined,
+                  color: Colors.white),
+              label: const Text('Add New Address'),
+            ),
           ),
         ),
       ),
@@ -365,26 +466,45 @@ class _AddressSelectionScreenState extends State<AddressSelectionScreen>
 
   Widget _buildEmptyState() {
     return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.location_off_outlined,
-              size: 60, color: Colors.grey.shade400),
-          const SizedBox(height: 16),
-          const Text(
-            'No addresses found',
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.w800,
-              color: StorkTheme.textMain,
+      child: Padding(
+        padding: const EdgeInsets.all(28),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              width: 78,
+              height: 78,
+              decoration: BoxDecoration(
+                color: StorkTheme.primary.withValues(alpha: 0.1),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(
+                Icons.location_off_outlined,
+                size: 38,
+                color: StorkTheme.primary,
+              ),
             ),
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            'Add a delivery address to start checking out.',
-            style: TextStyle(color: StorkTheme.textMuted),
-          ),
-        ],
+            const SizedBox(height: 16),
+            const Text(
+              'No Saved Addresses Yet',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w800,
+                color: StorkTheme.primaryDark,
+              ),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Add a PSGC-verified delivery address to start checking out your favorite items.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 13,
+                color: StorkTheme.textMuted,
+                height: 1.4,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

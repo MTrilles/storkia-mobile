@@ -130,7 +130,7 @@ class _FollowingStoresScreenState extends State<FollowingStoresScreen>
     return Scaffold(
       backgroundColor: StorkTheme.surfaceSubtle,
       appBar: AppBar(
-        title: const Text('Following Stores'),
+        title: Text('Following Stores (${_follows.length})'),
       ),
       body: _isLoading
           ? const Center(
@@ -144,19 +144,29 @@ class _FollowingStoresScreenState extends State<FollowingStoresScreen>
                       padding: const EdgeInsets.all(28),
                       children: [
                         const SizedBox(height: 80),
-                        const Icon(
-                          Icons.storefront_outlined,
-                          size: 56,
-                          color: StorkTheme.textMuted,
+                        Center(
+                          child: Container(
+                            width: 78,
+                            height: 78,
+                            decoration: BoxDecoration(
+                              color: StorkTheme.primary.withValues(alpha: 0.1),
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(
+                              Icons.storefront_outlined,
+                              size: 38,
+                              color: StorkTheme.primary,
+                            ),
+                          ),
                         ),
-                        const SizedBox(height: 12),
+                        const SizedBox(height: 14),
                         const Text(
-                          'You are not following any stores yet',
+                          'You Are Not Following Any Stores Yet',
                           textAlign: TextAlign.center,
                           style: TextStyle(
-                            fontSize: 16,
+                            fontSize: 17,
                             fontWeight: FontWeight.w800,
-                            color: StorkTheme.textMain,
+                            color: StorkTheme.primaryDark,
                           ),
                         ),
                         const SizedBox(height: 6),
@@ -169,9 +179,9 @@ class _FollowingStoresScreenState extends State<FollowingStoresScreen>
                             height: 1.4,
                           ),
                         ),
-                        const SizedBox(height: 18),
+                        const SizedBox(height: 20),
                         Center(
-                          child: ElevatedButton(
+                          child: ElevatedButton.icon(
                             onPressed: () {
                               Navigator.push(
                                 context,
@@ -183,7 +193,9 @@ class _FollowingStoresScreenState extends State<FollowingStoresScreen>
                                 ),
                               ).then((_) => _fetchFollowing(silent: true));
                             },
-                            child: const Text('Explore Official Stores'),
+                            icon:
+                                const Icon(Icons.storefront_rounded, size: 18),
+                            label: const Text('Explore Official Stores'),
                           ),
                         ),
                       ],
@@ -219,34 +231,45 @@ class _FollowingStoresScreenState extends State<FollowingStoresScreen>
                           padding: const EdgeInsets.all(16),
                           decoration: BoxDecoration(
                             color: StorkTheme.surface,
-                            borderRadius: BorderRadius.circular(18),
+                            borderRadius: BorderRadius.circular(20),
                             border: Border.all(color: StorkTheme.borderSubtle),
+                            boxShadow: StorkTheme.softCardShadow,
                           ),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Row(
                                 children: [
-                                  CircleAvatar(
-                                    radius: 26,
-                                    backgroundColor: StorkTheme.primary
-                                        .withValues(alpha: 0.12),
-                                    backgroundImage: logoUrl.isNotEmpty
-                                        ? NetworkImage(logoUrl)
-                                        : null,
-                                    child: logoUrl.isEmpty
-                                        ? Text(
-                                            seller.businessName.isNotEmpty
-                                                ? seller.businessName[0]
-                                                    .toUpperCase()
-                                                : 'S',
-                                            style: const TextStyle(
-                                              fontSize: 18,
-                                              fontWeight: FontWeight.w800,
-                                              color: StorkTheme.primary,
-                                            ),
-                                          )
-                                        : null,
+                                  Container(
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      border: Border.all(
+                                        color: StorkTheme.primary
+                                            .withValues(alpha: 0.25),
+                                        width: 1.5,
+                                      ),
+                                    ),
+                                    child: CircleAvatar(
+                                      radius: 26,
+                                      backgroundColor: StorkTheme.primary
+                                          .withValues(alpha: 0.12),
+                                      backgroundImage: logoUrl.isNotEmpty
+                                          ? NetworkImage(logoUrl)
+                                          : null,
+                                      child: logoUrl.isEmpty
+                                          ? Text(
+                                              seller.businessName.isNotEmpty
+                                                  ? seller.businessName[0]
+                                                      .toUpperCase()
+                                                  : 'S',
+                                              style: const TextStyle(
+                                                fontSize: 18,
+                                                fontWeight: FontWeight.w900,
+                                                color: StorkTheme.primary,
+                                              ),
+                                            )
+                                          : null,
+                                    ),
                                   ),
                                   const SizedBox(width: 12),
                                   Expanded(
@@ -256,12 +279,15 @@ class _FollowingStoresScreenState extends State<FollowingStoresScreen>
                                       children: [
                                         Text(
                                           seller.businessName,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
                                           style: const TextStyle(
-                                            fontSize: 15,
+                                            fontSize: 15.5,
                                             fontWeight: FontWeight.w800,
-                                            color: StorkTheme.textMain,
+                                            color: StorkTheme.primaryDark,
                                           ),
                                         ),
+                                        const SizedBox(height: 2),
                                         Text(
                                           [
                                             if (seller
@@ -272,18 +298,28 @@ class _FollowingStoresScreenState extends State<FollowingStoresScreen>
                                                 seller.province.isNotEmpty)
                                               '${seller.municipality}, ${seller.province}',
                                           ].join(' • '),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
                                           style: const TextStyle(
                                             fontSize: 12,
                                             color: StorkTheme.textMuted,
                                           ),
                                         ),
-                                        const SizedBox(height: 4),
-                                        Text(
-                                          'Rating: ${stats['ratings'] ?? '0.0'} • Followers: ${stats['followers'] ?? 0} • Chat: ${stats['chat_response_rate'] ?? 98}%',
-                                          style: const TextStyle(
-                                            fontSize: 11,
-                                            color: StorkTheme.textMuted,
-                                          ),
+                                        const SizedBox(height: 6),
+                                        Wrap(
+                                          spacing: 6,
+                                          runSpacing: 4,
+                                          children: [
+                                            _buildStatChip(
+                                              '${stats['ratings'] ?? '0.0'} ★',
+                                            ),
+                                            _buildStatChip(
+                                              '${stats['followers'] ?? 0} Followers',
+                                            ),
+                                            _buildStatChip(
+                                              '${stats['chat_response_rate'] ?? 98}% Chat',
+                                            ),
+                                          ],
                                         ),
                                       ],
                                     ),
@@ -295,46 +331,63 @@ class _FollowingStoresScreenState extends State<FollowingStoresScreen>
                                 const SizedBox(height: 12),
                                 Container(
                                   padding: const EdgeInsets.symmetric(
-                                      horizontal: 12, vertical: 8),
+                                      horizontal: 12, vertical: 9),
                                   decoration: BoxDecoration(
                                     color: StorkTheme.brandLight
-                                        .withValues(alpha: 0.3),
-                                    borderRadius: BorderRadius.circular(12),
+                                        .withValues(alpha: 0.35),
+                                    borderRadius: BorderRadius.circular(14),
                                     border: Border.all(
-                                        color: StorkTheme.borderSubtle),
+                                      color: StorkTheme.primary
+                                          .withValues(alpha: 0.25),
+                                    ),
                                   ),
                                   child: Row(
                                     mainAxisAlignment:
                                         MainAxisAlignment.spaceBetween,
                                     children: [
-                                      Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          const Text(
-                                            '1-TIME FOLLOWER REWARD VOUCHER',
-                                            style: TextStyle(
-                                              fontSize: 9.5,
-                                              fontWeight: FontWeight.w800,
-                                              color: StorkTheme.primaryDark,
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            const Text(
+                                              '1-TIME FOLLOWER REWARD VOUCHER',
+                                              style: TextStyle(
+                                                fontSize: 9.5,
+                                                fontWeight: FontWeight.w900,
+                                                color: StorkTheme.primaryDark,
+                                              ),
                                             ),
-                                          ),
-                                          Text(
-                                            '$rewardCode (₱30 OFF • Min. ₱150)',
-                                            style: const TextStyle(
-                                              fontSize: 12,
-                                              fontWeight: FontWeight.w800,
-                                              color: StorkTheme.primary,
+                                            const SizedBox(height: 2),
+                                            Text(
+                                              '$rewardCode (₱30 OFF • Min. ₱150)',
+                                              style: const TextStyle(
+                                                fontSize: 12,
+                                                fontWeight: FontWeight.w800,
+                                                color: StorkTheme.primary,
+                                              ),
                                             ),
-                                          ),
-                                        ],
+                                          ],
+                                        ),
                                       ),
-                                      const Text(
-                                        'In Wallet',
-                                        style: TextStyle(
-                                          fontSize: 11,
-                                          fontWeight: FontWeight.w700,
+                                      const SizedBox(width: 8),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 8,
+                                          vertical: 3,
+                                        ),
+                                        decoration: BoxDecoration(
                                           color: StorkTheme.primary,
+                                          borderRadius:
+                                              BorderRadius.circular(8),
+                                        ),
+                                        child: const Text(
+                                          'In Wallet',
+                                          style: TextStyle(
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.w800,
+                                            color: Colors.white,
+                                          ),
                                         ),
                                       ),
                                     ],
@@ -343,29 +396,34 @@ class _FollowingStoresScreenState extends State<FollowingStoresScreen>
                               ],
                               const Divider(height: 22),
                               Row(
-                                mainAxisAlignment:
-                                    MainAxisAlignment.spaceBetween,
                                 children: [
-                                  ElevatedButton(
-                                    onPressed: () {
-                                      Navigator.push(
-                                        context,
-                                        StorkRoute.fade(
-                                          SellerStoreScreen(
-                                            sellerProfile: seller,
-                                            baseUrl: _domain,
-                                            token: widget.token,
+                                  Expanded(
+                                    child: ElevatedButton.icon(
+                                      onPressed: () {
+                                        Navigator.push(
+                                          context,
+                                          StorkRoute.fade(
+                                            SellerStoreScreen(
+                                              sellerProfile: seller,
+                                              baseUrl: _domain,
+                                              token: widget.token,
+                                            ),
                                           ),
-                                        ),
-                                      ).then(
-                                          (_) => _fetchFollowing(silent: true));
-                                    },
-                                    style: ElevatedButton.styleFrom(
-                                      padding: const EdgeInsets.symmetric(
-                                          horizontal: 16, vertical: 10),
+                                        ).then((_) =>
+                                            _fetchFollowing(silent: true));
+                                      },
+                                      icon: const Icon(
+                                        Icons.storefront_rounded,
+                                        size: 17,
+                                      ),
+                                      label: const Text('Visit Store'),
+                                      style: ElevatedButton.styleFrom(
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 14, vertical: 11),
+                                      ),
                                     ),
-                                    child: const Text('Visit Store'),
                                   ),
+                                  const SizedBox(width: 10),
                                   OutlinedButton(
                                     onPressed: () =>
                                         _unfollowStore(seller.id, index),
@@ -375,6 +433,8 @@ class _FollowingStoresScreenState extends State<FollowingStoresScreen>
                                         color: StorkTheme.danger
                                             .withValues(alpha: 0.4),
                                       ),
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 16, vertical: 11),
                                     ),
                                     child: const Text('Unfollow'),
                                   ),
@@ -386,6 +446,25 @@ class _FollowingStoresScreenState extends State<FollowingStoresScreen>
                       },
                     ),
             ),
+    );
+  }
+
+  Widget _buildStatChip(String text) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: StorkTheme.surfaceSubtle,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: StorkTheme.borderSubtle),
+      ),
+      child: Text(
+        text,
+        style: const TextStyle(
+          fontSize: 10.5,
+          fontWeight: FontWeight.w700,
+          color: StorkTheme.primaryDark,
+        ),
+      ),
     );
   }
 }

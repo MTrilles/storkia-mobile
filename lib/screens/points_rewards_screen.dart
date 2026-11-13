@@ -13,6 +13,7 @@ import '../config/app_theme.dart';
 import '../providers/global_counters_provider.dart';
 
 typedef JsonMap = Map<String, dynamic>;
+typedef JsonList = List<JsonMap>;
 
 class PointsRewardsScreen extends ConsumerStatefulWidget {
   final String baseUrl;
@@ -61,11 +62,11 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
     'total_withdrawn': 0.0,
   };
   JsonMap? _platformGcash;
-  List<JsonMap> _wheelSegments = [];
-  List<JsonMap> _redeemCatalog = [];
-  List<JsonMap> _rewardTransactions = [];
-  List<JsonMap> _topupSubmissions = [];
-  List<JsonMap> _walletTransactions = [];
+  JsonList _wheelSegments = [];
+  JsonList _redeemCatalog = [];
+  JsonList _rewardTransactions = [];
+  JsonList _topupSubmissions = [];
+  JsonList _walletTransactions = [];
 
   String get _domain => ApiConfig.resolveBaseDomain(widget.baseUrl);
 
@@ -160,27 +161,25 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
       if (rewardsRes.statusCode == 200) {
         final body = json.decode(rewardsRes.body);
         if (body is Map && body['success'] == true && body['data'] is Map) {
-          final d = Map<String, dynamic>.from(body['data'] as Map);
+          final d = JsonMap.from(body['data'] as Map);
           if (d['wallet'] is Map) {
-            _walletInfo = Map<String, dynamic>.from(d['wallet'] as Map);
+            _walletInfo = JsonMap.from(d['wallet'] as Map);
           }
           if (d['chest'] is Map) {
-            _chestInfo = Map<String, dynamic>.from(d['chest'] as Map);
+            _chestInfo = JsonMap.from(d['chest'] as Map);
           }
           if (d['buyer_ewallet'] is Map) {
-            _buyerEwallet =
-                Map<String, dynamic>.from(d['buyer_ewallet'] as Map);
+            _buyerEwallet = JsonMap.from(d['buyer_ewallet'] as Map);
           }
           if (d['platform_gcash'] is Map) {
-            _platformGcash =
-                Map<String, dynamic>.from(d['platform_gcash'] as Map);
+            _platformGcash = JsonMap.from(d['platform_gcash'] as Map);
           }
           if (d['wheel_segments'] is List) {
             final List<dynamic> rawSegs =
                 List<dynamic>.from(d['wheel_segments'] as List);
             _wheelSegments = [
               for (final e in rawSegs)
-                if (e is Map) Map<String, dynamic>.from(e),
+                if (e is Map) JsonMap.from(e),
             ];
           }
           if (d['redeem_catalog'] is List) {
@@ -188,7 +187,7 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
                 List<dynamic>.from(d['redeem_catalog'] as List);
             _redeemCatalog = [
               for (final e in rawCat)
-                if (e is Map) Map<String, dynamic>.from(e),
+                if (e is Map) JsonMap.from(e),
             ];
           }
         }
@@ -197,21 +196,19 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
       if (walletRes.statusCode == 200) {
         final body = json.decode(walletRes.body);
         if (body is Map && body['success'] == true && body['data'] is Map) {
-          final d = Map<String, dynamic>.from(body['data'] as Map);
+          final d = JsonMap.from(body['data'] as Map);
           if (d['buyer_ewallet'] is Map) {
-            _buyerEwallet =
-                Map<String, dynamic>.from(d['buyer_ewallet'] as Map);
+            _buyerEwallet = JsonMap.from(d['buyer_ewallet'] as Map);
           }
           if (d['platform_gcash'] is Map) {
-            _platformGcash =
-                Map<String, dynamic>.from(d['platform_gcash'] as Map);
+            _platformGcash = JsonMap.from(d['platform_gcash'] as Map);
           }
           if (d['topups'] is List) {
             final List<dynamic> rawTopups =
                 List<dynamic>.from(d['topups'] as List);
             _topupSubmissions = [
               for (final e in rawTopups)
-                if (e is Map) Map<String, dynamic>.from(e),
+                if (e is Map) JsonMap.from(e),
             ];
           }
           if (d['transactions'] is List) {
@@ -219,7 +216,7 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
                 List<dynamic>.from(d['transactions'] as List);
             _walletTransactions = [
               for (final e in rawWtx)
-                if (e is Map) Map<String, dynamic>.from(e),
+                if (e is Map) JsonMap.from(e),
             ];
           }
         }
@@ -228,13 +225,13 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
       if (txRes.statusCode == 200) {
         final body = json.decode(txRes.body);
         if (body is Map && body['success'] == true && body['data'] is Map) {
-          final paginator = Map<String, dynamic>.from(body['data'] as Map);
+          final paginator = JsonMap.from(body['data'] as Map);
           if (paginator['data'] is List) {
             final List<dynamic> rawRtx =
                 List<dynamic>.from(paginator['data'] as List);
             _rewardTransactions = [
               for (final e in rawRtx)
-                if (e is Map) Map<String, dynamic>.from(e),
+                if (e is Map) JsonMap.from(e),
             ];
           }
         }
@@ -402,12 +399,16 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text(
-                      'Code: $voucherCode',
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w900,
-                        fontSize: 13,
-                        color: StorkTheme.primaryDark,
+                    Flexible(
+                      child: Text(
+                        'Code: $voucherCode',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w900,
+                          fontSize: 13,
+                          color: StorkTheme.primaryDark,
+                        ),
                       ),
                     ),
                     TextButton(
@@ -442,6 +443,7 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
     final bool? confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
         title: const Text(
           'Redeem Coins for Voucher?',
           style: TextStyle(fontWeight: FontWeight.w800, fontSize: 17),
@@ -534,39 +536,36 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
+      backgroundColor: StorkTheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
       builder: (modalContext) {
         return StatefulBuilder(
           builder: (ctx, setModalState) {
-            void sanitizePhone(String val) {
-              String digits = val.replaceAll(RegExp(r'\D'), '');
-              if (digits.startsWith('63') && digits.length == 12) {
-                digits = '0${digits.substring(2)}';
-              } else if (digits.startsWith('9') && digits.length == 10) {
-                digits = '0$digits';
-              }
-              if (digits.length > 11) {
-                digits = digits.substring(0, 11);
-              }
-              if (senderPhoneCtrl.text != digits) {
-                senderPhoneCtrl.value = TextEditingValue(
-                  text: digits,
-                  selection: TextSelection.collapsed(offset: digits.length),
-                );
-              }
-            }
-
             return Padding(
               padding: EdgeInsets.only(
                 left: 20,
                 right: 20,
-                top: 18,
-                bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
+                top: 14,
+                bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
               ),
               child: SingleChildScrollView(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    Center(
+                      child: Container(
+                        width: 42,
+                        height: 4,
+                        margin: const EdgeInsets.only(bottom: 16),
+                        decoration: BoxDecoration(
+                          color: StorkTheme.borderSubtle,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                      ),
+                    ),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
@@ -574,7 +573,7 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
                           child: Text(
                             'Top Up Storkia E-Wallet via GCash',
                             style: TextStyle(
-                              fontSize: 16,
+                              fontSize: 16.5,
                               fontWeight: FontWeight.w800,
                               color: StorkTheme.primaryDark,
                             ),
@@ -591,10 +590,10 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
                       style: TextStyle(
                         fontSize: 12,
                         color: StorkTheme.textMuted,
-                        height: 1.35,
+                        height: 1.38,
                       ),
                     ),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 14),
                     Container(
                       padding: const EdgeInsets.all(14),
                       decoration: BoxDecoration(
@@ -610,12 +609,16 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
-                              const Text(
-                                'STORKIA ADMIN GCASH ESCROW',
-                                style: TextStyle(
-                                  fontSize: 10.5,
-                                  fontWeight: FontWeight.w800,
-                                  color: StorkTheme.info,
+                              const Flexible(
+                                child: Text(
+                                  'STORKIA ADMIN GCASH ESCROW',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    fontSize: 10.5,
+                                    fontWeight: FontWeight.w800,
+                                    color: StorkTheme.info,
+                                  ),
                                 ),
                               ),
                               if (qrUrl.isNotEmpty)
@@ -648,12 +651,14 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
-                              Text(
-                                'GCash Number: $adminGcashNumber',
-                                style: const TextStyle(
-                                  fontSize: 13.5,
-                                  fontWeight: FontWeight.w900,
-                                  color: StorkTheme.info,
+                              Flexible(
+                                child: Text(
+                                  'GCash Number: $adminGcashNumber',
+                                  style: const TextStyle(
+                                    fontSize: 13.5,
+                                    fontWeight: FontWeight.w900,
+                                    color: StorkTheme.info,
+                                  ),
                                 ),
                               ),
                               IconButton(
@@ -691,34 +696,32 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
                       textCapitalization: TextCapitalization.words,
                       decoration: const InputDecoration(
                         labelText: 'GCash Sender Account Name *',
+                        fillColor: StorkTheme.surfaceSubtle,
                       ),
                     ),
                     const SizedBox(height: 10),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: senderPhoneCtrl,
-                            keyboardType: TextInputType.phone,
-                            maxLength: 11,
-                            onChanged: sanitizePhone,
-                            decoration: const InputDecoration(
-                              labelText: 'Sender Mobile # (09...)',
-                              counterText: '',
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: TextField(
-                            controller: refNumCtrl,
-                            textCapitalization: TextCapitalization.characters,
-                            decoration: const InputDecoration(
-                              labelText: 'GCash Reference # *',
-                            ),
-                          ),
-                        ),
+                    TextField(
+                      controller: senderPhoneCtrl,
+                      keyboardType: TextInputType.phone,
+                      inputFormatters: [
+                        FilteringTextInputFormatter.digitsOnly,
+                        LengthLimitingTextInputFormatter(11),
                       ],
+                      decoration: const InputDecoration(
+                        labelText: 'Sender Mobile # (Optional)',
+                        prefixText: '+63 ',
+                        hintText: '09171234567 or 9171234567',
+                        fillColor: StorkTheme.surfaceSubtle,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: refNumCtrl,
+                      textCapitalization: TextCapitalization.characters,
+                      decoration: const InputDecoration(
+                        labelText: 'GCash Reference Number (4+ chars) *',
+                        fillColor: StorkTheme.surfaceSubtle,
+                      ),
                     ),
                     const SizedBox(height: 12),
                     OutlinedButton.icon(
@@ -775,16 +778,23 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
                       ),
                     ],
                     const SizedBox(height: 16),
-                    SizedBox(
+                    Container(
                       width: double.infinity,
-                      height: 48,
+                      height: 50,
+                      decoration: BoxDecoration(
+                        gradient: _isSubmittingTopup
+                            ? null
+                            : StorkTheme.brandGradient,
+                        borderRadius: BorderRadius.circular(14),
+                      ),
                       child: ElevatedButton(
                         onPressed: _isSubmittingTopup
                             ? null
                             : () async {
-                                sanitizePhone(senderPhoneCtrl.text);
                                 final sName = senderNameCtrl.text.trim();
-                                final sPhone = senderPhoneCtrl.text.trim();
+                                final rawPhone = senderPhoneCtrl.text
+                                    .trim()
+                                    .replaceAll(RegExp(r'\D'), '');
                                 final rNum =
                                     refNumCtrl.text.trim().toUpperCase();
 
@@ -792,6 +802,14 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
                                   setModalState(() {
                                     modalError =
                                         'Please enter the GCash sender account name.';
+                                  });
+                                  return;
+                                }
+                                if (rawPhone.isNotEmpty &&
+                                    !RegExp(r'^0?9\d{9}$').hasMatch(rawPhone)) {
+                                  setModalState(() {
+                                    modalError =
+                                        'Enter a valid 11-digit (09XXXXXXXXX) or 10-digit (9XXXXXXXXX) sender mobile number.';
                                   });
                                   return;
                                 }
@@ -810,6 +828,13 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
                                   return;
                                 }
 
+                                final String normalizedPhone = rawPhone.isEmpty
+                                    ? ''
+                                    : (rawPhone.startsWith('9') &&
+                                            rawPhone.length == 10
+                                        ? '0$rawPhone'
+                                        : rawPhone);
+
                                 setModalState(() {
                                   modalError = null;
                                   _isSubmittingTopup = true;
@@ -824,9 +849,9 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
                                       'Bearer ${widget.token}';
                                   req.headers['Accept'] = 'application/json';
                                   req.fields['sender_account_name'] = sName;
-                                  if (sPhone.isNotEmpty) {
+                                  if (normalizedPhone.isNotEmpty) {
                                     req.fields['sender_account_number'] =
-                                        sPhone;
+                                        normalizedPhone;
                                   }
                                   req.fields['reference_number'] = rNum;
                                   req.files.add(
@@ -884,6 +909,13 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
                                   }
                                 }
                               },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.transparent,
+                          shadowColor: Colors.transparent,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                        ),
                         child: _isSubmittingTopup
                             ? const SizedBox(
                                 width: 20,
@@ -981,25 +1013,30 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
   }) {
     return RefreshIndicator(
       color: StorkTheme.primary,
-      onRefresh: () => _loadAllData(),
+      onRefresh: () => _loadAllData(silent: true),
       child: ListView(
         padding: const EdgeInsets.all(14),
         children: [
           Container(
             padding: const EdgeInsets.all(18),
             decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                colors: [StorkTheme.primaryDark, StorkTheme.primary],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
+              gradient: StorkTheme.brandGradient,
               borderRadius: BorderRadius.circular(22),
+              boxShadow: [
+                BoxShadow(
+                  color: StorkTheme.primaryDark.withValues(alpha: 0.16),
+                  blurRadius: 16,
+                  offset: const Offset(0, 6),
+                ),
+              ],
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 6,
+                  alignment: WrapAlignment.spaceBetween,
                   children: [
                     Container(
                       padding: const EdgeInsets.symmetric(
@@ -1081,12 +1118,13 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
               color: StorkTheme.surface,
               borderRadius: BorderRadius.circular(20),
               border: Border.all(color: StorkTheme.borderSubtle),
+              boxShadow: StorkTheme.softCardShadow,
             ),
             child: Row(
               children: [
                 SizedBox(
-                  width: 62,
-                  height: 62,
+                  width: 58,
+                  height: 58,
                   child: Image.asset(
                     chestCanOpen
                         ? 'assets/chest-frame-1.png'
@@ -1094,12 +1132,12 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
                     fit: BoxFit.contain,
                     errorBuilder: (_, __, ___) => const Icon(
                       Icons.redeem_rounded,
-                      size: 42,
+                      size: 40,
                       color: StorkTheme.primary,
                     ),
                   ),
                 ),
-                const SizedBox(width: 14),
+                const SizedBox(width: 12),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -1107,7 +1145,7 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
                       const Text(
                         'Daily Treasure Chest (3-Tap Unlock)',
                         style: TextStyle(
-                          fontSize: 14.5,
+                          fontSize: 14,
                           fontWeight: FontWeight.w800,
                           color: StorkTheme.primaryDark,
                         ),
@@ -1118,7 +1156,7 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
                             ? 'Ready to unlock! Tap 3 times to win Stage 1, 2, or 3 Jackpot Coins.'
                             : 'Next chest unlocks in ${_formatDuration(chestCooldownSec)}',
                         style: const TextStyle(
-                          fontSize: 12,
+                          fontSize: 11.5,
                           color: StorkTheme.textMuted,
                         ),
                       ),
@@ -1140,11 +1178,11 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
                     backgroundColor:
                         chestCanOpen ? StorkTheme.primary : StorkTheme.darkGrey,
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 14, vertical: 10),
+                        horizontal: 12, vertical: 10),
                   ),
                   child: Text(
                     chestCanOpen ? 'Open Chest' : 'View Timer',
-                    style: const TextStyle(fontSize: 12),
+                    style: const TextStyle(fontSize: 11.5),
                   ),
                 ),
               ],
@@ -1163,7 +1201,7 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
   }
 
   Widget _buildSpinWheelSection(int liveSpins) {
-    final List<JsonMap> segments = _wheelSegments.isNotEmpty
+    final JsonList segments = _wheelSegments.isNotEmpty
         ? _wheelSegments
         : [
             {'label': '5 Coins', 'color': '#CF4173', 'text_color': '#FFFFFF'},
@@ -1190,6 +1228,7 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
         color: StorkTheme.surface,
         borderRadius: BorderRadius.circular(20),
         border: Border.all(color: StorkTheme.borderSubtle),
+        boxShadow: StorkTheme.softCardShadow,
       ),
       child: Column(
         children: [
@@ -1219,6 +1258,7 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
                   ],
                 ),
               ),
+              const SizedBox(width: 8),
               Container(
                 padding:
                     const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
@@ -1239,15 +1279,15 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
           ),
           const SizedBox(height: 18),
           SizedBox(
-            width: 250,
-            height: 250,
+            width: 240,
+            height: 240,
             child: Stack(
               alignment: Alignment.center,
               children: [
                 Transform.rotate(
                   angle: _wheelRotationRadians,
                   child: CustomPaint(
-                    size: const Size(240, 240),
+                    size: const Size(230, 230),
                     painter: _SpinWheelPainter(segments: segments),
                   ),
                 ),
@@ -1262,8 +1302,8 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
                 GestureDetector(
                   onTap: (_isSpinning || liveSpins <= 0) ? null : _spinWheel,
                   child: Container(
-                    width: 66,
-                    height: 66,
+                    width: 64,
+                    height: 64,
                     alignment: Alignment.center,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
@@ -1294,7 +1334,7 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
                             textAlign: TextAlign.center,
                             style: const TextStyle(
                               color: Colors.white,
-                              fontSize: 12,
+                              fontSize: 11.5,
                               fontWeight: FontWeight.w900,
                             ),
                           ),
@@ -1303,11 +1343,25 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
               ],
             ),
           ),
-          const SizedBox(height: 14),
-          SizedBox(
+          const SizedBox(height: 16),
+          Container(
             width: double.infinity,
+            height: 48,
+            decoration: BoxDecoration(
+              gradient: (!_isSpinning && liveSpins > 0)
+                  ? StorkTheme.brandGradient
+                  : null,
+              borderRadius: BorderRadius.circular(14),
+            ),
             child: ElevatedButton(
               onPressed: (_isSpinning || liveSpins <= 0) ? null : _spinWheel,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.transparent,
+                shadowColor: Colors.transparent,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
+              ),
               child: Text(
                 liveSpins > 0
                     ? 'Spin the Wheel ($liveSpins Attempt${liveSpins == 1 ? '' : 's'} Left)'
@@ -1327,6 +1381,7 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
         color: StorkTheme.surface,
         borderRadius: BorderRadius.circular(20),
         border: Border.all(color: StorkTheme.borderSubtle),
+        boxShadow: StorkTheme.softCardShadow,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1452,6 +1507,7 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
         color: StorkTheme.surface,
         borderRadius: BorderRadius.circular(20),
         border: Border.all(color: StorkTheme.borderSubtle),
+        boxShadow: StorkTheme.softCardShadow,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1546,7 +1602,7 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
 
     return RefreshIndicator(
       color: StorkTheme.primary,
-      onRefresh: () => _loadAllData(),
+      onRefresh: () => _loadAllData(silent: true),
       child: ListView(
         padding: const EdgeInsets.all(14),
         children: [
@@ -1559,6 +1615,13 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
                 end: Alignment.bottomRight,
               ),
               borderRadius: BorderRadius.circular(22),
+              boxShadow: [
+                BoxShadow(
+                  color: StorkTheme.primaryDark.withValues(alpha: 0.18),
+                  blurRadius: 16,
+                  offset: const Offset(0, 6),
+                ),
+              ],
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1592,6 +1655,7 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
                 const SizedBox(height: 16),
                 SizedBox(
                   width: double.infinity,
+                  height: 48,
                   child: ElevatedButton.icon(
                     onPressed: _openTopUpModal,
                     icon: const Icon(Icons.add_card_rounded, size: 18),
@@ -1612,6 +1676,7 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
               color: StorkTheme.surface,
               borderRadius: BorderRadius.circular(20),
               border: Border.all(color: StorkTheme.borderSubtle),
+              boxShadow: StorkTheme.softCardShadow,
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1737,6 +1802,7 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
               color: StorkTheme.surface,
               borderRadius: BorderRadius.circular(20),
               border: Border.all(color: StorkTheme.borderSubtle),
+              boxShadow: StorkTheme.softCardShadow,
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1821,7 +1887,7 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
 }
 
 class _SpinWheelPainter extends CustomPainter {
-  final List<JsonMap> segments;
+  final JsonList segments;
 
   _SpinWheelPainter({required this.segments});
 

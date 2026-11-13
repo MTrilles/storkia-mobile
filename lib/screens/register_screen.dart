@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../config/app_routes.dart';
 import '../config/app_theme.dart';
@@ -8,6 +10,7 @@ import '../providers/auth_provider.dart';
 import '../providers/global_counters_provider.dart';
 import '../services/api_service.dart';
 import 'home_screen.dart';
+import 'legal_policies_screen.dart';
 
 class RegisterScreen extends ConsumerStatefulWidget {
   const RegisterScreen({super.key});
@@ -39,6 +42,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
   final _confirmPasswordController = TextEditingController();
   bool _isPasswordVisible = false;
   bool _isConfirmVisible = false;
+  bool _agreedToPolicies = true;
 
   bool _hasMinLength = false;
   bool _hasUppercase = false;
@@ -151,6 +155,11 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
       _showError('Please meet all password security requirements.');
       return;
     }
+    if (!_agreedToPolicies) {
+      _showError(
+          'Please agree to the Storkia Terms & Conditions and Privacy Policy.');
+      return;
+    }
 
     setState(() => _isLoading = true);
     final res = await ApiService.register(
@@ -206,6 +215,13 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
     }
   }
 
+  void _openPolicyTab(int tabIndex) {
+    Navigator.push(
+      context,
+      StorkRoute.fade(LegalPoliciesScreen(initialTab: tabIndex)),
+    );
+  }
+
   void _showError(String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -219,132 +235,235 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: StorkTheme.surfaceSubtle,
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        title: const Text('Create Buyer Account'),
-      ),
-      body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-          child: Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 440),
-              child: Column(
-                children: [
-                  _buildStepIndicator(),
-                  const SizedBox(height: 20),
-                  Container(
-                    padding: const EdgeInsets.all(22),
-                    decoration: BoxDecoration(
-                      color: StorkTheme.surface,
-                      borderRadius: BorderRadius.circular(24),
-                      border: Border.all(color: StorkTheme.borderSubtle),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+      backgroundColor: StorkTheme.surface,
+      body: Column(
+        children: [
+          Container(
+            width: double.infinity,
+            decoration: const BoxDecoration(
+              gradient: StorkTheme.brandGradient,
+              borderRadius: BorderRadius.vertical(
+                bottom: Radius.circular(30),
+              ),
+            ),
+            child: SafeArea(
+              bottom: false,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 20),
+                child: Column(
+                  children: [
+                    Row(
                       children: [
-                        Text(
-                          _currentStep == 1
-                              ? 'Verify Your Email'
-                              : _currentStep == 2
-                                  ? 'Personal Information'
-                                  : 'Create a Secure Password',
-                          style: const TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.w800,
-                            color: StorkTheme.primaryDark,
+                        IconButton(
+                          onPressed: () => Navigator.pop(context),
+                          icon: const Icon(
+                            Icons.arrow_back_rounded,
+                            color: Colors.white,
                           ),
                         ),
-                        const SizedBox(height: 4),
-                        Text(
-                          _currentStep == 1
-                              ? 'We will send a 6-digit verification code to your email.'
-                              : _currentStep == 2
-                                  ? 'Please enter your legal name and date of birth.'
-                                  : 'Choose a strong password for your Storkia account.',
-                          style: const TextStyle(
-                            fontSize: 13,
-                            color: StorkTheme.textMuted,
+                        const Expanded(
+                          child: Text(
+                            'Create Buyer Account',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w800,
+                              color: Colors.white,
+                            ),
                           ),
                         ),
-                        const SizedBox(height: 22),
-                        if (_currentStep == 1) _buildStep1(),
-                        if (_currentStep == 2) _buildStep2(),
-                        if (_currentStep == 3) _buildStep3(),
                       ],
                     ),
-                  ),
-                ],
+                    const SizedBox(height: 8),
+                    _buildStepIndicator(),
+                  ],
+                ),
               ),
             ),
           ),
-        ),
+          Expanded(
+            child: SafeArea(
+              top: false,
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  return SingleChildScrollView(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 24,
+                      vertical: 22,
+                    ),
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        minHeight: (constraints.maxHeight - 44)
+                            .clamp(0.0, double.infinity),
+                      ),
+                      child: Center(
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 440),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    _currentStep == 1
+                                        ? 'Verify Your Email'
+                                        : _currentStep == 2
+                                            ? 'Personal Information'
+                                            : 'Create a Secure Password',
+                                    style: const TextStyle(
+                                      fontSize: 22,
+                                      fontWeight: FontWeight.w900,
+                                      color: StorkTheme.primaryDark,
+                                      letterSpacing: -0.3,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    _currentStep == 1
+                                        ? 'We will send a 6-digit verification code to your email.'
+                                        : _currentStep == 2
+                                            ? 'Please enter your legal name and date of birth.'
+                                            : 'Choose a strong password for your Storkia account.',
+                                    style: const TextStyle(
+                                      fontSize: 13,
+                                      color: StorkTheme.textMuted,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 22),
+                                  if (_currentStep == 1) _buildStep1(),
+                                  if (_currentStep == 2) _buildStep2(),
+                                  if (_currentStep == 3) _buildStep3(),
+                                ],
+                              ),
+                              Padding(
+                                padding: const EdgeInsets.only(top: 28),
+                                child: _buildLegalFooterLinks(),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
+        ],
       ),
+    );
+  }
+
+  Widget _buildLegalFooterLinks() {
+    Widget link(String label, int tab) {
+      return InkWell(
+        onTap: () => _openPolicyTab(tab),
+        borderRadius: BorderRadius.circular(8),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+          child: Text(
+            label,
+            style: const TextStyle(
+              fontSize: 11.5,
+              fontWeight: FontWeight.w700,
+              color: StorkTheme.primaryDark,
+              decoration: TextDecoration.underline,
+              decorationColor: StorkTheme.borderSubtle,
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Column(
+      children: [
+        const Divider(height: 1),
+        const SizedBox(height: 12),
+        Wrap(
+          alignment: WrapAlignment.center,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 4,
+          runSpacing: 2,
+          children: [
+            link('Terms & Conditions', 0),
+            const Text('•', style: TextStyle(color: StorkTheme.textMuted)),
+            link('Privacy Policy', 1),
+            const Text('•', style: TextStyle(color: StorkTheme.textMuted)),
+            link('Cookie Policy', 2),
+          ],
+        ),
+      ],
     );
   }
 
   Widget _buildStepIndicator() {
     final labels = ['Email OTP', 'Profile', 'Password'];
     return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [1, 2, 3].map((step) {
-        final isActive = _currentStep == step;
-        final isCompleted = _currentStep > step;
-
-        return Row(
-          children: [
-            Column(
+      children: [
+        for (int step = 1; step <= 3; step++) ...[
+          Expanded(
+            child: Column(
               children: [
                 Container(
                   width: 30,
                   height: 30,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    color: isActive
-                        ? StorkTheme.primary
-                        : (isCompleted
-                            ? StorkTheme.primary.withValues(alpha: 0.15)
-                            : StorkTheme.borderSubtle),
+                    color: _currentStep == step
+                        ? Colors.white
+                        : (_currentStep > step
+                            ? StorkTheme.brandLight
+                            : Colors.white.withValues(alpha: 0.2)),
                   ),
                   alignment: Alignment.center,
-                  child: isCompleted
-                      ? const Icon(Icons.check_rounded,
-                          size: 16, color: StorkTheme.primary)
+                  child: _currentStep > step
+                      ? const Icon(
+                          Icons.check_rounded,
+                          size: 16,
+                          color: StorkTheme.primaryDark,
+                        )
                       : Text(
                           step.toString(),
                           style: TextStyle(
                             fontSize: 12,
-                            fontWeight: FontWeight.w800,
-                            color:
-                                isActive ? Colors.white : StorkTheme.textMuted,
+                            fontWeight: FontWeight.w900,
+                            color: _currentStep == step
+                                ? StorkTheme.primaryDark
+                                : Colors.white,
                           ),
                         ),
                 ),
-                const SizedBox(height: 4),
+                const SizedBox(height: 5),
                 Text(
                   labels[step - 1],
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     fontSize: 11,
-                    fontWeight: isActive ? FontWeight.w700 : FontWeight.w500,
-                    color: isActive ? StorkTheme.primary : StorkTheme.textMuted,
+                    fontWeight: _currentStep == step
+                        ? FontWeight.w800
+                        : FontWeight.w600,
+                    color: _currentStep == step
+                        ? Colors.white
+                        : Colors.white.withValues(alpha: 0.78),
                   ),
                 ),
               ],
             ),
-            if (step < 3)
-              Container(
-                width: 48,
+          ),
+          if (step < 3)
+            Expanded(
+              child: Container(
                 height: 2,
-                margin: const EdgeInsets.only(bottom: 16, left: 8, right: 8),
-                color: isCompleted
-                    ? StorkTheme.primary.withValues(alpha: 0.5)
-                    : StorkTheme.borderSubtle,
+                margin: const EdgeInsets.only(bottom: 18),
+                color: _currentStep > step
+                    ? StorkTheme.brandLight
+                    : Colors.white.withValues(alpha: 0.25),
               ),
-          ],
-        );
-      }).toList(),
+            ),
+        ],
+      ],
     );
   }
 
@@ -355,18 +474,19 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
         const Text(
           'EMAIL ADDRESS',
           style: TextStyle(
-            fontSize: 11,
-            fontWeight: FontWeight.w700,
-            color: StorkTheme.textMuted,
+            fontSize: 11.5,
+            fontWeight: FontWeight.w800,
+            color: StorkTheme.primaryDark,
           ),
         ),
-        const SizedBox(height: 6),
+        const SizedBox(height: 8),
         TextField(
           controller: _emailController,
           enabled: !_codeSent,
           keyboardType: TextInputType.emailAddress,
           decoration: InputDecoration(
             hintText: 'name@example.com',
+            fillColor: StorkTheme.surfaceSubtle,
             prefixIcon: const Icon(Icons.email_outlined, size: 20),
             suffixIcon: _codeSent
                 ? TextButton(
@@ -385,7 +505,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
         if (!_codeSent)
           SizedBox(
             width: double.infinity,
-            height: 48,
+            height: 50,
             child: ElevatedButton(
               onPressed: _isLoading ? null : _sendOtp,
               child: _isLoading
@@ -407,15 +527,19 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
               const Text(
                 '6-DIGIT VERIFICATION CODE',
                 style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w700,
-                  color: StorkTheme.textMuted,
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w800,
+                  color: StorkTheme.primaryDark,
                 ),
               ),
-              const SizedBox(height: 6),
+              const SizedBox(height: 8),
               TextField(
                 controller: _codeController,
                 keyboardType: TextInputType.number,
+                inputFormatters: [
+                  FilteringTextInputFormatter.digitsOnly,
+                  LengthLimitingTextInputFormatter(6),
+                ],
                 maxLength: 6,
                 textAlign: TextAlign.center,
                 style: const TextStyle(
@@ -426,6 +550,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                 decoration: const InputDecoration(
                   counterText: '',
                   hintText: '000000',
+                  fillColor: StorkTheme.surfaceSubtle,
                 ),
               ),
               const SizedBox(height: 8),
@@ -439,7 +564,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
               const SizedBox(height: 20),
               SizedBox(
                 width: double.infinity,
-                height: 48,
+                height: 50,
                 child: ElevatedButton(
                   onPressed: _isLoading ? null : _verifyOtp,
                   child: _isLoading
@@ -486,6 +611,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Expanded(
                 flex: 3,
@@ -493,7 +619,8 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                   controller: _firstNameController,
                   textCapitalization: TextCapitalization.words,
                   decoration: const InputDecoration(
-                    labelText: 'First Name*',
+                    labelText: 'First Name *',
+                    fillColor: StorkTheme.surfaceSubtle,
                   ),
                   validator: (v) {
                     if (v == null || v.trim().isEmpty) return 'Required';
@@ -514,6 +641,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                   decoration: const InputDecoration(
                     labelText: 'M.I.',
                     counterText: '',
+                    fillColor: StorkTheme.surfaceSubtle,
                   ),
                 ),
               ),
@@ -524,7 +652,8 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
             controller: _lastNameController,
             textCapitalization: TextCapitalization.words,
             decoration: const InputDecoration(
-              labelText: 'Last Name*',
+              labelText: 'Last Name *',
+              fillColor: StorkTheme.surfaceSubtle,
             ),
             validator: (v) {
               if (v == null || v.trim().isEmpty) return 'Required';
@@ -536,39 +665,39 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
           ),
           const SizedBox(height: 18),
           const Text(
-            'SEX*',
+            'SEX *',
             style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w700,
-              color: StorkTheme.textMuted,
+              fontSize: 11.5,
+              fontWeight: FontWeight.w800,
+              color: StorkTheme.primaryDark,
             ),
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 8),
           Row(
             children: [
               Expanded(
                 child: InkWell(
                   onTap: () => setState(() => _selectedSex = 'male'),
-                  borderRadius: BorderRadius.circular(12),
+                  borderRadius: BorderRadius.circular(14),
                   child: Container(
-                    padding: const EdgeInsets.symmetric(vertical: 11),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
                     decoration: BoxDecoration(
                       color: _selectedSex == 'male'
                           ? StorkTheme.primary.withValues(alpha: 0.1)
-                          : StorkTheme.surface,
-                      borderRadius: BorderRadius.circular(12),
+                          : StorkTheme.surfaceSubtle,
+                      borderRadius: BorderRadius.circular(14),
                       border: Border.all(
                         color: _selectedSex == 'male'
                             ? StorkTheme.primary
                             : StorkTheme.borderSubtle,
-                        width: _selectedSex == 'male' ? 1.5 : 1,
+                        width: _selectedSex == 'male' ? 1.6 : 1,
                       ),
                     ),
                     alignment: Alignment.center,
                     child: Text(
                       'Male',
                       style: TextStyle(
-                        fontWeight: FontWeight.w700,
+                        fontWeight: FontWeight.w800,
                         color: _selectedSex == 'male'
                             ? StorkTheme.primary
                             : StorkTheme.textMain,
@@ -581,26 +710,26 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
               Expanded(
                 child: InkWell(
                   onTap: () => setState(() => _selectedSex = 'female'),
-                  borderRadius: BorderRadius.circular(12),
+                  borderRadius: BorderRadius.circular(14),
                   child: Container(
-                    padding: const EdgeInsets.symmetric(vertical: 11),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
                     decoration: BoxDecoration(
                       color: _selectedSex == 'female'
                           ? StorkTheme.primary.withValues(alpha: 0.1)
-                          : StorkTheme.surface,
-                      borderRadius: BorderRadius.circular(12),
+                          : StorkTheme.surfaceSubtle,
+                      borderRadius: BorderRadius.circular(14),
                       border: Border.all(
                         color: _selectedSex == 'female'
                             ? StorkTheme.primary
                             : StorkTheme.borderSubtle,
-                        width: _selectedSex == 'female' ? 1.5 : 1,
+                        width: _selectedSex == 'female' ? 1.6 : 1,
                       ),
                     ),
                     alignment: Alignment.center,
                     child: Text(
                       'Female',
                       style: TextStyle(
-                        fontWeight: FontWeight.w700,
+                        fontWeight: FontWeight.w800,
                         color: _selectedSex == 'female'
                             ? StorkTheme.primary
                             : StorkTheme.textMain,
@@ -617,8 +746,9 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
             readOnly: true,
             onTap: _selectBirthday,
             decoration: const InputDecoration(
-              labelText: 'Date of Birth (18+)*',
+              labelText: 'Date of Birth (18+) *',
               hintText: 'YYYY-MM-DD',
+              fillColor: StorkTheme.surfaceSubtle,
               suffixIcon: Icon(Icons.calendar_today_outlined, size: 18),
             ),
             validator: (v) => (v == null || v.isEmpty) ? 'Required' : null,
@@ -626,7 +756,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
           const SizedBox(height: 24),
           SizedBox(
             width: double.infinity,
-            height: 48,
+            height: 50,
             child: ElevatedButton(
               onPressed: _goToPasswordStep,
               child: const Text('Continue'),
@@ -647,7 +777,9 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
             controller: _passwordController,
             obscureText: !_isPasswordVisible,
             decoration: InputDecoration(
-              labelText: 'Password*',
+              labelText: 'Password *',
+              fillColor: StorkTheme.surfaceSubtle,
+              prefixIcon: const Icon(Icons.lock_outline_rounded, size: 20),
               suffixIcon: IconButton(
                 icon: Icon(
                   _isPasswordVisible
@@ -666,7 +798,9 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
             controller: _confirmPasswordController,
             obscureText: !_isConfirmVisible,
             decoration: InputDecoration(
-              labelText: 'Confirm Password*',
+              labelText: 'Confirm Password *',
+              fillColor: StorkTheme.surfaceSubtle,
+              prefixIcon: const Icon(Icons.verified_user_outlined, size: 20),
               suffixIcon: IconButton(
                 icon: Icon(
                   _isConfirmVisible
@@ -687,7 +821,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
           ),
           const SizedBox(height: 16),
           Wrap(
-            spacing: 12,
+            spacing: 8,
             runSpacing: 8,
             children: [
               _buildRequirementChip('8+ characters', _hasMinLength),
@@ -696,7 +830,68 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
               _buildRequirementChip('1 special symbol', _hasSpecial),
             ],
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: StorkTheme.surfaceSubtle,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: StorkTheme.borderSubtle),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: Checkbox(
+                    value: _agreedToPolicies,
+                    activeColor: StorkTheme.primary,
+                    onChanged: (val) =>
+                        setState(() => _agreedToPolicies = val ?? false),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: RichText(
+                    text: TextSpan(
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: StorkTheme.textMain,
+                        height: 1.38,
+                      ),
+                      children: [
+                        const TextSpan(text: 'I have read and agree to the '),
+                        TextSpan(
+                          text: 'Terms & Conditions',
+                          style: const TextStyle(
+                            color: StorkTheme.primary,
+                            fontWeight: FontWeight.w800,
+                            decoration: TextDecoration.underline,
+                          ),
+                          recognizer: TapGestureRecognizer()
+                            ..onTap = () => _openPolicyTab(0),
+                        ),
+                        const TextSpan(text: ' and '),
+                        TextSpan(
+                          text: 'Privacy Policy',
+                          style: const TextStyle(
+                            color: StorkTheme.primary,
+                            fontWeight: FontWeight.w800,
+                            decoration: TextDecoration.underline,
+                          ),
+                          recognizer: TapGestureRecognizer()
+                            ..onTap = () => _openPolicyTab(1),
+                        ),
+                        const TextSpan(text: ' of Storkia.'),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 22),
           Row(
             children: [
               OutlinedButton(
@@ -706,7 +901,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
               const SizedBox(width: 12),
               Expanded(
                 child: SizedBox(
-                  height: 48,
+                  height: 50,
                   child: ElevatedButton(
                     onPressed: _isLoading ? null : _handleRegister,
                     child: _isLoading

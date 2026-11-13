@@ -40,9 +40,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _contact = widget.contact;
     _fetchMessages();
-
     WebSocketService.listenToChat(widget.authUserId, _handleRealTimeMessage);
-
     _pollingTimer = Timer.periodic(const Duration(seconds: 3), (_) {
       _fetchMessagesSilently();
     });
@@ -74,7 +72,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   Future<void> _fetchMessages() async {
     final res = await ApiService.fetchMessages(widget.token, _contact.id);
     if (!mounted) return;
-
     setState(() {
       isFetching = false;
       if (res['contact'] is ChatContact) {
@@ -91,7 +88,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         );
       }
     });
-
     if (res['success'] == true) {
       setState(() {
         messages = List<ChatMessage>.from(res['data'] ?? []);
@@ -108,7 +104,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   Future<void> _fetchMessagesSilently() async {
     final res = await ApiService.fetchMessages(widget.token, _contact.id);
     if (!mounted || res['success'] != true) return;
-
     if (res['contact'] is ChatContact) {
       final fetchedContact = res['contact'] as ChatContact;
       if ((_contact.businessName == null || _contact.businessName!.isEmpty) &&
@@ -121,7 +116,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         });
       }
     }
-
     final List<ChatMessage> newMessages =
         List<ChatMessage>.from(res['data'] ?? []);
     if (newMessages.length != messages.length) {
@@ -162,7 +156,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     );
 
     if (!mounted) return;
-
     if (res['success'] == true && res['data'] is ChatMessage) {
       setState(() {
         messages.add(res['data'] as ChatMessage);
@@ -215,23 +208,32 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       appBar: AppBar(
         title: Row(
           children: [
-            CircleAvatar(
-              radius: 18,
-              backgroundColor: StorkTheme.primary.withValues(alpha: 0.14),
-              backgroundImage:
-                  logoUrl.isNotEmpty ? NetworkImage(logoUrl) : null,
-              child: logoUrl.isEmpty
-                  ? Text(
-                      displayName.isNotEmpty
-                          ? displayName[0].toUpperCase()
-                          : 'S',
-                      style: const TextStyle(
-                        color: StorkTheme.primary,
-                        fontWeight: FontWeight.w900,
-                        fontSize: 14,
-                      ),
-                    )
-                  : null,
+            Container(
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: StorkTheme.primary.withValues(alpha: 0.25),
+                  width: 1.5,
+                ),
+              ),
+              child: CircleAvatar(
+                radius: 18,
+                backgroundColor: StorkTheme.primary.withValues(alpha: 0.14),
+                backgroundImage:
+                    logoUrl.isNotEmpty ? NetworkImage(logoUrl) : null,
+                child: logoUrl.isEmpty
+                    ? Text(
+                        displayName.isNotEmpty
+                            ? displayName[0].toUpperCase()
+                            : 'S',
+                        style: const TextStyle(
+                          color: StorkTheme.primary,
+                          fontWeight: FontWeight.w900,
+                          fontSize: 14,
+                        ),
+                      )
+                    : null,
+              ),
             ),
             const SizedBox(width: 10),
             Expanded(
@@ -243,7 +245,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
-                      color: StorkTheme.textMain,
+                      color: StorkTheme.primaryDark,
                       fontSize: 15.5,
                       fontWeight: FontWeight.w800,
                     ),
@@ -258,13 +260,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                           shape: BoxShape.circle,
                         ),
                       ),
-                      const SizedBox(width: 4),
-                      const Text(
-                        'Official Store • Active now',
-                        style: TextStyle(
-                          color: StorkTheme.success,
-                          fontSize: 11,
-                          fontWeight: FontWeight.w700,
+                      const SizedBox(width: 5),
+                      const Flexible(
+                        child: Text(
+                          'Official Store • Active now',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: StorkTheme.success,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                          ),
                         ),
                       ),
                     ],
@@ -282,25 +288,82 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                 ? const Center(
                     child: CircularProgressIndicator(color: StorkTheme.primary),
                   )
-                : ListView.builder(
-                    controller: _scrollController,
-                    padding: const EdgeInsets.all(16),
-                    itemCount: messages.length,
-                    itemBuilder: (context, index) {
-                      final msg = messages[index];
-                      final isMe = msg.userId == widget.authUserId;
-                      return _ChatBubble(msg: msg, isMe: isMe);
-                    },
-                  ),
+                : messages.isEmpty
+                    ? Center(
+                        child: Padding(
+                          padding: const EdgeInsets.all(28),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                width: 64,
+                                height: 64,
+                                decoration: BoxDecoration(
+                                  color:
+                                      StorkTheme.primary.withValues(alpha: 0.1),
+                                  shape: BoxShape.circle,
+                                ),
+                                child: const Icon(
+                                  Icons.chat_bubble_outline_rounded,
+                                  color: StorkTheme.primary,
+                                  size: 30,
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                              Text(
+                                'Chat with $displayName',
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  fontSize: 15.5,
+                                  fontWeight: FontWeight.w800,
+                                  color: StorkTheme.primaryDark,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              const Text(
+                                'Ask about product specifications, stock availability, or custom bundle requests.',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: StorkTheme.textMuted,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      )
+                    : ListView.builder(
+                        controller: _scrollController,
+                        padding: const EdgeInsets.all(16),
+                        itemCount: messages.length,
+                        itemBuilder: (context, index) {
+                          final msg = messages[index];
+                          final isMe = msg.userId == widget.authUserId;
+                          return _ChatBubble(msg: msg, isMe: isMe);
+                        },
+                      ),
           ),
           if (_attachment != null)
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-              color: StorkTheme.surface,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              decoration: const BoxDecoration(
+                color: StorkTheme.surface,
+                border: Border(top: BorderSide(color: StorkTheme.borderSubtle)),
+              ),
               child: Row(
                 children: [
-                  const Icon(Icons.image_outlined,
-                      size: 18, color: StorkTheme.primary),
+                  Container(
+                    padding: const EdgeInsets.all(6),
+                    decoration: BoxDecoration(
+                      color: StorkTheme.primary.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(
+                      Icons.image_outlined,
+                      size: 16,
+                      color: StorkTheme.primary,
+                    ),
+                  ),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
@@ -334,8 +397,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                   IconButton(
                     onPressed: _pickAttachment,
                     icon: const Icon(
-                      Icons.photo_outlined,
-                      color: StorkTheme.textMuted,
+                      Icons.photo_library_outlined,
+                      color: StorkTheme.primaryDark,
                     ),
                   ),
                   Expanded(
@@ -345,6 +408,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                       minLines: 1,
                       decoration: const InputDecoration(
                         hintText: 'Type a message...',
+                        fillColor: StorkTheme.surfaceSubtle,
                       ),
                       onSubmitted: (_) => _sendMessage(),
                     ),
@@ -352,10 +416,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                   const SizedBox(width: 8),
                   GestureDetector(
                     onTap: _sendMessage,
-                    child: CircleAvatar(
-                      radius: 22,
-                      backgroundColor:
-                          isSending ? Colors.grey : StorkTheme.primary,
+                    child: Container(
+                      width: 44,
+                      height: 44,
+                      decoration: BoxDecoration(
+                        gradient: isSending ? null : StorkTheme.brandGradient,
+                        color: isSending ? Colors.grey : null,
+                        shape: BoxShape.circle,
+                      ),
                       child: const Icon(
                         Icons.send_rounded,
                         color: Colors.white,
@@ -400,13 +468,15 @@ class _ChatBubble extends StatelessWidget {
               ),
               padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 11),
               decoration: BoxDecoration(
-                color: isMe ? StorkTheme.primary : StorkTheme.surface,
+                gradient: isMe ? StorkTheme.brandGradient : null,
+                color: isMe ? null : StorkTheme.surface,
                 borderRadius: BorderRadius.circular(20).copyWith(
                   bottomRight: isMe ? const Radius.circular(4) : null,
                   bottomLeft: !isMe ? const Radius.circular(4) : null,
                 ),
                 border:
                     !isMe ? Border.all(color: StorkTheme.borderSubtle) : null,
+                boxShadow: !isMe ? StorkTheme.softCardShadow : null,
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -421,13 +491,28 @@ class _ChatBubble extends StatelessWidget {
                             : StorkTheme.surfaceSubtle,
                         borderRadius: BorderRadius.circular(12),
                       ),
-                      child: Text(
-                        'Product Inquiry: ${msg.product!['name'] ?? ''}',
-                        style: TextStyle(
-                          fontSize: 11.5,
-                          fontWeight: FontWeight.w800,
-                          color: isMe ? Colors.white : StorkTheme.primaryDark,
-                        ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.inventory_2_outlined,
+                            size: 14,
+                            color: isMe ? Colors.white : StorkTheme.primaryDark,
+                          ),
+                          const SizedBox(width: 6),
+                          Flexible(
+                            child: Text(
+                              'Product Inquiry: ${msg.product!['name'] ?? ''}',
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w800,
+                                color: isMe
+                                    ? Colors.white
+                                    : StorkTheme.primaryDark,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ],
@@ -447,8 +532,8 @@ class _ChatBubble extends StatelessWidget {
                       msg.message,
                       style: TextStyle(
                         color: isMe ? Colors.white : StorkTheme.textMain,
-                        fontSize: 14.5,
-                        height: 1.35,
+                        fontSize: 14,
+                        height: 1.38,
                       ),
                     ),
                 ],
@@ -463,7 +548,7 @@ class _ChatBubble extends StatelessWidget {
                   style: const TextStyle(
                     color: StorkTheme.textMuted,
                     fontSize: 10.5,
-                    fontWeight: FontWeight.w500,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
                 if (isMe) ...[

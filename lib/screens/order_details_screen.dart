@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:core';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
@@ -11,9 +11,12 @@ import '../config/app_routes.dart';
 import '../config/app_theme.dart';
 import '../providers/global_counters_provider.dart';
 import 'cart_screen.dart';
+import 'identity_verification_screen.dart';
 import 'leave_review_screen.dart';
 
 typedef JsonMap = Map<String, dynamic>;
+typedef StringMap = Map<String, String>;
+typedef XFileList = List<XFile>;
 
 class OrderDetailsScreen extends ConsumerStatefulWidget {
   final int orderId;
@@ -98,7 +101,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
   }
 
   Future<void> _fetchOrderDetails({bool silent = false}) async {
-    if (!silent) {
+    if (!silent && _orderData == null) {
       setState(() => _isLoading = true);
     }
     try {
@@ -115,13 +118,20 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         if (data is Map && data['success'] == true && data['data'] is Map) {
+          final orderMap = JsonMap.from(data['data'] as Map);
           setState(() {
-            _orderData = Map<String, dynamic>.from(data['data'] as Map);
+            _orderData = orderMap;
             if (data['cancellation_quota'] is Map) {
               _cancellationQuota =
-                  Map<String, dynamic>.from(data['cancellation_quota'] as Map);
+                  JsonMap.from(data['cancellation_quota'] as Map);
             }
             _isIdentityVerified = data['is_identity_verified'] == true;
+            _unreadDeliveryChatCount = int.tryParse(
+                    (data['unread_delivery_chat_count'] ??
+                            orderMap['unread_delivery_chat_count'] ??
+                            '0')
+                        .toString()) ??
+                0;
             _isLoading = false;
           });
           return;
@@ -147,7 +157,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
       final body = json.decode(response.body);
       if (body is Map && body['success'] == true && body['data'] is Map) {
         setState(() {
-          _liveTrackingData = Map<String, dynamic>.from(body['data'] as Map);
+          _liveTrackingData = JsonMap.from(body['data'] as Map);
         });
       }
     } catch (_) {}
@@ -172,7 +182,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
           body is Map &&
           body['success'] == true &&
           body['data'] is Map) {
-        final inv = Map<String, dynamic>.from(body['data'] as Map);
+        final inv = JsonMap.from(body['data'] as Map);
         final List<dynamic> items = inv['items'] is List
             ? List<dynamic>.from(inv['items'] as List)
             : <dynamic>[];
@@ -180,6 +190,10 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
         showModalBottomSheet<void>(
           context: context,
           isScrollControlled: true,
+          backgroundColor: StorkTheme.surface,
+          shape: const RoundedRectangleBorder(
+            borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+          ),
           builder: (modalContext) {
             return DraggableScrollableSheet(
               expand: false,
@@ -189,30 +203,43 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
               builder: (ctx, scrollCtrl) {
                 return ListView(
                   controller: scrollCtrl,
-                  padding: const EdgeInsets.all(20),
+                  padding: const EdgeInsets.fromLTRB(20, 14, 20, 24),
                   children: [
+                    Center(
+                      child: Container(
+                        width: 42,
+                        height: 4,
+                        margin: const EdgeInsets.only(bottom: 16),
+                        decoration: BoxDecoration(
+                          color: StorkTheme.borderSubtle,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                      ),
+                    ),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              inv['invoice_number']?.toString() ?? 'INVOICE',
-                              style: const TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.w900,
-                                color: StorkTheme.primaryDark,
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                inv['invoice_number']?.toString() ?? 'INVOICE',
+                                style: const TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w900,
+                                  color: StorkTheme.primaryDark,
+                                ),
                               ),
-                            ),
-                            Text(
-                              'Issued: ${inv['issued_at'] ?? ''}',
-                              style: const TextStyle(
-                                fontSize: 11.5,
-                                color: StorkTheme.textMuted,
+                              Text(
+                                'Issued: ${inv['issued_at'] ?? ''}',
+                                style: const TextStyle(
+                                  fontSize: 11.5,
+                                  color: StorkTheme.textMuted,
+                                ),
                               ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
                         IconButton(
                           onPressed: () => Navigator.pop(modalContext),
@@ -240,7 +267,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                       style: TextStyle(
                         fontSize: 11,
                         fontWeight: FontWeight.w800,
-                        color: StorkTheme.textMuted,
+                        color: StorkTheme.primaryDark,
                       ),
                     ),
                     const SizedBox(height: 8),
@@ -298,6 +325,16 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                           '-₱${_formatMoney(inv['coins_discount_amount'])}'),
                     _buildInfoRow('Net Merchandise Subtotal:',
                         '₱${_formatMoney(inv['net_subtotal'])}'),
+                    if ((double.tryParse(
+                                inv['shipping_voucher_discount']?.toString() ??
+                                    '0') ??
+                            0) >
+                        0) ...[
+                      _buildInfoRow('Original Shipping Fee:',
+                          '₱${_formatMoney(inv['original_shipping_fee'])}'),
+                      _buildInfoRow('Shipping Voucher Discount:',
+                          '-₱${_formatMoney(inv['shipping_voucher_discount'])}'),
+                    ],
                     _buildInfoRow('Net Shipping Fee:',
                         '₱${_formatMoney(inv['net_shipping_fee'])}'),
                     const Divider(height: 20),
@@ -341,19 +378,26 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
+      backgroundColor: StorkTheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
       builder: (_) => _DeliveryRiderChatBottomSheet(
         orderId: widget.orderId,
         domain: _domain,
         token: widget.token,
       ),
     );
-    setState(() => _unreadDeliveryChatCount = 0);
+    if (mounted) {
+      setState(() => _unreadDeliveryChatCount = 0);
+    }
   }
 
   Future<void> _confirmReceipt() async {
     final bool? confirm = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
         title: const Text(
           'Confirm Order Received',
           style: TextStyle(fontWeight: FontWeight.w800, fontSize: 17),
@@ -404,12 +448,87 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
         _showSuccess(
           data['message']?.toString() ?? 'Order confirmed and completed!',
         );
-        _fetchAllOrderData();
+        _fetchAllOrderData(silent: true);
       } else {
         _showError(
           data is Map
               ? (data['message']?.toString() ?? 'Failed to confirm receipt.')
               : 'Failed to confirm receipt.',
+        );
+      }
+    } catch (_) {
+      if (mounted) Navigator.pop(context);
+      _showError('Network error occurred.');
+    }
+  }
+
+  Future<void> _switchFlaggedOrderToCod() async {
+    _showLoadingDialog();
+    try {
+      final response = await http.post(
+        Uri.parse('$_domain/api/v1/orders/${widget.orderId}/switch-to-cod'),
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Accept': 'application/json',
+        },
+      ).timeout(ApiConfig.requestTimeout);
+
+      if (!mounted) return;
+      Navigator.pop(context);
+
+      final data = json.decode(response.body);
+      if (response.statusCode == 200 &&
+          data is Map &&
+          data['success'] == true) {
+        syncAllBuyerCounters(ref, widget.token);
+        _showSuccess(
+          data['message']?.toString() ??
+              'Order switched to Cash on Delivery (COD)!',
+        );
+        _fetchAllOrderData(silent: true);
+      } else {
+        _showError(
+          data is Map
+              ? (data['message']?.toString() ??
+                  'Failed to switch order to COD.')
+              : 'Failed to switch order to COD.',
+        );
+      }
+    } catch (_) {
+      if (mounted) Navigator.pop(context);
+      _showError('Network error occurred.');
+    }
+  }
+
+  Future<void> _cancelFlaggedPaymentOrder() async {
+    _showLoadingDialog();
+    try {
+      final response = await http.post(
+        Uri.parse(
+            '$_domain/api/v1/orders/${widget.orderId}/cancel-flagged-payment'),
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Accept': 'application/json',
+        },
+      ).timeout(ApiConfig.requestTimeout);
+
+      if (!mounted) return;
+      Navigator.pop(context);
+
+      final data = json.decode(response.body);
+      if (response.statusCode == 200 &&
+          data is Map &&
+          data['success'] == true) {
+        syncAllBuyerCounters(ref, widget.token);
+        _showSuccess(
+          data['message']?.toString() ?? 'Order cancelled immediately.',
+        );
+        _fetchAllOrderData(silent: true);
+      } else {
+        _showError(
+          data is Map
+              ? (data['message']?.toString() ?? 'Unable to cancel order.')
+              : 'Unable to cancel order.',
         );
       }
     } catch (_) {
@@ -428,10 +547,15 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
     String selectedReason = reasons.first;
     final notesController = TextEditingController();
     bool isSubmitting = false;
+    String? modalError;
 
     await showModalBottomSheet(
       context: context,
       isScrollControlled: true,
+      backgroundColor: StorkTheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
       builder: (modalContext) {
         return StatefulBuilder(
           builder: (ctx, setModalState) {
@@ -439,7 +563,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
               padding: EdgeInsets.only(
                 left: 20,
                 right: 20,
-                top: 20,
+                top: 14,
                 bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
               ),
               child: SingleChildScrollView(
@@ -447,6 +571,17 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    Center(
+                      child: Container(
+                        width: 42,
+                        height: 4,
+                        margin: const EdgeInsets.only(bottom: 16),
+                        decoration: BoxDecoration(
+                          color: StorkTheme.borderSubtle,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                      ),
+                    ),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
@@ -516,8 +651,20 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                       decoration: const InputDecoration(
                         labelText: 'Additional Notes (Optional)',
                         counterText: '',
+                        fillColor: StorkTheme.surfaceSubtle,
                       ),
                     ),
+                    if (modalError != null) ...[
+                      const SizedBox(height: 10),
+                      Text(
+                        modalError!,
+                        style: const TextStyle(
+                          color: StorkTheme.danger,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
                     const SizedBox(height: 16),
                     Row(
                       children: [
@@ -536,7 +683,10 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                             onPressed: isSubmitting
                                 ? null
                                 : () async {
-                                    setModalState(() => isSubmitting = true);
+                                    setModalState(() {
+                                      isSubmitting = true;
+                                      modalError = null;
+                                    });
                                     try {
                                       final response = await http
                                           .post(
@@ -569,7 +719,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                                           data['message']?.toString() ??
                                               'Order cancelled successfully.',
                                         );
-                                        _fetchAllOrderData();
+                                        _fetchAllOrderData(silent: true);
                                       } else {
                                         String err = data is Map
                                             ? (data['message']?.toString() ??
@@ -587,10 +737,11 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                                             err = first.first.toString();
                                           }
                                         }
-                                        _showError(err);
+                                        setModalState(() => modalError = err);
                                       }
                                     } catch (_) {
-                                      _showError('Network error occurred.');
+                                      setModalState(() => modalError =
+                                          'Network error occurred.');
                                     } finally {
                                       if (modalContext.mounted) {
                                         setModalState(
@@ -623,10 +774,116 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
   }
 
   Future<void> _openReturnRefundModal() async {
-    if (!_isIdentityVerified) {
+    _showLoadingDialog();
+
+    List<JsonMap> reasonCatalog = [
+      {
+        'key': 'damaged_item',
+        'label': 'Damaged or defective item',
+        'resolution': 'return_refund',
+        'hint': 'Item arrived broken, damaged, or malfunctioning.',
+        'refund_only_forced': false,
+      },
+      {
+        'key': 'wrong_item',
+        'label': 'Wrong item or variation received',
+        'resolution': 'return_refund',
+        'hint': 'Received a different product, size, or color than ordered.',
+        'refund_only_forced': false,
+      },
+      {
+        'key': 'missing_parts',
+        'label': 'Missing parts or incomplete quantity',
+        'resolution': 'return_refund',
+        'hint': 'Some accessories or ordered units were missing.',
+        'refund_only_forced': false,
+      },
+      {
+        'key': 'not_as_described',
+        'label': 'Item does not match description/photos',
+        'resolution': 'return_refund',
+        'hint': 'Material or specifications differ significantly from listing.',
+        'refund_only_forced': false,
+      },
+      {
+        'key': 'did_not_receive',
+        'label': 'Parcel marked delivered but not received',
+        'resolution': 'refund_only',
+        'hint': 'Order shows delivered but package never arrived.',
+        'refund_only_forced': true,
+      },
+      {
+        'key': 'empty_parcel',
+        'label': 'Received an empty package',
+        'resolution': 'refund_only',
+        'hint': 'Outer packaging arrived with no item inside.',
+        'refund_only_forced': true,
+      },
+    ];
+
+    String defaultAccountName = '';
+    String defaultAccountNumber = '';
+    bool identityVerified = _isIdentityVerified;
+    String? blockerMessage;
+
+    try {
+      final res = await http.get(
+        Uri.parse('$_domain/api/v1/orders/${widget.orderId}/return'),
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Accept': 'application/json',
+        },
+      ).timeout(ApiConfig.requestTimeout);
+
+      if (mounted) Navigator.pop(context);
+
+      if (res.statusCode == 200) {
+        final body = json.decode(res.body);
+        if (body is Map && body['data'] is Map) {
+          final d = JsonMap.from(body['data'] as Map);
+          identityVerified = d['identity_verified'] == true;
+          blockerMessage = d['blocker']?.toString();
+          defaultAccountName = d['default_account_name']?.toString() ?? '';
+          defaultAccountNumber = d['default_account_number']?.toString() ?? '';
+
+          if (d['reasons'] is List && (d['reasons'] as List).isNotEmpty) {
+            final StringMap fallbackLabels = {
+              for (final item in reasonCatalog)
+                item['key'].toString(): item['label'].toString(),
+            };
+            reasonCatalog = [
+              for (final r in (d['reasons'] as List))
+                if (r is Map)
+                  {
+                    'key': r['key']?.toString() ?? 'damaged_item',
+                    'label': r['label']?.toString() ??
+                        fallbackLabels[r['key']?.toString() ?? ''] ??
+                        (r['key']
+                                ?.toString()
+                                .replaceAll('_', ' ')
+                                .toUpperCase() ??
+                            'Issue'),
+                    'resolution':
+                        r['resolution']?.toString() ?? 'return_refund',
+                    'hint': r['hint']?.toString() ?? '',
+                    'refund_only_forced': r['refund_only_forced'] == true,
+                  },
+            ];
+          }
+        }
+      }
+    } catch (_) {
+      if (mounted) Navigator.pop(context);
+    }
+
+    if (!mounted) return;
+
+    if (!identityVerified) {
       await showDialog<void>(
         context: context,
         builder: (dialogContext) => AlertDialog(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
           title: const Text(
             'Valid ID Verification Required',
             style: TextStyle(
@@ -636,7 +893,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
             ),
           ),
           content: const Text(
-            'To protect both buyers and merchants from fraudulent claims, Storkia requires an approved Valid Government ID on your account before submitting a Return & Refund request.\n\nPlease complete Identity Verification under Account Settings first.',
+            'To protect both buyers and merchants from fraudulent claims, Storkia requires an approved Valid Government ID on your account before submitting a Return & Refund request.\n\nPlease complete Identity Verification first.',
             style: TextStyle(
               fontSize: 13.5,
               color: StorkTheme.textMain,
@@ -644,9 +901,24 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
             ),
           ),
           actions: [
-            ElevatedButton(
+            TextButton(
               onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Understood'),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pop(dialogContext);
+                Navigator.push(
+                  context,
+                  StorkRoute.fade(
+                    IdentityVerificationScreen(
+                      baseUrl: _domain,
+                      token: widget.token,
+                    ),
+                  ),
+                ).then((_) => _fetchAllOrderData(silent: true));
+              },
+              child: const Text('Verify ID Now'),
             ),
           ],
         ),
@@ -654,50 +926,52 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
       return;
     }
 
-    const List<String> issueCategories = [
-      'Damaged item',
-      'Wrong item or variation received',
-      'Missing quantity / incomplete parcel',
-      'Defective or not working',
-    ];
-    String selectedCategory = issueCategories.first;
+    if (blockerMessage != null && blockerMessage.isNotEmpty) {
+      _showError(blockerMessage);
+      return;
+    }
+
+    String selectedCategoryKey = reasonCatalog.first['key'].toString();
+    String selectedResolution =
+        reasonCatalog.first['refund_only_forced'] == true
+            ? 'refund_only'
+            : 'return_refund';
     String refundMethod = 'WALLET';
-    final accountNameCtrl = TextEditingController();
-    final accountPhoneCtrl = TextEditingController();
+
+    final accountNameCtrl = TextEditingController(text: defaultAccountName);
+    final accountPhoneCtrl = TextEditingController(text: defaultAccountNumber);
     final reasonCtrl = TextEditingController();
-    List<XFile> evidenceFiles = <XFile>[];
+    XFileList evidenceFiles = <XFile>[];
     String? formError;
     bool isSubmitting = false;
 
     await showModalBottomSheet(
       context: context,
       isScrollControlled: true,
+      backgroundColor: StorkTheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
       builder: (modalContext) {
         return StatefulBuilder(
           builder: (ctx, setModalState) {
-            void sanitizeRefundPhone(String val) {
-              String digits = val.replaceAll(RegExp(r'\D'), '');
-              if (digits.startsWith('63') && digits.length == 12) {
-                digits = '0${digits.substring(2)}';
-              } else if (digits.startsWith('9') && digits.length == 10) {
-                digits = '0$digits';
-              }
-              if (digits.length > 11) {
-                digits = digits.substring(0, 11);
-              }
-              if (accountPhoneCtrl.text != digits) {
-                accountPhoneCtrl.value = TextEditingValue(
-                  text: digits,
-                  selection: TextSelection.collapsed(offset: digits.length),
-                );
-              }
+            final JsonMap activeReasonObj = reasonCatalog.firstWhere(
+              (r) => r['key'] == selectedCategoryKey,
+              orElse: () => reasonCatalog.first,
+            );
+            final bool isRefundOnlyForced =
+                activeReasonObj['refund_only_forced'] == true;
+            final String activeHint = activeReasonObj['hint']?.toString() ?? '';
+
+            if (isRefundOnlyForced && selectedResolution != 'refund_only') {
+              selectedResolution = 'refund_only';
             }
 
             return Padding(
               padding: EdgeInsets.only(
                 left: 20,
                 right: 20,
-                top: 18,
+                top: 14,
                 bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
               ),
               child: SingleChildScrollView(
@@ -705,15 +979,28 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    Center(
+                      child: Container(
+                        width: 42,
+                        height: 4,
+                        margin: const EdgeInsets.only(bottom: 16),
+                        decoration: BoxDecoration(
+                          color: StorkTheme.borderSubtle,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                      ),
+                    ),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        const Text(
-                          'Request Return & Refund',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w800,
-                            color: StorkTheme.primaryDark,
+                        const Expanded(
+                          child: Text(
+                            'Request Return & Refund',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w800,
+                              color: StorkTheme.primaryDark,
+                            ),
                           ),
                         ),
                         IconButton(
@@ -735,14 +1022,19 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          const Text(
-                            '✓ Valid Government ID Verified',
-                            style: TextStyle(
-                              fontSize: 11.5,
-                              fontWeight: FontWeight.w800,
-                              color: StorkTheme.success,
+                          const Flexible(
+                            child: Text(
+                              '✓ Valid Government ID Verified',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w800,
+                                color: StorkTheme.success,
+                              ),
                             ),
                           ),
+                          const SizedBox(width: 8),
                           Text(
                             'Refundable: ₱${_formatMoney(_orderData?['total_amount'])}',
                             style: const TextStyle(
@@ -756,24 +1048,146 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                     ),
                     const SizedBox(height: 12),
                     DropdownButtonFormField<String>(
-                      initialValue: selectedCategory,
+                      initialValue: selectedCategoryKey,
+                      isExpanded: true,
                       decoration: const InputDecoration(
                         labelText: 'Issue Category *',
                       ),
-                      items: issueCategories
-                          .map((c) => DropdownMenuItem<String>(
-                                value: c,
-                                child: Text(
-                                  c,
-                                  style: const TextStyle(fontSize: 13),
-                                ),
-                              ))
-                          .toList(),
+                      items: [
+                        for (final r in reasonCatalog)
+                          DropdownMenuItem<String>(
+                            value: r['key'].toString(),
+                            child: Text(
+                              r['label'].toString(),
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(fontSize: 13),
+                            ),
+                          ),
+                      ],
                       onChanged: (val) {
                         if (val != null) {
-                          setModalState(() => selectedCategory = val);
+                          final match = reasonCatalog.firstWhere(
+                            (r) => r['key'] == val,
+                            orElse: () => reasonCatalog.first,
+                          );
+                          setModalState(() {
+                            selectedCategoryKey = val;
+                            if (match['refund_only_forced'] == true) {
+                              selectedResolution = 'refund_only';
+                            } else {
+                              selectedResolution =
+                                  match['resolution']?.toString() ??
+                                      'return_refund';
+                            }
+                            formError = null;
+                          });
                         }
                       },
+                    ),
+                    if (activeHint.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        activeHint,
+                        style: const TextStyle(
+                          fontSize: 11.5,
+                          color: StorkTheme.textMuted,
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 12),
+                    const Text(
+                      'REQUESTED RESOLUTION *',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                        color: StorkTheme.textMuted,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        if (!isRefundOnlyForced) ...[
+                          Expanded(
+                            child: InkWell(
+                              onTap: () => setModalState(
+                                  () => selectedResolution = 'return_refund'),
+                              borderRadius: BorderRadius.circular(12),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                    vertical: 10, horizontal: 8),
+                                decoration: BoxDecoration(
+                                  color: selectedResolution == 'return_refund'
+                                      ? StorkTheme.primary
+                                          .withValues(alpha: 0.08)
+                                      : StorkTheme.surface,
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(
+                                    color: selectedResolution == 'return_refund'
+                                        ? StorkTheme.primary
+                                        : StorkTheme.borderSubtle,
+                                    width: selectedResolution == 'return_refund'
+                                        ? 1.6
+                                        : 1,
+                                  ),
+                                ),
+                                alignment: Alignment.center,
+                                child: Text(
+                                  'Return & Refund',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w800,
+                                    color: selectedResolution == 'return_refund'
+                                        ? StorkTheme.primary
+                                        : StorkTheme.textMain,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                        ],
+                        Expanded(
+                          child: InkWell(
+                            onTap: () => setModalState(
+                                () => selectedResolution = 'refund_only'),
+                            borderRadius: BorderRadius.circular(12),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  vertical: 10, horizontal: 8),
+                              decoration: BoxDecoration(
+                                color: selectedResolution == 'refund_only'
+                                    ? StorkTheme.primaryDark
+                                        .withValues(alpha: 0.08)
+                                    : StorkTheme.surface,
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: selectedResolution == 'refund_only'
+                                      ? StorkTheme.primaryDark
+                                      : StorkTheme.borderSubtle,
+                                  width: selectedResolution == 'refund_only'
+                                      ? 1.6
+                                      : 1,
+                                ),
+                              ),
+                              alignment: Alignment.center,
+                              child: Text(
+                                isRefundOnlyForced
+                                    ? 'Refund Only (No Physical Return Needed)'
+                                    : 'Refund Only',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w800,
+                                  color: selectedResolution == 'refund_only'
+                                      ? StorkTheme.primaryDark
+                                      : StorkTheme.textMain,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 12),
                     const Text(
@@ -858,30 +1272,26 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                     ),
                     if (refundMethod == 'GCASH') ...[
                       const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: TextField(
-                              controller: accountNameCtrl,
-                              decoration: const InputDecoration(
-                                labelText: 'GCash Account Name *',
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: TextField(
-                              controller: accountPhoneCtrl,
-                              keyboardType: TextInputType.phone,
-                              maxLength: 11,
-                              onChanged: sanitizeRefundPhone,
-                              decoration: const InputDecoration(
-                                labelText: 'GCash Number (09...)*',
-                                counterText: '',
-                              ),
-                            ),
-                          ),
+                      TextField(
+                        controller: accountNameCtrl,
+                        textCapitalization: TextCapitalization.words,
+                        decoration: const InputDecoration(
+                          labelText: 'GCash Account Holder Name *',
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      TextField(
+                        controller: accountPhoneCtrl,
+                        keyboardType: TextInputType.phone,
+                        inputFormatters: [
+                          FilteringTextInputFormatter.digitsOnly,
+                          LengthLimitingTextInputFormatter(11),
                         ],
+                        decoration: const InputDecoration(
+                          labelText: 'GCash Mobile Number *',
+                          prefixText: '+63 ',
+                          hintText: '09171234567 or 9171234567',
+                        ),
                       ),
                     ],
                     const SizedBox(height: 12),
@@ -889,6 +1299,11 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                       controller: reasonCtrl,
                       maxLines: 3,
                       maxLength: 1000,
+                      onChanged: (_) {
+                        if (formError != null) {
+                          setModalState(() => formError = null);
+                        }
+                      },
                       decoration: const InputDecoration(
                         labelText: 'Describe the Issue (10+ characters) *',
                         counterText: '',
@@ -937,21 +1352,22 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                       Wrap(
                         spacing: 8,
                         runSpacing: 8,
-                        children: evidenceFiles.map((f) {
-                          return ClipRRect(
-                            borderRadius: BorderRadius.circular(8),
-                            child: Image.file(
-                              File(f.path),
-                              width: 52,
-                              height: 52,
-                              fit: BoxFit.cover,
+                        children: [
+                          for (final f in evidenceFiles)
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(8),
+                              child: Image.file(
+                                File(f.path),
+                                width: 52,
+                                height: 52,
+                                fit: BoxFit.cover,
+                              ),
                             ),
-                          );
-                        }).toList(),
+                        ],
                       ),
                     ],
                     if (formError != null) ...[
-                      const SizedBox(height: 8),
+                      const SizedBox(height: 10),
                       Text(
                         formError!,
                         style: const TextStyle(
@@ -964,7 +1380,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                     const SizedBox(height: 16),
                     SizedBox(
                       width: double.infinity,
-                      height: 48,
+                      height: 50,
                       child: ElevatedButton(
                         style: ElevatedButton.styleFrom(
                           backgroundColor: StorkTheme.danger,
@@ -972,7 +1388,6 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                         onPressed: isSubmitting
                             ? null
                             : () async {
-                                sanitizeRefundPhone(accountPhoneCtrl.text);
                                 final reasonText = reasonCtrl.text.trim();
                                 if (reasonText.length < 10) {
                                   setModalState(() {
@@ -981,23 +1396,47 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                                   });
                                   return;
                                 }
+
+                                String normalizedGcashPhone =
+                                    defaultAccountNumber;
+                                String resolvedAccountName = defaultAccountName;
+
                                 if (refundMethod == 'GCASH') {
-                                  if (accountNameCtrl.text.trim().isEmpty) {
+                                  resolvedAccountName =
+                                      accountNameCtrl.text.trim();
+                                  if (resolvedAccountName.isEmpty) {
                                     setModalState(() {
                                       formError =
-                                          'Please enter your GCash account name.';
+                                          'Please enter your GCash account holder name.';
                                     });
                                     return;
                                   }
-                                  if (!RegExp(r'^09\d{9}$')
-                                      .hasMatch(accountPhoneCtrl.text.trim())) {
+
+                                  final rawDigits = accountPhoneCtrl.text
+                                      .trim()
+                                      .replaceAll(RegExp(r'\D'), '');
+                                  if (!RegExp(r'^0?9\d{9}$')
+                                      .hasMatch(rawDigits)) {
                                     setModalState(() {
                                       formError =
-                                          'Enter a valid 11-digit GCash number starting with 09.';
+                                          'Enter a valid 11-digit (09XXXXXXXXX) or 10-digit (9XXXXXXXXX) GCash number.';
                                     });
                                     return;
+                                  }
+                                  normalizedGcashPhone =
+                                      rawDigits.startsWith('9') &&
+                                              rawDigits.length == 10
+                                          ? '0$rawDigits'
+                                          : rawDigits;
+                                } else {
+                                  if (normalizedGcashPhone.isEmpty) {
+                                    normalizedGcashPhone = '09170000000';
+                                  }
+                                  if (resolvedAccountName.isEmpty) {
+                                    resolvedAccountName = 'Buyer E-Wallet';
                                   }
                                 }
+
                                 if (evidenceFiles.isEmpty ||
                                     evidenceFiles.length > 5) {
                                   setModalState(() {
@@ -1016,22 +1455,24 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                                   final req = http.MultipartRequest(
                                     'POST',
                                     Uri.parse(
-                                        '$_domain/api/v1/orders/${widget.orderId}/report-dispute'),
+                                        '$_domain/api/v1/orders/${widget.orderId}/return'),
                                   );
                                   req.headers['Authorization'] =
                                       'Bearer ${widget.token}';
                                   req.headers['Accept'] = 'application/json';
 
-                                  req.fields['dispute_reason_category'] =
-                                      selectedCategory;
-                                  req.fields['dispute_reason'] = reasonText;
+                                  req.fields['reason_category'] =
+                                      selectedCategoryKey;
+                                  req.fields['requested_resolution'] =
+                                      selectedResolution;
+                                  req.fields['reason'] = reasonText;
+                                  req.fields['refund_payout_method'] =
+                                      refundMethod;
                                   req.fields['refund_method'] = refundMethod;
-                                  if (refundMethod == 'GCASH') {
-                                    req.fields['refund_account_name'] =
-                                        accountNameCtrl.text.trim();
-                                    req.fields['refund_account_number'] =
-                                        accountPhoneCtrl.text.trim();
-                                  }
+                                  req.fields['refund_account_name'] =
+                                      resolvedAccountName;
+                                  req.fields['refund_account_number'] =
+                                      normalizedGcashPhone;
 
                                   for (final f in evidenceFiles) {
                                     req.files.add(
@@ -1049,9 +1490,11 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                                       await http.Response.fromStream(streamed);
                                   final data = json.decode(res.body);
 
-                                  if (res.statusCode == 200 &&
+                                  if ((res.statusCode == 200 ||
+                                          res.statusCode == 201) &&
                                       data is Map &&
                                       data['success'] == true) {
+                                    syncAllBuyerCounters(ref, widget.token);
                                     if (modalContext.mounted) {
                                       Navigator.pop(modalContext);
                                     }
@@ -1059,7 +1502,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                                       data['message']?.toString() ??
                                           'Return & Refund request submitted.',
                                     );
-                                    _fetchAllOrderData();
+                                    _fetchAllOrderData(silent: true);
                                   } else {
                                     String err = data is Map
                                         ? (data['message']?.toString() ??
@@ -1107,40 +1550,174 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
     );
   }
 
-  Future<void> _escalateDisputeToAdmin() async {
-    _showLoadingDialog();
-    try {
-      final response = await http.post(
-        Uri.parse('$_domain/api/v1/orders/${widget.orderId}/escalate-dispute'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+  Future<void> _openEscalateReturnDialog(int? returnRequestId) async {
+    final noteCtrl = TextEditingController();
+    bool isSubmitting = false;
+    String? modalError;
 
-      if (!mounted) return;
-      Navigator.pop(context);
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: StorkTheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
+      builder: (modalContext) {
+        return StatefulBuilder(
+          builder: (ctx, setModalState) {
+            return Padding(
+              padding: EdgeInsets.only(
+                left: 20,
+                right: 20,
+                top: 14,
+                bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 42,
+                        height: 4,
+                        margin: const EdgeInsets.only(bottom: 16),
+                        decoration: BoxDecoration(
+                          color: StorkTheme.borderSubtle,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                      ),
+                    ),
+                    const Text(
+                      'Escalate Return Request to Storkia Admin',
+                      style: TextStyle(
+                        fontSize: 16.5,
+                        fontWeight: FontWeight.w800,
+                        color: StorkTheme.primaryDark,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    const Text(
+                      'Storkia Admin will review your evidence photos, order timeline, and the seller\'s rejection reason to make a final binding decision.',
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        color: StorkTheme.textMuted,
+                        height: 1.35,
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    TextField(
+                      controller: noteCtrl,
+                      maxLines: 3,
+                      maxLength: 500,
+                      decoration: const InputDecoration(
+                        labelText: 'Note to Storkia Admin (Optional)',
+                        hintText:
+                            'Add any extra context for the compliance review team...',
+                        counterText: '',
+                        fillColor: StorkTheme.surfaceSubtle,
+                      ),
+                    ),
+                    if (modalError != null) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        modalError!,
+                        style: const TextStyle(
+                          color: StorkTheme.danger,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 16),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 50,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: StorkTheme.danger,
+                        ),
+                        onPressed: isSubmitting
+                            ? null
+                            : () async {
+                                setModalState(() {
+                                  isSubmitting = true;
+                                  modalError = null;
+                                });
+                                try {
+                                  final Uri uri = returnRequestId != null &&
+                                          returnRequestId > 0
+                                      ? Uri.parse(
+                                          '$_domain/api/v1/returns/$returnRequestId/escalate')
+                                      : Uri.parse(
+                                          '$_domain/api/v1/orders/${widget.orderId}/escalate-dispute');
 
-      final data = json.decode(response.body);
-      if (response.statusCode == 200 &&
-          data is Map &&
-          data['success'] == true) {
-        _showSuccess(
-          data['message']?.toString() ??
-              'Dispute escalated to Storkia Admin for final review.',
+                                  final response = await http
+                                      .post(
+                                        uri,
+                                        headers: {
+                                          'Authorization':
+                                              'Bearer ${widget.token}',
+                                          'Accept': 'application/json',
+                                          'Content-Type': 'application/json',
+                                        },
+                                        body: json.encode({
+                                          'escalation_note':
+                                              noteCtrl.text.trim(),
+                                        }),
+                                      )
+                                      .timeout(ApiConfig.requestTimeout);
+
+                                  final data = json.decode(response.body);
+                                  if (response.statusCode == 200 &&
+                                      data is Map &&
+                                      data['success'] == true) {
+                                    if (modalContext.mounted) {
+                                      Navigator.pop(modalContext);
+                                    }
+                                    _showSuccess(
+                                      data['message']?.toString() ??
+                                          'Request escalated to Storkia Admin.',
+                                    );
+                                    _fetchAllOrderData(silent: true);
+                                  } else {
+                                    setModalState(() {
+                                      modalError = data is Map
+                                          ? (data['message']?.toString() ??
+                                              'Unable to escalate request.')
+                                          : 'Unable to escalate request.';
+                                    });
+                                  }
+                                } catch (_) {
+                                  setModalState(() {
+                                    modalError = 'Network error occurred.';
+                                  });
+                                } finally {
+                                  if (modalContext.mounted) {
+                                    setModalState(() => isSubmitting = false);
+                                  }
+                                }
+                              },
+                        child: isSubmitting
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  color: Colors.white,
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Text('Submit Escalation to Admin'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
         );
-        _fetchAllOrderData();
-      } else {
-        _showError(
-          data is Map
-              ? (data['message']?.toString() ?? 'Unable to escalate dispute.')
-              : 'Unable to escalate dispute.',
-        );
-      }
-    } catch (_) {
-      if (mounted) Navigator.pop(context);
-      _showError('Network error occurred.');
-    }
+      },
+    );
   }
 
   Future<void> _buyAgain() async {
@@ -1278,7 +1855,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
 
   @override
   Widget build(BuildContext context) {
-    if (_isLoading) {
+    if (_isLoading && _orderData == null) {
       return const Scaffold(
         backgroundColor: StorkTheme.surfaceSubtle,
         body: Center(
@@ -1308,8 +1885,14 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
     final bool hasUnresolvedDispute =
         _orderData!['has_unresolved_dispute'] == true;
     final JsonMap? extra = _orderData!['extra'] is Map
-        ? Map<String, dynamic>.from(_orderData!['extra'] as Map)
+        ? JsonMap.from(_orderData!['extra'] as Map)
         : null;
+    final JsonMap? formattedReturn =
+        _orderData!['formatted_return_request'] is Map
+            ? JsonMap.from(_orderData!['formatted_return_request'] as Map)
+            : (_orderData!['return_request'] is Map
+                ? JsonMap.from(_orderData!['return_request'] as Map)
+                : null);
 
     return Scaffold(
       backgroundColor: StorkTheme.surfaceSubtle,
@@ -1328,12 +1911,16 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
       ),
       body: RefreshIndicator(
         color: StorkTheme.primary,
-        onRefresh: () => _fetchAllOrderData(),
+        onRefresh: () => _fetchAllOrderData(silent: true),
         child: ListView(
           padding: const EdgeInsets.all(14),
           children: [
             _buildStatusHeaderBanner(statusLabel, payMethod, payStatus),
             const SizedBox(height: 12),
+            if (status == 'pending_buyer_response') ...[
+              _buildPendingBuyerResponseBanner(),
+              const SizedBox(height: 12),
+            ],
             if (_liveTrackingData != null &&
                 _liveTrackingData!['has_shipment'] == true) ...[
               _buildLiveTrackingAndRiderChatCard(),
@@ -1347,14 +1934,18 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
               _buildPreShipmentCancelBanner(),
               const SizedBox(height: 12),
             ],
-            if (status == 'delivered' && !hasUnresolvedDispute) ...[
+            if (status == 'delivered' &&
+                !hasUnresolvedDispute &&
+                formattedReturn == null) ...[
               _buildDeliveredConfirmationBanner(),
               const SizedBox(height: 12),
             ],
-            if (hasUnresolvedDispute ||
+            if (formattedReturn != null ||
+                hasUnresolvedDispute ||
                 status == 'disputed' ||
+                status == 'returned_to_seller' ||
                 extra?['seller_return_decision'] != null) ...[
-              _buildDisputeStatusCard(extra),
+              _buildDisputeStatusCard(extra, formattedReturn),
               const SizedBox(height: 12),
             ],
             _buildDeliveryAddressCard(),
@@ -1371,17 +1962,77 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
     );
   }
 
+  Widget _buildPendingBuyerResponseBanner() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: StorkTheme.warning.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: StorkTheme.warning.withValues(alpha: 0.4),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'ACTION REQUIRED: PAYMENT VERIFICATION NOTICE',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w900,
+              color: Color(0xFF92400E),
+            ),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            'Your online payment submission was flagged. You can continue this order by switching to Cash on Delivery (COD) or cancel the order immediately to restore any vouchers and coins.',
+            style: TextStyle(
+              fontSize: 12.5,
+              color: StorkTheme.textMain,
+              height: 1.35,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: _cancelFlaggedPaymentOrder,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: StorkTheme.danger,
+                    side: const BorderSide(color: StorkTheme.danger),
+                  ),
+                  child: const Text('Cancel Order'),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: _switchFlaggedOrderToCod,
+                  child: const Text('Switch to COD'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildStatusHeaderBanner(
       String statusLabel, String payMethod, String payStatus) {
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [StorkTheme.primaryDark, StorkTheme.primary],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(20),
+        gradient: StorkTheme.brandGradient,
+        borderRadius: BorderRadius.circular(22),
+        boxShadow: [
+          BoxShadow(
+            color: StorkTheme.primaryDark.withValues(alpha: 0.18),
+            blurRadius: 16,
+            offset: const Offset(0, 6),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1399,12 +2050,13 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                 child: Text(
                   '${payMethod == 'WALLET' ? 'STORKIA E-WALLET' : payMethod} ($payStatus)',
                   style: const TextStyle(
-                    color: Colors.white,
+                    color: StorkTheme.brandLight,
                     fontSize: 10.5,
                     fontWeight: FontWeight.w800,
                   ),
                 ),
               ),
+              const SizedBox(width: 8),
               Flexible(
                 child: Text(
                   'Parent: ${_orderData!['order'] is Map ? (_orderData!['order']['order_number'] ?? 'N/A') : 'N/A'}',
@@ -1435,9 +2087,8 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
 
   Widget _buildLiveTrackingAndRiderChatCard() {
     final track = _liveTrackingData!;
-    final JsonMap? driver = track['driver'] is Map
-        ? Map<String, dynamic>.from(track['driver'] as Map)
-        : null;
+    final JsonMap? driver =
+        track['driver'] is Map ? JsonMap.from(track['driver'] as Map) : null;
     final bool isLive = track['is_live_active'] == true;
     final double? distMeters =
         double.tryParse(track['distance_meters']?.toString() ?? '');
@@ -1452,13 +2103,14 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: StorkTheme.surface,
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(20),
         border: Border.all(
           color: isLive
               ? StorkTheme.success.withValues(alpha: 0.45)
               : StorkTheme.borderSubtle,
           width: isLive ? 1.5 : 1,
         ),
+        boxShadow: StorkTheme.softCardShadow,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1596,7 +2248,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
 
   Widget _buildCompletedBanner(bool isRated, JsonMap? extra) {
     final JsonMap? serviceRating = _orderData!['service_rating'] is Map
-        ? Map<String, dynamic>.from(_orderData!['service_rating'] as Map)
+        ? JsonMap.from(_orderData!['service_rating'] as Map)
         : null;
     final int coinsEarned =
         int.tryParse(extra?['coins_earned_on_completion']?.toString() ?? '0') ??
@@ -1670,7 +2322,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                             token: widget.token,
                           ),
                         ),
-                      ).then((_) => _fetchAllOrderData());
+                      ).then((_) => _fetchAllOrderData(silent: true));
                     },
                     style: ElevatedButton.styleFrom(
                       backgroundColor: StorkTheme.warning,
@@ -1698,6 +2350,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
         color: StorkTheme.surface,
         borderRadius: BorderRadius.circular(18),
         border: Border.all(color: StorkTheme.borderSubtle),
+        boxShadow: StorkTheme.softCardShadow,
       ),
       child: Row(
         children: [
@@ -1764,6 +2417,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                   ),
                 ),
               ),
+              const SizedBox(width: 8),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
@@ -1789,7 +2443,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
           ),
           const SizedBox(height: 6),
           const Text(
-            'Please inspect your items. Confirming receipt completes the order, awards Storkia Coins cashback, and unlocks 5-point ratings.',
+            'Please inspect your items within 72 hours. Confirming receipt completes the order, awards Storkia Coins cashback, and unlocks 5-point ratings.',
             style: TextStyle(
               fontSize: 12,
               color: StorkTheme.textMuted,
@@ -1826,19 +2480,70 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
     );
   }
 
-  Widget _buildDisputeStatusCard(JsonMap? extra) {
-    final bool isEscalated = extra?['is_escalated_to_admin'] == true;
-    final String? decision = extra?['seller_return_decision']?.toString();
-    final String? declineReason =
-        extra?['seller_return_Decision_reason']?.toString() ??
+  Widget _buildDisputeStatusCard(JsonMap? extra, JsonMap? formattedReturn) {
+    final int? returnRequestId =
+        int.tryParse(formattedReturn?['id']?.toString() ?? '');
+    final String requestNo =
+        formattedReturn?['request_number']?.toString() ?? '';
+    final String statusText = formattedReturn?['status_label']?.toString() ??
+        formattedReturn?['status']
+            ?.toString()
+            .replaceAll('_', ' ')
+            .toUpperCase() ??
+        (extra?['is_escalated_to_admin'] == true
+            ? 'ESCALATED TO ADMIN'
+            : (extra?['seller_return_decision'] != null
+                ? 'SELLER: ${extra!['seller_return_decision'].toString().toUpperCase()}'
+                : 'AWAITING SELLER REVIEW'));
+
+    final String resolutionLabel =
+        formattedReturn?['resolution_label']?.toString() ??
+            formattedReturn?['requested_resolution']
+                ?.toString()
+                .replaceAll('_', ' ')
+                .toUpperCase() ??
+            'RETURN & REFUND';
+
+    final String reasonCategory =
+        formattedReturn?['reason_category_label']?.toString() ??
+            formattedReturn?['reason_category']?.toString() ??
+            extra?['dispute_reason_category']?.toString() ??
+            '';
+    final String reasonBody = formattedReturn?['reason']?.toString() ??
+        _orderData!['dispute_reason']?.toString() ??
+        '';
+
+    final String? sellerDecision =
+        formattedReturn?['seller_decision']?.toString() ??
+            extra?['seller_return_decision']?.toString();
+    final String? sellerReason =
+        formattedReturn?['seller_decision_reason']?.toString() ??
             extra?['seller_return_decision_reason']?.toString();
+
+    final bool isEscalated = formattedReturn?['is_escalated'] == true ||
+        extra?['is_escalated_to_admin'] == true;
+    final bool canEscalate = formattedReturn?['can_buyer_escalate'] == true ||
+        (sellerDecision == 'rejected' && !isEscalated);
+
+    final String? adminDecision =
+        formattedReturn?['admin_decision']?.toString();
+    final String? adminRemarks = formattedReturn?['admin_remarks']?.toString();
+
     final List<dynamic> evidencePhotos =
-        _extractList(extra?['dispute_evidence_photos']);
+        formattedReturn != null && formattedReturn['evidence_photos'] is List
+            ? List<dynamic>.from(formattedReturn['evidence_photos'] as List)
+            : _extractList(extra?['dispute_evidence_photos']);
+
+    final JsonMap? returnShipment = formattedReturn?['return_shipment'] is Map
+        ? JsonMap.from(formattedReturn!['return_shipment'] as Map)
+        : null;
+    final List<dynamic> shipmentEvents =
+        _extractList(returnShipment?['events']);
 
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: StorkTheme.danger.withValues(alpha: 0.06),
+        color: StorkTheme.danger.withValues(alpha: 0.05),
         borderRadius: BorderRadius.circular(18),
         border: Border.all(
           color: StorkTheme.danger.withValues(alpha: 0.3),
@@ -1850,56 +2555,80 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Expanded(
+              Expanded(
                 child: Text(
-                  'Return / Refund Dispute Status',
-                  style: TextStyle(
+                  requestNo.isNotEmpty
+                      ? 'Return / Refund #$requestNo'
+                      : 'Return / Refund Status',
+                  style: const TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.w800,
                     color: StorkTheme.danger,
                   ),
                 ),
               ),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: StorkTheme.surface,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                      color: StorkTheme.danger.withValues(alpha: 0.35)),
-                ),
-                child: Text(
-                  isEscalated
-                      ? 'ESCALATED TO ADMIN'
-                      : (decision != null
-                          ? 'SELLER: ${decision.toUpperCase()}'
-                          : 'AWAITING SELLER REVIEW'),
-                  style: const TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w800,
-                    color: StorkTheme.danger,
+              const SizedBox(width: 8),
+              Flexible(
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: StorkTheme.surface,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                        color: StorkTheme.danger.withValues(alpha: 0.35)),
+                  ),
+                  child: Text(
+                    statusText,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w800,
+                      color: StorkTheme.danger,
+                    ),
                   ),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 6),
           Text(
-            '"${_orderData!['dispute_reason'] ?? ''}"',
+            'Resolution: $resolutionLabel${reasonCategory.isNotEmpty ? ' • $reasonCategory' : ''}',
             style: const TextStyle(
-              fontSize: 12.5,
-              fontStyle: FontStyle.italic,
-              color: StorkTheme.textMain,
+              fontSize: 11.5,
+              fontWeight: FontWeight.w700,
+              color: StorkTheme.primaryDark,
             ),
           ),
-          if (extra?['refund_method'] != null) ...[
-            const SizedBox(height: 8),
+          if (reasonBody.isNotEmpty) ...[
+            const SizedBox(height: 6),
             Text(
-              'Refund Payout: ${extra!['refund_method'] == 'WALLET' ? 'Instant Storkia E-Wallet' : extra['refund_method']} • ₱${_formatMoney(extra['refund_amount'] ?? _orderData!['total_amount'])}',
+              '"$reasonBody"',
               style: const TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w700,
-                color: StorkTheme.primaryDark,
+                fontSize: 12.5,
+                fontStyle: FontStyle.italic,
+                color: StorkTheme.textMain,
+              ),
+            ),
+          ],
+          const SizedBox(height: 6),
+          Text(
+            'Refund Amount: ₱${_formatMoney(formattedReturn?['refund_amount'] ?? extra?['refund_amount'] ?? _orderData!['total_amount'])} (${(formattedReturn?['refund_payout_method'] ?? extra?['refund_method'] ?? 'WALLET').toString() == 'WALLET' ? 'Instant Storkia E-Wallet' : 'GCash Refund'})',
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w800,
+              color: StorkTheme.primaryDark,
+            ),
+          ),
+          if (formattedReturn?['refund_reference'] != null) ...[
+            const SizedBox(height: 4),
+            Text(
+              'Refund Reference #: ${formattedReturn!['refund_reference']}',
+              style: const TextStyle(
+                fontSize: 11.5,
+                fontWeight: FontWeight.w800,
+                color: StorkTheme.success,
               ),
             ),
           ],
@@ -1908,47 +2637,113 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
             Wrap(
               spacing: 8,
               runSpacing: 8,
-              children: evidencePhotos.map((p) {
-                final url = ApiConfig.storageUrl(p.toString(), _domain);
-                return GestureDetector(
-                  onTap: () =>
-                      _showNetworkImagePreview('Dispute Evidence Photo', url),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: Image.network(
-                      url,
-                      width: 54,
-                      height: 54,
-                      fit: BoxFit.cover,
-                    ),
-                  ),
-                );
-              }).toList(),
+              children: [
+                for (final p in evidencePhotos)
+                  Builder(builder: (context) {
+                    final String rawUrl = p is Map
+                        ? (p['url'] ?? p['path'] ?? '').toString()
+                        : p.toString();
+                    final url = ApiConfig.storageUrl(rawUrl, _domain);
+                    return GestureDetector(
+                      onTap: () => _showNetworkImagePreview(
+                          'Return Evidence Photo', url),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: Image.network(
+                          url,
+                          width: 54,
+                          height: 54,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) => Container(
+                            width: 54,
+                            height: 54,
+                            color: StorkTheme.surfaceSubtle,
+                            child: const Icon(
+                              Icons.image_not_supported_outlined,
+                              size: 18,
+                            ),
+                          ),
+                        ),
+                      ),
+                    );
+                  }),
+              ],
             ),
           ],
-          if (decision == 'rejected') ...[
+          if (returnShipment != null) ...[
             const Divider(height: 20),
             Text(
-              'Seller Declined Return Request: "${declineReason ?? 'Declined'}"',
+              'Return Shipment Tracking: #${returnShipment['tracking_number'] ?? 'N/A'} (${returnShipment['status_label'] ?? returnShipment['status'] ?? ''})',
               style: const TextStyle(
                 fontSize: 12,
-                fontWeight: FontWeight.w700,
-                color: StorkTheme.danger,
+                fontWeight: FontWeight.w800,
+                color: StorkTheme.primaryDark,
               ),
             ),
-            if (!isEscalated) ...[
-              const SizedBox(height: 10),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: StorkTheme.danger,
-                  ),
-                  onPressed: _escalateDisputeToAdmin,
-                  child: const Text('Escalate to Storkia Admin'),
+            if (returnShipment['rider'] is Map) ...[
+              const SizedBox(height: 4),
+              Text(
+                'Assigned Pickup Rider: ${returnShipment['rider']['name'] ?? returnShipment['rider']['full_name'] ?? 'Rider'} (${returnShipment['rider']['plate_number'] ?? ''})',
+                style: const TextStyle(
+                  fontSize: 11.5,
+                  color: StorkTheme.textMain,
                 ),
               ),
             ],
+            if (shipmentEvents.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              for (final ev in shipmentEvents.take(3))
+                if (ev is Map)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: Text(
+                      '• ${ev['title'] ?? ''}: ${ev['description'] ?? ''}',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: StorkTheme.textMuted,
+                      ),
+                    ),
+                  ),
+            ],
+          ],
+          if (sellerDecision != null && sellerDecision.isNotEmpty) ...[
+            const Divider(height: 20),
+            Text(
+              sellerDecision == 'rejected'
+                  ? 'Seller Rejected Request: "${sellerReason ?? 'Declined'}"'
+                  : 'Seller Response: ${sellerDecision.replaceAll('_', ' ').toUpperCase()}${sellerReason != null && sellerReason.isNotEmpty ? ' — "$sellerReason"' : ''}',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: sellerDecision == 'rejected'
+                    ? StorkTheme.danger
+                    : StorkTheme.success,
+              ),
+            ),
+          ],
+          if (adminDecision != null && adminDecision.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              'Storkia Admin Final Decision (${adminDecision.replaceAll('_', ' ').toUpperCase()}): "${adminRemarks ?? ''}"',
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w800,
+                color: StorkTheme.primaryDark,
+              ),
+            ),
+          ],
+          if (canEscalate) ...[
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: StorkTheme.danger,
+                ),
+                onPressed: () => _openEscalateReturnDialog(returnRequestId),
+                child: const Text('Escalate to Storkia Admin'),
+              ),
+            ),
           ],
         ],
       ),
@@ -1957,27 +2752,37 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
 
   Widget _buildDeliveryAddressCard() {
     final JsonMap address = _orderData!['delivery_address_snapshot'] is Map
-        ? Map<String, dynamic>.from(
-            _orderData!['delivery_address_snapshot'] as Map)
+        ? JsonMap.from(_orderData!['delivery_address_snapshot'] as Map)
         : <String, dynamic>{};
 
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: StorkTheme.surface,
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(20),
         border: Border.all(color: StorkTheme.borderSubtle),
+        boxShadow: StorkTheme.softCardShadow,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            'DELIVERY ADDRESS SNAPSHOT',
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w800,
-              color: StorkTheme.textMuted,
-            ),
+          const Row(
+            children: [
+              Icon(
+                Icons.location_on_outlined,
+                size: 16,
+                color: StorkTheme.primary,
+              ),
+              SizedBox(width: 6),
+              Text(
+                'DELIVERY ADDRESS SNAPSHOT',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w800,
+                  color: StorkTheme.primaryDark,
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 8),
           Text(
@@ -2004,12 +2809,12 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
 
   Widget _buildShipmentAndPaymentInfoCard(String payMethod, String payStatus) {
     final JsonMap? shipment = _orderData!['shipment'] is Map
-        ? Map<String, dynamic>.from(_orderData!['shipment'] as Map)
+        ? JsonMap.from(_orderData!['shipment'] as Map)
         : null;
     final List<dynamic> packages = _extractList(shipment?['packages']);
     final List<dynamic> proofs = _extractList(shipment?['delivery_proofs']);
     final JsonMap? latestProof = proofs.isNotEmpty && proofs.first is Map
-        ? Map<String, dynamic>.from(proofs.first as Map)
+        ? JsonMap.from(proofs.first as Map)
         : null;
 
     final String pkgRefs = [
@@ -2023,8 +2828,9 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: StorkTheme.surface,
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(20),
         border: Border.all(color: StorkTheme.borderSubtle),
+        boxShadow: StorkTheme.softCardShadow,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -2034,7 +2840,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
             style: TextStyle(
               fontSize: 11,
               fontWeight: FontWeight.w800,
-              color: StorkTheme.textMuted,
+              color: StorkTheme.primaryDark,
             ),
           ),
           const SizedBox(height: 10),
@@ -2132,6 +2938,9 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
     final double shipDisc = double.tryParse(
             extra?['shipping_voucher_discount']?.toString() ?? '0') ??
         0.0;
+    final double origShipFee =
+        double.tryParse(extra?['original_shipping_fee']?.toString() ?? '0') ??
+            0.0;
     final int coinsUsed =
         int.tryParse(extra?['coins_used']?.toString() ?? '0') ?? 0;
     final double coinsDisc =
@@ -2141,8 +2950,9 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
     return Container(
       decoration: BoxDecoration(
         color: StorkTheme.surface,
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(20),
         border: Border.all(color: StorkTheme.borderSubtle),
+        boxShadow: StorkTheme.softCardShadow,
       ),
       clipBehavior: Clip.antiAlias,
       child: Column(
@@ -2151,7 +2961,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
           Container(
             width: double.infinity,
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            color: StorkTheme.surfaceSubtle.withValues(alpha: 0.6),
+            color: StorkTheme.surfaceSubtle.withValues(alpha: 0.7),
             child: const Text(
               'Purchased Items',
               style: TextStyle(
@@ -2168,25 +2978,31 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                 child: Row(
                   children: [
                     Container(
-                      width: 56,
-                      height: 56,
+                      width: 58,
+                      height: 58,
                       decoration: BoxDecoration(
                         color: StorkTheme.surfaceSubtle,
-                        borderRadius: BorderRadius.circular(10),
+                        borderRadius: BorderRadius.circular(12),
                         border: Border.all(color: StorkTheme.borderSubtle),
                       ),
                       child: rawItem['product_image'] != null
                           ? ClipRRect(
-                              borderRadius: BorderRadius.circular(9),
+                              borderRadius: BorderRadius.circular(11),
                               child: Image.network(
                                 ApiConfig.storageUrl(
                                     rawItem['product_image'].toString(),
                                     _domain),
                                 fit: BoxFit.cover,
+                                errorBuilder: (_, __, ___) => const Icon(
+                                  Icons.image_not_supported_outlined,
+                                  color: StorkTheme.textMuted,
+                                ),
                               ),
                             )
-                          : const Icon(Icons.inventory_2_outlined,
-                              color: StorkTheme.textMuted),
+                          : const Icon(
+                              Icons.inventory_2_outlined,
+                              color: StorkTheme.textMuted,
+                            ),
                     ),
                     const SizedBox(width: 12),
                     Expanded(
@@ -2197,7 +3013,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                             rawItem['product_name']?.toString() ?? '',
                             style: const TextStyle(
                               fontSize: 13,
-                              fontWeight: FontWeight.w700,
+                              fontWeight: FontWeight.w800,
                               color: StorkTheme.textMain,
                             ),
                           ),
@@ -2225,6 +3041,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                         ],
                       ),
                     ),
+                    const SizedBox(width: 8),
                     Text(
                       '₱${_formatMoney(rawItem['line_total'])}',
                       style: const TextStyle(
@@ -2260,11 +3077,19 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                   'Net Product Subtotal:',
                   '₱${_formatMoney(_orderData!['subtotal_amount'])}',
                 ),
+                if (shipDisc > 0 && origShipFee > 0)
+                  _buildInfoRow(
+                    'Original Shipping Fee (${_orderData!['total_weight'] ?? '0'} kg):',
+                    '₱${_formatMoney(origShipFee)}',
+                  ),
+                if (shipDisc > 0)
+                  _buildInfoRow(
+                    'Shipping Voucher (${extra?['shipping_voucher_code'] ?? 'FREE SHIP'}):',
+                    '-₱${_formatMoney(shipDisc)}',
+                  ),
                 _buildInfoRow(
-                  'Shipping Fee (${_orderData!['total_weight'] ?? '0'} kg):',
-                  shipDisc > 0
-                      ? '₱${_formatMoney(_orderData!['shipping_fee'])} (-₱${_formatMoney(shipDisc)})'
-                      : '₱${_formatMoney(_orderData!['shipping_fee'])}',
+                  'Net Shipping Fee (${_orderData!['total_weight'] ?? '0'} kg):',
+                  '₱${_formatMoney(_orderData!['shipping_fee'])}',
                 ),
                 const Divider(height: 18),
                 Row(
@@ -2280,6 +3105,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                         ),
                       ),
                     ),
+                    const SizedBox(width: 8),
                     Text(
                       '₱${_formatMoney(_orderData!['total_amount'])}',
                       style: const TextStyle(
@@ -2306,16 +3132,20 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: StorkTheme.surface,
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(20),
         border: Border.all(color: StorkTheme.borderSubtle),
+        boxShadow: StorkTheme.softCardShadow,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Row(
             children: [
-              Icon(Icons.local_shipping_outlined,
-                  color: StorkTheme.primary, size: 19),
+              Icon(
+                Icons.local_shipping_outlined,
+                color: StorkTheme.primary,
+                size: 19,
+              ),
               SizedBox(width: 8),
               Text(
                 'Order & Shipment Timeline',
@@ -2341,7 +3171,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
               itemBuilder: (context, index) {
                 final rawHistory = histories[index];
                 if (rawHistory is! Map) return const SizedBox.shrink();
-                final history = Map<String, dynamic>.from(rawHistory);
+                final history = JsonMap.from(rawHistory);
                 final bool isLatest = index == 0;
                 final String statusTitle = (history['to_status'] ?? '')
                     .toString()
@@ -2389,7 +3219,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                                     ? FontWeight.w800
                                     : FontWeight.w600,
                                 color: isLatest
-                                    ? StorkTheme.textMain
+                                    ? StorkTheme.primaryDark
                                     : StorkTheme.textMuted,
                               ),
                             ),
@@ -2486,12 +3316,11 @@ class _DeliveryRiderChatBottomSheetState
             : <dynamic>[];
         setState(() {
           _canSend = body['can_send'] == true;
-          _rider = body['rider'] is Map
-              ? Map<String, dynamic>.from(body['rider'] as Map)
-              : null;
+          _rider =
+              body['rider'] is Map ? JsonMap.from(body['rider'] as Map) : null;
           _messages = [
             for (final m in rawMsgs)
-              if (m is Map) Map<String, dynamic>.from(m),
+              if (m is Map) JsonMap.from(m),
           ];
           _isLoading = false;
         });
@@ -2546,12 +3375,25 @@ class _DeliveryRiderChatBottomSheetState
         height: MediaQuery.sizeOf(context).height * 0.68,
         child: Column(
           children: [
+            Center(
+              child: Container(
+                width: 42,
+                height: 4,
+                margin: const EdgeInsets.only(top: 12),
+                decoration: BoxDecoration(
+                  color: StorkTheme.borderSubtle,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+              ),
+            ),
             Padding(
-              padding: const EdgeInsets.fromLTRB(18, 16, 12, 10),
+              padding: const EdgeInsets.fromLTRB(18, 10, 12, 10),
               child: Row(
                 children: [
-                  const Icon(Icons.two_wheeler_rounded,
-                      color: StorkTheme.primary),
+                  const Icon(
+                    Icons.two_wheeler_rounded,
+                    color: StorkTheme.primary,
+                  ),
                   const SizedBox(width: 10),
                   Expanded(
                     child: Column(
@@ -2626,9 +3468,10 @@ class _DeliveryRiderChatBottomSheetState
                                       MediaQuery.sizeOf(context).width * 0.72,
                                 ),
                                 decoration: BoxDecoration(
-                                  color: isBuyer
-                                      ? StorkTheme.primary
-                                      : StorkTheme.surfaceSubtle,
+                                  gradient:
+                                      isBuyer ? StorkTheme.brandGradient : null,
+                                  color:
+                                      isBuyer ? null : StorkTheme.surfaceSubtle,
                                   borderRadius: BorderRadius.circular(16),
                                 ),
                                 child: Text(
@@ -2663,6 +3506,7 @@ class _DeliveryRiderChatBottomSheetState
                           hintText: _canSend
                               ? 'Message your delivery rider...'
                               : 'Chat active only during active rider delivery',
+                          fillColor: StorkTheme.surfaceSubtle,
                         ),
                         onSubmitted: (_) => _sendMessage(),
                       ),

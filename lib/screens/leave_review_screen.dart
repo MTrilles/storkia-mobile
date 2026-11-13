@@ -1,13 +1,23 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import '../config/api_config.dart';
 import '../config/app_theme.dart';
+import '../providers/global_counters_provider.dart';
 
-class LeaveReviewScreen extends StatefulWidget {
-  final Map<String, dynamic> sellerOrder;
+typedef JsonMap = Map<String, dynamic>;
+typedef IntIntMap = Map<int, int>;
+typedef IntControllerMap = Map<int, TextEditingController>;
+typedef XFileList = List<XFile>;
+typedef IntPhotosMap = Map<int, XFileList>;
+typedef StringIntMap = Map<String, int>;
+typedef StringMap = Map<String, String>;
+
+class LeaveReviewScreen extends ConsumerStatefulWidget {
+  final JsonMap sellerOrder;
   final String baseUrl;
   final String token;
 
@@ -19,13 +29,13 @@ class LeaveReviewScreen extends StatefulWidget {
   });
 
   @override
-  State<LeaveReviewScreen> createState() => _LeaveReviewScreenState();
+  ConsumerState<LeaveReviewScreen> createState() => _LeaveReviewScreenState();
 }
 
-class _LeaveReviewScreenState extends State<LeaveReviewScreen> {
-  final Map<int, int> _itemRatings = {};
-  final Map<int, TextEditingController> _itemCommentControllers = {};
-  final Map<int, XFile?> _itemPhotos = {};
+class _LeaveReviewScreenState extends ConsumerState<LeaveReviewScreen> {
+  final IntIntMap _itemRatings = {};
+  final IntControllerMap _itemCommentControllers = {};
+  final IntPhotosMap _itemPhotos = {};
 
   int _parcelConditionRating = 5;
   int _sellerServiceRating = 5;
@@ -38,16 +48,26 @@ class _LeaveReviewScreenState extends State<LeaveReviewScreen> {
 
   String get _domain => ApiConfig.resolveBaseDomain(widget.baseUrl);
 
+  static const List<String> _productQuickTags = [
+    'Matches description & photos',
+    'Excellent build quality',
+    'Great value for price',
+    'Authentic & fresh item',
+  ];
+
   @override
   void initState() {
     super.initState();
-    final List items = widget.sellerOrder['items'] as List? ?? [];
+    final List<dynamic> items = widget.sellerOrder['items'] is List
+        ? List<dynamic>.from(widget.sellerOrder['items'] as List)
+        : <dynamic>[];
     for (final rawItem in items) {
       if (rawItem is Map) {
         final int itemId = int.tryParse(rawItem['id']?.toString() ?? '0') ?? 0;
         if (itemId > 0) {
           _itemRatings[itemId] = 5;
           _itemCommentControllers[itemId] = TextEditingController();
+          _itemPhotos[itemId] = <XFile>[];
         }
       }
     }
@@ -75,20 +95,27 @@ class _LeaveReviewScreenState extends State<LeaveReviewScreen> {
     setState(() {});
   }
 
-  Future<void> _pickItemPhoto(int itemId) async {
+  Future<void> _pickItemPhotos(int itemId) async {
     final picker = ImagePicker();
-    final file = await picker.pickImage(
-      source: ImageSource.gallery,
+    final picked = await picker.pickMultiImage(
       imageQuality: 82,
     );
-    if (file != null) {
+    if (picked.isEmpty) return;
+
+    final existing = XFileList.from(_itemPhotos[itemId] ?? <XFile>[]);
+    for (final file in picked) {
+      if (existing.length >= 5) {
+        _showError('Maximum of 5 review photos allowed per item.');
+        break;
+      }
       final len = await file.length();
       if (len > 5 * 1024 * 1024) {
-        _showError('Product photo must not exceed 5MB.');
-        return;
+        _showError('Each product photo must not exceed 5MB.');
+        continue;
       }
-      setState(() => _itemPhotos[itemId] = file);
+      existing.add(file);
     }
+    setState(() => _itemPhotos[itemId] = existing);
   }
 
   Future<void> _submitRatings() async {
@@ -103,8 +130,8 @@ class _LeaveReviewScreenState extends State<LeaveReviewScreen> {
       req.headers['Authorization'] = 'Bearer ${widget.token}';
       req.headers['Accept'] = 'application/json';
 
-      final Map<String, int> ratingsPayload = {};
-      final Map<String, String> reviewsPayload = {};
+      final StringIntMap ratingsPayload = {};
+      final StringMap reviewsPayload = {};
 
       _itemRatings.forEach((itemId, stars) {
         ratingsPayload[itemId.toString()] = stars;
@@ -122,13 +149,22 @@ class _LeaveReviewScreenState extends State<LeaveReviewScreen> {
       req.fields['review_comment'] = _overallCommentController.text.trim();
 
       for (final entry in _itemPhotos.entries) {
-        if (entry.value != null) {
+        final files = entry.value;
+        if (files.isNotEmpty) {
           req.files.add(
             await http.MultipartFile.fromPath(
               'item_photo_${entry.key}',
-              entry.value!.path,
+              files.first.path,
             ),
           );
+          for (final f in files) {
+            req.files.add(
+              await http.MultipartFile.fromPath(
+                'item_photos_${entry.key}[]',
+                f.path,
+              ),
+            );
+          }
         }
       }
 
@@ -138,7 +174,11 @@ class _LeaveReviewScreenState extends State<LeaveReviewScreen> {
       if (!mounted) return;
       final data = json.decode(response.body);
 
-      if (response.statusCode == 200 && data['success'] == true) {
+      if ((response.statusCode == 200 || response.statusCode == 201) &&
+          data is Map &&
+          data['success'] == true) {
+        await syncAllBuyerCounters(ref, widget.token);
+        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
@@ -150,7 +190,18 @@ class _LeaveReviewScreenState extends State<LeaveReviewScreen> {
         );
         Navigator.pop(context, true);
       } else {
-        _showError(data['message']?.toString() ?? 'Failed to submit ratings.');
+        String err = data is Map
+            ? (data['message']?.toString() ?? 'Failed to submit ratings.')
+            : 'Failed to submit ratings.';
+        if (data is Map &&
+            data['errors'] is Map &&
+            (data['errors'] as Map).isNotEmpty) {
+          final first = (data['errors'] as Map).values.first;
+          if (first is List && first.isNotEmpty) {
+            err = first.first.toString();
+          }
+        }
+        _showError(err);
       }
     } catch (_) {
       _showError('Network error occurred while submitting ratings.');
@@ -183,13 +234,16 @@ class _LeaveReviewScreenState extends State<LeaveReviewScreen> {
         ? '${widget.sellerOrder['shipment']['current_rider']['first_name']} ${widget.sellerOrder['shipment']['current_rider']['last_name'] ?? ''}'
             .trim()
         : 'Assigned Last-Mile Rider';
-    final List items = widget.sellerOrder['items'] as List? ?? [];
+    final List<dynamic> items = widget.sellerOrder['items'] is List
+        ? List<dynamic>.from(widget.sellerOrder['items'] as List)
+        : <dynamic>[];
 
     return Scaffold(
       backgroundColor: StorkTheme.surfaceSubtle,
       appBar: AppBar(
         title: Text(
-            'Rate Order #${widget.sellerOrder['seller_order_number'] ?? ''}'),
+          'Rate Order #${widget.sellerOrder['seller_order_number'] ?? ''}',
+        ),
       ),
       body: ListView(
         padding: const EdgeInsets.all(16),
@@ -197,29 +251,32 @@ class _LeaveReviewScreenState extends State<LeaveReviewScreen> {
           Container(
             padding: const EdgeInsets.all(18),
             decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                colors: [StorkTheme.primaryDark, StorkTheme.primary],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-              borderRadius: BorderRadius.circular(20),
+              gradient: StorkTheme.brandGradient,
+              borderRadius: BorderRadius.circular(22),
+              boxShadow: [
+                BoxShadow(
+                  color: StorkTheme.primaryDark.withValues(alpha: 0.16),
+                  blurRadius: 16,
+                  offset: const Offset(0, 6),
+                ),
+              ],
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Container(
                   padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                   decoration: BoxDecoration(
                     color: Colors.white.withValues(alpha: 0.2),
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: const Text(
-                    'COMPLETE ORDER FEEDBACK GUIDE',
+                    'EARN UP TO +10 STORKIA COINS PER ITEM',
                     style: TextStyle(
-                      color: Colors.white,
+                      color: StorkTheme.brandLight,
                       fontSize: 9.5,
-                      fontWeight: FontWeight.w800,
+                      fontWeight: FontWeight.w900,
                       letterSpacing: 0.6,
                     ),
                   ),
@@ -229,13 +286,13 @@ class _LeaveReviewScreenState extends State<LeaveReviewScreen> {
                   'Who & What Are You Rating?',
                   style: TextStyle(
                     color: Colors.white,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w800,
+                    fontSize: 16.5,
+                    fontWeight: FontWeight.w900,
                   ),
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  'Rate (1) Product Quality, (2) Parcel Condition, (3) $sellerName Store Service, (4) $logisticsName Hub, and (5) $riderName to unlock Buy Again.',
+                  'Rate (1) Product Quality (+5 Coins for text review or +10 Coins with photo), (2) Parcel Condition, (3) $sellerName Store Service, (4) $logisticsName Hub, and (5) $riderName to unlock Buy Again.',
                   style: TextStyle(
                     color: Colors.white.withValues(alpha: 0.9),
                     fontSize: 12,
@@ -252,6 +309,7 @@ class _LeaveReviewScreenState extends State<LeaveReviewScreen> {
               color: StorkTheme.surface,
               borderRadius: BorderRadius.circular(20),
               border: Border.all(color: StorkTheme.borderSubtle),
+              boxShadow: StorkTheme.softCardShadow,
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -260,8 +318,9 @@ class _LeaveReviewScreenState extends State<LeaveReviewScreen> {
                   '1. PRODUCT QUALITY RATING',
                   style: TextStyle(
                     fontSize: 10.5,
-                    fontWeight: FontWeight.w800,
+                    fontWeight: FontWeight.w900,
                     color: StorkTheme.primary,
+                    letterSpacing: 0.4,
                   ),
                 ),
                 const SizedBox(height: 2),
@@ -270,15 +329,14 @@ class _LeaveReviewScreenState extends State<LeaveReviewScreen> {
                   style: const TextStyle(
                     fontSize: 15,
                     fontWeight: FontWeight.w800,
-                    color: StorkTheme.textMain,
+                    color: StorkTheme.primaryDark,
                   ),
                 ),
                 const Divider(height: 22),
                 for (int i = 0; i < items.length; i++)
                   if (items[i] is Map) ...[
                     if (i > 0) const Divider(height: 24),
-                    _buildProductRatingBlock(
-                        Map<String, dynamic>.from(items[i])),
+                    _buildProductRatingBlock(JsonMap.from(items[i] as Map)),
                   ],
               ],
             ),
@@ -346,6 +404,7 @@ class _LeaveReviewScreenState extends State<LeaveReviewScreen> {
               color: StorkTheme.surface,
               borderRadius: BorderRadius.circular(20),
               border: Border.all(color: StorkTheme.borderSubtle),
+              boxShadow: StorkTheme.softCardShadow,
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -355,7 +414,7 @@ class _LeaveReviewScreenState extends State<LeaveReviewScreen> {
                   style: TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.w800,
-                    color: StorkTheme.textMuted,
+                    color: StorkTheme.primaryDark,
                   ),
                 ),
                 const SizedBox(height: 10),
@@ -366,14 +425,26 @@ class _LeaveReviewScreenState extends State<LeaveReviewScreen> {
                   decoration: const InputDecoration(
                     hintText:
                         'Share your overall experience with the store, packaging, logistics hub, and rider...',
+                    fillColor: StorkTheme.surfaceSubtle,
                   ),
                 ),
                 const SizedBox(height: 12),
-                SizedBox(
+                Container(
                   width: double.infinity,
-                  height: 48,
+                  height: 50,
+                  decoration: BoxDecoration(
+                    gradient: _isSubmitting ? null : StorkTheme.brandGradient,
+                    borderRadius: BorderRadius.circular(14),
+                  ),
                   child: ElevatedButton(
                     onPressed: _isSubmitting ? null : _submitRatings,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.transparent,
+                      shadowColor: Colors.transparent,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                    ),
                     child: _isSubmitting
                         ? const SizedBox(
                             width: 20,
@@ -395,10 +466,13 @@ class _LeaveReviewScreenState extends State<LeaveReviewScreen> {
     );
   }
 
-  Widget _buildProductRatingBlock(Map<String, dynamic> item) {
+  Widget _buildProductRatingBlock(JsonMap item) {
     final int itemId = int.tryParse(item['id']?.toString() ?? '0') ?? 0;
     final int currentStars = _itemRatings[itemId] ?? 5;
-    final XFile? photo = _itemPhotos[itemId];
+    final XFileList photos = _itemPhotos[itemId] ?? <XFile>[];
+    final bool hasText =
+        (_itemCommentControllers[itemId]?.text.trim().isNotEmpty ?? false);
+    final int bonusCoins = photos.isNotEmpty ? 10 : (hasText ? 5 : 0);
     final String imgUrl = item['product_image'] != null
         ? ApiConfig.storageUrl(item['product_image'].toString(), _domain)
         : '';
@@ -409,20 +483,22 @@ class _LeaveReviewScreenState extends State<LeaveReviewScreen> {
         Row(
           children: [
             Container(
-              width: 52,
-              height: 52,
+              width: 54,
+              height: 54,
               decoration: BoxDecoration(
                 color: StorkTheme.surfaceSubtle,
-                borderRadius: BorderRadius.circular(10),
+                borderRadius: BorderRadius.circular(12),
                 border: Border.all(color: StorkTheme.borderSubtle),
               ),
               child: imgUrl.isNotEmpty
                   ? ClipRRect(
-                      borderRadius: BorderRadius.circular(9),
+                      borderRadius: BorderRadius.circular(11),
                       child: Image.network(imgUrl, fit: BoxFit.cover),
                     )
-                  : const Icon(Icons.inventory_2_outlined,
-                      color: StorkTheme.textMuted),
+                  : const Icon(
+                      Icons.inventory_2_outlined,
+                      color: StorkTheme.textMuted,
+                    ),
             ),
             const SizedBox(width: 12),
             Expanded(
@@ -452,10 +528,31 @@ class _LeaveReviewScreenState extends State<LeaveReviewScreen> {
                 ],
               ),
             ),
+            const SizedBox(width: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: bonusCoins > 0
+                    ? StorkTheme.success.withValues(alpha: 0.12)
+                    : StorkTheme.warning.withValues(alpha: 0.14),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Text(
+                bonusCoins > 0 ? '+$bonusCoins Coins Ready' : '+Up to 10 Coins',
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w800,
+                  color: bonusCoins > 0
+                      ? StorkTheme.success
+                      : const Color(0xFF92400E),
+                ),
+              ),
+            ),
           ],
         ),
         const SizedBox(height: 10),
-        Row(
+        Wrap(
+          crossAxisAlignment: WrapCrossAlignment.center,
           children: [
             for (int star = 1; star <= 5; star++)
               GestureDetector(
@@ -487,70 +584,92 @@ class _LeaveReviewScreenState extends State<LeaveReviewScreen> {
           spacing: 6,
           runSpacing: 6,
           children: [
-            'Matches description & photos',
-            'Excellent build quality',
-            'Great value for price',
-            'Authentic & fresh item',
-          ].map((chip) {
-            return InkWell(
-              onTap: () => _appendTag(itemId, chip),
-              borderRadius: BorderRadius.circular(16),
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                decoration: BoxDecoration(
-                  color: StorkTheme.surfaceSubtle,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: StorkTheme.borderSubtle),
-                ),
-                child: Text(
-                  '+ $chip',
-                  style: const TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    color: StorkTheme.textMain,
+            for (final chip in _productQuickTags)
+              InkWell(
+                onTap: () => _appendTag(itemId, chip),
+                borderRadius: BorderRadius.circular(16),
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: StorkTheme.surfaceSubtle,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: StorkTheme.borderSubtle),
+                  ),
+                  child: Text(
+                    '+ $chip',
+                    style: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: StorkTheme.textMain,
+                    ),
                   ),
                 ),
               ),
-            );
-          }).toList(),
+          ],
         ),
         const SizedBox(height: 10),
         TextField(
           controller: _itemCommentControllers[itemId],
           maxLines: 2,
-          decoration: InputDecoration(
+          onChanged: (_) => setState(() {}),
+          decoration: const InputDecoration(
             hintText:
-                'Write your product review for ${item['product_name'] ?? 'this item'}...',
+                'Write your product review (+5 Coins, or +10 Coins with photo)...',
+            fillColor: StorkTheme.surfaceSubtle,
           ),
         ),
         const SizedBox(height: 8),
-        Row(
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          crossAxisAlignment: WrapCrossAlignment.center,
           children: [
             OutlinedButton.icon(
-              onPressed: () => _pickItemPhoto(itemId),
+              onPressed:
+                  photos.length >= 5 ? null : () => _pickItemPhotos(itemId),
               icon: const Icon(Icons.add_a_photo_outlined, size: 16),
               label: Text(
-                photo != null ? 'Photo Attached' : 'Add Product Photo (WebP)',
+                photos.isEmpty
+                    ? 'Add Product Photos (+10 Coins)'
+                    : 'Photos (${photos.length}/5)',
                 style: const TextStyle(fontSize: 12),
               ),
             ),
-            if (photo != null) ...[
-              const SizedBox(width: 10),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: Image.file(
-                  File(photo.path),
-                  width: 40,
-                  height: 40,
-                  fit: BoxFit.cover,
-                ),
+            for (int pIdx = 0; pIdx < photos.length; pIdx++)
+              Stack(
+                alignment: Alignment.topRight,
+                children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: Image.file(
+                      File(photos[pIdx].path),
+                      width: 46,
+                      height: 46,
+                      fit: BoxFit.cover,
+                    ),
+                  ),
+                  GestureDetector(
+                    onTap: () {
+                      setState(() {
+                        _itemPhotos[itemId]?.removeAt(pIdx);
+                      });
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.all(2),
+                      decoration: const BoxDecoration(
+                        color: Colors.black54,
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(
+                        Icons.close_rounded,
+                        size: 12,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                ],
               ),
-              IconButton(
-                icon: const Icon(Icons.close_rounded, size: 18),
-                onPressed: () => setState(() => _itemPhotos[itemId] = null),
-              ),
-            ],
           ],
         ),
       ],
@@ -571,6 +690,7 @@ class _LeaveReviewScreenState extends State<LeaveReviewScreen> {
         color: StorkTheme.surface,
         borderRadius: BorderRadius.circular(20),
         border: Border.all(color: StorkTheme.borderSubtle),
+        boxShadow: StorkTheme.softCardShadow,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -579,8 +699,9 @@ class _LeaveReviewScreenState extends State<LeaveReviewScreen> {
             stepLabel,
             style: const TextStyle(
               fontSize: 10.5,
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w900,
               color: StorkTheme.primary,
+              letterSpacing: 0.4,
             ),
           ),
           const SizedBox(height: 2),
@@ -589,7 +710,7 @@ class _LeaveReviewScreenState extends State<LeaveReviewScreen> {
             style: const TextStyle(
               fontSize: 14,
               fontWeight: FontWeight.w800,
-              color: StorkTheme.textMain,
+              color: StorkTheme.primaryDark,
             ),
           ),
           const SizedBox(height: 2),
@@ -601,7 +722,8 @@ class _LeaveReviewScreenState extends State<LeaveReviewScreen> {
             ),
           ),
           const SizedBox(height: 10),
-          Row(
+          Wrap(
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: [
               for (int star = 1; star <= 5; star++)
                 GestureDetector(
@@ -632,29 +754,30 @@ class _LeaveReviewScreenState extends State<LeaveReviewScreen> {
           Wrap(
             spacing: 6,
             runSpacing: 6,
-            children: quickTags.map((tag) {
-              return InkWell(
-                onTap: () => _appendTag(null, tag),
-                borderRadius: BorderRadius.circular(16),
-                child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                  decoration: BoxDecoration(
-                    color: StorkTheme.surfaceSubtle,
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: StorkTheme.borderSubtle),
-                  ),
-                  child: Text(
-                    '+ $tag',
-                    style: const TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                      color: StorkTheme.textMain,
+            children: [
+              for (final tag in quickTags)
+                InkWell(
+                  onTap: () => _appendTag(null, tag),
+                  borderRadius: BorderRadius.circular(16),
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: StorkTheme.surfaceSubtle,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: StorkTheme.borderSubtle),
+                    ),
+                    child: Text(
+                      '+ $tag',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: StorkTheme.textMain,
+                      ),
                     ),
                   ),
                 ),
-              );
-            }).toList(),
+            ],
           ),
         ],
       ),

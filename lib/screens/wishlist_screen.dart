@@ -215,23 +215,24 @@ class _WishlistScreenState extends ConsumerState<WishlistScreen>
                       padding: const EdgeInsets.all(32),
                       children: [
                         const SizedBox(height: 80),
-                        Container(
-                          width: 72,
-                          height: 72,
-                          decoration: BoxDecoration(
-                            color: StorkTheme.surface,
-                            shape: BoxShape.circle,
-                            border: Border.all(color: StorkTheme.borderSubtle),
-                          ),
-                          child: const Icon(
-                            Icons.favorite_border_rounded,
-                            size: 36,
-                            color: StorkTheme.textMuted,
+                        Center(
+                          child: Container(
+                            width: 76,
+                            height: 76,
+                            decoration: BoxDecoration(
+                              color: StorkTheme.primary.withValues(alpha: 0.1),
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(
+                              Icons.favorite_border_rounded,
+                              size: 38,
+                              color: StorkTheme.primary,
+                            ),
                           ),
                         ),
                         const SizedBox(height: 16),
                         const Text(
-                          'Your Wish List is Empty',
+                          'Your Wish List Is Empty',
                           textAlign: TextAlign.center,
                           style: TextStyle(
                             fontSize: 18,
@@ -254,7 +255,7 @@ class _WishlistScreenState extends ConsumerState<WishlistScreen>
                   : Column(
                       children: [
                         Container(
-                          height: 50,
+                          height: 52,
                           padding: const EdgeInsets.symmetric(
                               horizontal: 14, vertical: 8),
                           decoration: const BoxDecoration(
@@ -289,7 +290,7 @@ class _WishlistScreenState extends ConsumerState<WishlistScreen>
                                   padding: const EdgeInsets.all(14),
                                   itemCount: visibleItems.length,
                                   separatorBuilder: (_, __) =>
-                                      const SizedBox(height: 10),
+                                      const SizedBox(height: 12),
                                   itemBuilder: (context, index) {
                                     final product = visibleItems[index];
                                     return _buildWishlistCard(product);
@@ -310,7 +311,8 @@ class _WishlistScreenState extends ConsumerState<WishlistScreen>
         padding: const EdgeInsets.symmetric(horizontal: 14),
         alignment: Alignment.center,
         decoration: BoxDecoration(
-          color: active ? StorkTheme.primary : StorkTheme.surfaceSubtle,
+          gradient: active ? StorkTheme.brandGradient : null,
+          color: active ? null : StorkTheme.surfaceSubtle,
           borderRadius: BorderRadius.circular(18),
           border: Border.all(
             color: active ? StorkTheme.primary : StorkTheme.borderSubtle,
@@ -370,8 +372,9 @@ class _WishlistScreenState extends ConsumerState<WishlistScreen>
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
             color: StorkTheme.surface,
-            borderRadius: BorderRadius.circular(18),
+            borderRadius: BorderRadius.circular(20),
             border: Border.all(color: StorkTheme.borderSubtle),
+            boxShadow: StorkTheme.softCardShadow,
           ),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -379,10 +382,10 @@ class _WishlistScreenState extends ConsumerState<WishlistScreen>
               Stack(
                 children: [
                   ClipRRect(
-                    borderRadius: BorderRadius.circular(12),
+                    borderRadius: BorderRadius.circular(14),
                     child: Container(
-                      width: 86,
-                      height: 86,
+                      width: 88,
+                      height: 88,
                       color: StorkTheme.surfaceSubtle,
                       child: imgUrl.isNotEmpty
                           ? Image.network(
@@ -409,7 +412,7 @@ class _WishlistScreenState extends ConsumerState<WishlistScreen>
                         decoration: BoxDecoration(
                           color: Colors.black.withValues(alpha: 0.72),
                           borderRadius: const BorderRadius.vertical(
-                            bottom: Radius.circular(12),
+                            bottom: Radius.circular(14),
                           ),
                         ),
                         child: Text(
@@ -437,17 +440,29 @@ class _WishlistScreenState extends ConsumerState<WishlistScreen>
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(
-                                storeName,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w700,
-                                  color: StorkTheme.textMuted,
-                                ),
+                              Row(
+                                children: [
+                                  const Icon(
+                                    Icons.storefront_rounded,
+                                    size: 12,
+                                    color: StorkTheme.textMuted,
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Expanded(
+                                    child: Text(
+                                      storeName,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w700,
+                                        color: StorkTheme.textMuted,
+                                      ),
+                                    ),
+                                  ),
+                                ],
                               ),
-                              const SizedBox(height: 2),
+                              const SizedBox(height: 3),
                               Text(
                                 product.name,
                                 maxLines: 2,
@@ -479,35 +494,35 @@ class _WishlistScreenState extends ConsumerState<WishlistScreen>
                       ],
                     ),
                     const SizedBox(height: 8),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      crossAxisAlignment: CrossAxisAlignment.end,
+                    Wrap(
+                      alignment: WrapAlignment.spaceBetween,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      spacing: 8,
+                      runSpacing: 6,
                       children: [
-                        Flexible(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              '₱${_formatMoney(product.discountedPrice)}',
+                              style: const TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w900,
+                                color: StorkTheme.price,
+                              ),
+                            ),
+                            if (product.effectiveDiscountPercent > 0)
                               Text(
-                                '₱${_formatMoney(product.discountedPrice)}',
+                                '₱${_formatMoney(product.price)} (-${product.effectiveDiscountPercent.toStringAsFixed(0)}%)',
                                 style: const TextStyle(
-                                  fontSize: 15,
-                                  fontWeight: FontWeight.w900,
-                                  color: StorkTheme.price,
+                                  fontSize: 10.5,
+                                  decoration: TextDecoration.lineThrough,
+                                  color: StorkTheme.textMuted,
                                 ),
                               ),
-                              if (product.effectiveDiscountPercent > 0)
-                                Text(
-                                  '₱${_formatMoney(product.price)} (-${product.effectiveDiscountPercent.toStringAsFixed(0)}%)',
-                                  style: const TextStyle(
-                                    fontSize: 10.5,
-                                    decoration: TextDecoration.lineThrough,
-                                    color: StorkTheme.textMuted,
-                                  ),
-                                ),
-                            ],
-                          ),
+                          ],
                         ),
-                        const SizedBox(width: 8),
                         ElevatedButton.icon(
                           onPressed:
                               (isDisabled || _addingProductId == product.id)

@@ -60,7 +60,7 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen>
   }
 
   JsonMap _extractPayload(JsonMap item) {
-    final JsonMap merged = Map<String, dynamic>.from(item);
+    final JsonMap merged = JsonMap.from(item);
     dynamic rawData = item['data'];
 
     if (rawData is String && rawData.trim().isNotEmpty) {
@@ -190,7 +190,7 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen>
 
           final List<JsonMap> parsed = [
             for (final n in rawList)
-              if (n is Map) Map<String, dynamic>.from(n),
+              if (n is Map) JsonMap.from(n),
           ];
 
           final int unreadCount = int.tryParse(
@@ -294,13 +294,17 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen>
         title: const Text('Notifications'),
         actions: [
           if (hasUnread)
-            TextButton(
-              onPressed: _markAllAsRead,
-              child: const Text(
-                'Mark All Read',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w800,
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: TextButton.icon(
+                onPressed: _markAllAsRead,
+                icon: const Icon(Icons.done_all_rounded, size: 16),
+                label: const Text(
+                  'Mark All Read',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
               ),
             ),
@@ -315,15 +319,16 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen>
               onRefresh: () => _fetchNotifications(),
               child: _notifications.isEmpty
                   ? ListView(
+                      padding: const EdgeInsets.all(28),
                       children: [
-                        const SizedBox(height: 110),
+                        const SizedBox(height: 90),
                         _buildEmptyState(),
                       ],
                     )
                   : ListView.separated(
                       padding: const EdgeInsets.all(14),
                       itemCount: _notifications.length,
-                      separatorBuilder: (_, __) => const SizedBox(height: 8),
+                      separatorBuilder: (_, __) => const SizedBox(height: 10),
                       itemBuilder: (context, index) {
                         final item = _notifications[index];
                         final payload = _extractPayload(item);
@@ -350,30 +355,34 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen>
                           iconData = Icons.info_outline_rounded;
                         }
 
-                        return GestureDetector(
+                        return InkWell(
                           onTap: () => _handleNotificationTap(item),
+                          borderRadius: BorderRadius.circular(18),
                           child: Container(
                             padding: const EdgeInsets.all(15),
                             decoration: BoxDecoration(
                               color: isRead
                                   ? StorkTheme.surface
                                   : StorkTheme.primary.withValues(alpha: 0.04),
-                              borderRadius: BorderRadius.circular(16),
+                              borderRadius: BorderRadius.circular(18),
                               border: Border.all(
                                 color: isRead
                                     ? StorkTheme.borderSubtle
                                     : StorkTheme.primary
-                                        .withValues(alpha: 0.25),
+                                        .withValues(alpha: 0.35),
+                                width: isRead ? 1 : 1.5,
                               ),
+                              boxShadow: StorkTheme.softCardShadow,
                             ),
                             child: Row(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Container(
-                                  padding: const EdgeInsets.all(9),
+                                  width: 40,
+                                  height: 40,
                                   decoration: BoxDecoration(
                                     color: iconColor.withValues(alpha: 0.12),
-                                    shape: BoxShape.circle,
+                                    borderRadius: BorderRadius.circular(13),
                                   ),
                                   child: Icon(
                                     iconData,
@@ -405,10 +414,10 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen>
                                               title,
                                               style: TextStyle(
                                                 fontWeight: isRead
-                                                    ? FontWeight.w700
+                                                    ? FontWeight.w800
                                                     : FontWeight.w900,
                                                 fontSize: 13.5,
-                                                color: StorkTheme.textMain,
+                                                color: StorkTheme.primaryDark,
                                               ),
                                             ),
                                           ),
@@ -420,18 +429,33 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen>
                                           message,
                                           style: const TextStyle(
                                             fontSize: 12.5,
-                                            color: StorkTheme.textMuted,
-                                            height: 1.38,
+                                            color: StorkTheme.textMain,
+                                            height: 1.4,
                                           ),
                                         ),
                                       ],
-                                      const SizedBox(height: 6),
-                                      Text(
-                                        timestamp,
-                                        style: const TextStyle(
-                                          fontSize: 10.5,
-                                          color: StorkTheme.textMuted,
-                                        ),
+                                      const SizedBox(height: 8),
+                                      Row(
+                                        children: [
+                                          const Icon(
+                                            Icons.schedule_rounded,
+                                            size: 12,
+                                            color: StorkTheme.textMuted,
+                                          ),
+                                          const SizedBox(width: 4),
+                                          Expanded(
+                                            child: Text(
+                                              timestamp,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: const TextStyle(
+                                                fontSize: 10.5,
+                                                fontWeight: FontWeight.w600,
+                                                color: StorkTheme.textMuted,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
                                       ),
                                     ],
                                   ),
@@ -447,29 +471,41 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen>
   }
 
   Widget _buildEmptyState() {
-    return const Center(
+    return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(
-            Icons.notifications_none_rounded,
-            size: 56,
-            color: StorkTheme.textMuted,
+          Container(
+            width: 76,
+            height: 76,
+            decoration: BoxDecoration(
+              color: StorkTheme.primary.withValues(alpha: 0.1),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(
+              Icons.notifications_none_rounded,
+              size: 38,
+              color: StorkTheme.primary,
+            ),
           ),
-          SizedBox(height: 14),
-          Text(
-            'No notifications yet',
+          const SizedBox(height: 14),
+          const Text(
+            'No Notifications Yet',
             style: TextStyle(
               fontSize: 17,
               fontWeight: FontWeight.w800,
-              color: StorkTheme.textMain,
+              color: StorkTheme.primaryDark,
             ),
           ),
-          SizedBox(height: 6),
-          Text(
+          const SizedBox(height: 6),
+          const Text(
             'Updates on your orders, E-Wallet top-ups, and rewards will appear here.',
             textAlign: TextAlign.center,
-            style: TextStyle(color: StorkTheme.textMuted, fontSize: 12.5),
+            style: TextStyle(
+              color: StorkTheme.textMuted,
+              fontSize: 12.5,
+              height: 1.4,
+            ),
           ),
         ],
       ),

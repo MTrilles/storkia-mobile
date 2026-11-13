@@ -72,7 +72,7 @@ class _SuspendedAccountScreenState extends ConsumerState<SuspendedAccountScreen>
     if (!mounted) return;
     if (res['success'] == true && res['data'] is Map) {
       setState(() {
-        _sanction = Map<String, dynamic>.from(res['data'] as Map);
+        _sanction = JsonMap.from(res['data'] as Map);
         _isLoading = false;
       });
       if (_sanction!['is_blocked_from_marketplace'] != true) {
@@ -152,7 +152,7 @@ class _SuspendedAccountScreenState extends ConsumerState<SuspendedAccountScreen>
     final strikes = _sanction?['cod_abandonment_strikes'] ?? 0;
     final tempBanEndsAt = _sanction?['temp_ban_ends_at']?.toString() ?? '';
     final JsonMap? latestAppeal = _sanction?['latest_appeal'] is Map
-        ? Map<String, dynamic>.from(_sanction!['latest_appeal'] as Map)
+        ? JsonMap.from(_sanction!['latest_appeal'] as Map)
         : null;
 
     return Scaffold(
@@ -178,7 +178,7 @@ class _SuspendedAccountScreenState extends ConsumerState<SuspendedAccountScreen>
               'Sign Out',
               style: TextStyle(
                 color: StorkTheme.danger,
-                fontWeight: FontWeight.w700,
+                fontWeight: FontWeight.w800,
               ),
             ),
           ),
@@ -189,48 +189,69 @@ class _SuspendedAccountScreenState extends ConsumerState<SuspendedAccountScreen>
               child: CircularProgressIndicator(color: StorkTheme.primary),
             )
           : ListView(
-              padding: const EdgeInsets.all(20),
+              padding: const EdgeInsets.all(18),
               children: [
                 Container(
                   padding: const EdgeInsets.all(20),
                   decoration: BoxDecoration(
                     color: StorkTheme.surface,
-                    borderRadius: BorderRadius.circular(20),
+                    borderRadius: BorderRadius.circular(22),
                     border: Border.all(
                       color: StorkTheme.danger.withValues(alpha: 0.35),
                       width: 1.5,
                     ),
+                    boxShadow: StorkTheme.softCardShadow,
                   ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 10, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: StorkTheme.danger.withValues(alpha: 0.1),
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child: Text(
-                          isPermanent
-                              ? 'PERMANENT ACCOUNT BAN'
-                              : '3/3 COD ABANDONMENT STRIKES ($strikes Strikes)',
-                          style: const TextStyle(
-                            color: StorkTheme.danger,
-                            fontSize: 11,
-                            fontWeight: FontWeight.w800,
+                      Row(
+                        children: [
+                          Container(
+                            width: 44,
+                            height: 44,
+                            decoration: BoxDecoration(
+                              color: StorkTheme.danger.withValues(alpha: 0.1),
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            child: const Icon(
+                              Icons.gpp_bad_outlined,
+                              color: StorkTheme.danger,
+                              size: 24,
+                            ),
                           ),
-                        ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 5),
+                              decoration: BoxDecoration(
+                                color: StorkTheme.danger.withValues(alpha: 0.1),
+                                borderRadius: BorderRadius.circular(20),
+                              ),
+                              child: Text(
+                                isPermanent
+                                    ? 'PERMANENT ACCOUNT BAN'
+                                    : '3/3 COD ABANDONMENT STRIKES ($strikes Strikes)',
+                                style: const TextStyle(
+                                  color: StorkTheme.danger,
+                                  fontSize: 10.5,
+                                  fontWeight: FontWeight.w900,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
-                      const SizedBox(height: 12),
+                      const SizedBox(height: 14),
                       Text(
                         isPermanent
                             ? 'Your Buyer Account Has Been Permanently Banned'
                             : '7-Day Temporary Suspension & Reactivation Portal',
                         style: const TextStyle(
                           fontSize: 18,
-                          fontWeight: FontWeight.w800,
-                          color: StorkTheme.textMain,
+                          fontWeight: FontWeight.w900,
+                          color: StorkTheme.primaryDark,
                         ),
                       ),
                       const SizedBox(height: 8),
@@ -249,24 +270,26 @@ class _SuspendedAccountScreenState extends ConsumerState<SuspendedAccountScreen>
                         Container(
                           padding: const EdgeInsets.all(14),
                           decoration: BoxDecoration(
-                            color: StorkTheme.warning.withValues(alpha: 0.1),
-                            borderRadius: BorderRadius.circular(12),
+                            color: StorkTheme.warning.withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(14),
                             border: Border.all(
-                              color: StorkTheme.warning.withValues(alpha: 0.3),
+                              color: StorkTheme.warning.withValues(alpha: 0.35),
                             ),
                           ),
                           child: Row(
                             children: [
-                              const Icon(Icons.timer_outlined,
-                                  color: StorkTheme.warning),
+                              const Icon(
+                                Icons.timer_outlined,
+                                color: Color(0xFF92400E),
+                              ),
                               const SizedBox(width: 10),
                               Expanded(
                                 child: Text(
                                   '7-Day Countdown Ends: $tempBanEndsAt',
                                   style: const TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w700,
-                                    color: StorkTheme.textMain,
+                                    fontSize: 12.5,
+                                    fontWeight: FontWeight.w800,
+                                    color: Color(0xFF92400E),
                                   ),
                                 ),
                               ),
@@ -283,36 +306,72 @@ class _SuspendedAccountScreenState extends ConsumerState<SuspendedAccountScreen>
                     padding: const EdgeInsets.all(18),
                     decoration: BoxDecoration(
                       color: StorkTheme.surface,
-                      borderRadius: BorderRadius.circular(16),
+                      borderRadius: BorderRadius.circular(20),
                       border: Border.all(color: StorkTheme.borderSubtle),
+                      boxShadow: StorkTheme.softCardShadow,
                     ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          'Latest Appeal Status: ${(latestAppeal['status'] ?? 'pending').toString().toUpperCase()}',
-                          style: const TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w800,
-                            color: StorkTheme.primaryDark,
-                          ),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text(
+                              'Latest Appeal Status',
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w800,
+                                color: StorkTheme.primaryDark,
+                              ),
+                            ),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 9,
+                                vertical: 3,
+                              ),
+                              decoration: BoxDecoration(
+                                color:
+                                    StorkTheme.primary.withValues(alpha: 0.1),
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: Text(
+                                (latestAppeal['status'] ?? 'pending')
+                                    .toString()
+                                    .toUpperCase(),
+                                style: const TextStyle(
+                                  fontSize: 10.5,
+                                  fontWeight: FontWeight.w900,
+                                  color: StorkTheme.primary,
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
-                        const SizedBox(height: 6),
+                        const SizedBox(height: 8),
                         Text(
                           latestAppeal['appeal_explanation']?.toString() ?? '',
                           style: const TextStyle(
                             fontSize: 13,
                             color: StorkTheme.textMain,
+                            height: 1.4,
                           ),
                         ),
                         if (latestAppeal['admin_remarks'] != null) ...[
-                          const SizedBox(height: 8),
-                          Text(
-                            'Admin Remarks: ${latestAppeal['admin_remarks']}',
-                            style: const TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                              color: StorkTheme.textMuted,
+                          const SizedBox(height: 10),
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: StorkTheme.surfaceSubtle,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Text(
+                              'Admin Remarks: ${latestAppeal['admin_remarks']}',
+                              style: const TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700,
+                                color: StorkTheme.primaryDark,
+                              ),
                             ),
                           ),
                         ],
@@ -328,8 +387,9 @@ class _SuspendedAccountScreenState extends ConsumerState<SuspendedAccountScreen>
                     padding: const EdgeInsets.all(20),
                     decoration: BoxDecoration(
                       color: StorkTheme.surface,
-                      borderRadius: BorderRadius.circular(20),
+                      borderRadius: BorderRadius.circular(22),
                       border: Border.all(color: StorkTheme.borderSubtle),
+                      boxShadow: StorkTheme.softCardShadow,
                     ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -349,6 +409,7 @@ class _SuspendedAccountScreenState extends ConsumerState<SuspendedAccountScreen>
                           decoration: const InputDecoration(
                             hintText:
                                 'Explain why you missed the COD deliveries and how you will ensure successful receipt going forward (20+ chars)...',
+                            fillColor: StorkTheme.surfaceSubtle,
                           ),
                         ),
                         const SizedBox(height: 12),
@@ -356,16 +417,32 @@ class _SuspendedAccountScreenState extends ConsumerState<SuspendedAccountScreen>
                           onPressed: _pickPhoto,
                           icon: const Icon(Icons.photo_library_outlined,
                               size: 18),
-                          label: Text(_pickedFile != null
-                              ? 'Selected: ${_pickedFile!.name}'
-                              : 'Attach Supporting Photo (Optional)'),
+                          label: Text(
+                            _pickedFile != null
+                                ? 'Selected: ${_pickedFile!.name}'
+                                : 'Attach Supporting Photo (Optional)',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
                         const SizedBox(height: 16),
-                        SizedBox(
+                        Container(
                           width: double.infinity,
-                          height: 48,
+                          height: 50,
+                          decoration: BoxDecoration(
+                            gradient:
+                                _isSubmitting ? null : StorkTheme.brandGradient,
+                            borderRadius: BorderRadius.circular(14),
+                          ),
                           child: ElevatedButton(
                             onPressed: _isSubmitting ? null : _submitAppeal,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.transparent,
+                              shadowColor: Colors.transparent,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                            ),
                             child: _isSubmitting
                                 ? const SizedBox(
                                     width: 20,

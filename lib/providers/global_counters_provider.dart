@@ -128,6 +128,104 @@ class UnreadAnnouncementNotifier extends StateNotifier<int> {
   }
 }
 
+class OrderCountsState {
+  final int all;
+  final int unpaid;
+  final int processing;
+  final int shipped;
+  final int toConfirm;
+  final int toRate;
+  final int completed;
+  final int returns;
+
+  const OrderCountsState({
+    this.all = 0,
+    this.unpaid = 0,
+    this.processing = 0,
+    this.shipped = 0,
+    this.toConfirm = 0,
+    this.toRate = 0,
+    this.completed = 0,
+    this.returns = 0,
+  });
+
+  int countForTab(String key) {
+    switch (key) {
+      case 'all':
+        return all;
+      case 'unpaid':
+        return unpaid;
+      case 'processing':
+        return processing;
+      case 'shipped':
+        return shipped;
+      case 'to_confirm':
+        return toConfirm;
+      case 'to_rate':
+        return toRate;
+      case 'completed':
+        return completed;
+      case 'returns':
+        return returns;
+      default:
+        return 0;
+    }
+  }
+
+  Map<String, int> toMap() => {
+        'all': all,
+        'unpaid': unpaid,
+        'processing': processing,
+        'shipped': shipped,
+        'to_confirm': toConfirm,
+        'to_rate': toRate,
+        'completed': completed,
+        'returns': returns,
+      };
+
+  factory OrderCountsState.fromMap(Map<dynamic, dynamic> map) {
+    int parseKey(String k) => int.tryParse(map[k]?.toString() ?? '0') ?? 0;
+    return OrderCountsState(
+      all: parseKey('all'),
+      unpaid: parseKey('unpaid'),
+      processing: parseKey('processing'),
+      shipped: parseKey('shipped'),
+      toConfirm: parseKey('to_confirm'),
+      toRate: parseKey('to_rate'),
+      completed: parseKey('completed'),
+      returns: parseKey('returns'),
+    );
+  }
+}
+
+class OrderCountsNotifier extends StateNotifier<OrderCountsState> {
+  OrderCountsNotifier() : super(const OrderCountsState());
+
+  void updateFromMap(Map<dynamic, dynamic> rawCounts) {
+    state = OrderCountsState.fromMap(rawCounts);
+  }
+
+  Future<void> fetchOrderCounts(String token) async {
+    if (token.isEmpty) return;
+    try {
+      final response = await http.get(
+        Uri.parse('${ApiConfig.baseUrl}/orders?per_page=1'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Accept': 'application/json',
+        },
+      ).timeout(ApiConfig.requestTimeout);
+
+      if (response.statusCode == 200) {
+        final body = json.decode(response.body);
+        if (body is Map && body['counts'] is Map) {
+          state = OrderCountsState.fromMap(body['counts'] as Map);
+        }
+      }
+    } catch (_) {}
+  }
+}
+
 class RewardSummaryState {
   final bool isLoaded;
   final int coinsBalance;
@@ -314,6 +412,11 @@ final unreadAnnouncementProvider =
   return UnreadAnnouncementNotifier();
 });
 
+final orderCountsProvider =
+    StateNotifierProvider<OrderCountsNotifier, OrderCountsState>((ref) {
+  return OrderCountsNotifier();
+});
+
 final rewardSummaryProvider =
     StateNotifierProvider<RewardSummaryNotifier, RewardSummaryState>((ref) {
   return RewardSummaryNotifier();
@@ -326,6 +429,7 @@ Future<void> syncAllBuyerCounters(WidgetRef ref, String token) async {
     ref.read(unreadMessageProvider.notifier).fetchUnreadCount(token),
     ref.read(unreadNotificationProvider.notifier).fetchUnreadCount(token),
     ref.read(unreadAnnouncementProvider.notifier).fetchUnreadCount(token),
+    ref.read(orderCountsProvider.notifier).fetchOrderCounts(token),
     ref.read(rewardSummaryProvider.notifier).fetchRewardAndWalletSummary(token),
   ]);
 }

@@ -16,16 +16,23 @@ class CustomBottomNav extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         color: StorkTheme.surface,
-        border: Border(
+        border: const Border(
           top: BorderSide(color: StorkTheme.borderSubtle, width: 1),
         ),
+        boxShadow: [
+          BoxShadow(
+            color: StorkTheme.primaryDark.withValues(alpha: 0.05),
+            blurRadius: 16,
+            offset: const Offset(0, -4),
+          ),
+        ],
       ),
       child: SafeArea(
         top: false,
         child: SizedBox(
-          height: 62,
+          height: 64,
           child: Row(
             children: [
               _NavItem(
@@ -98,20 +105,27 @@ class _NavItem extends StatelessWidget {
               clipBehavior: Clip.none,
               children: [
                 AnimatedContainer(
-                  duration: const Duration(milliseconds: 180),
-                  curve: Curves.easeOut,
+                  duration: const Duration(milliseconds: 200),
+                  curve: Curves.easeOutCubic,
                   padding:
-                      const EdgeInsets.symmetric(horizontal: 14, vertical: 3),
+                      const EdgeInsets.symmetric(horizontal: 15, vertical: 4),
                   decoration: BoxDecoration(
-                    color: isSelected
-                        ? StorkTheme.primary.withValues(alpha: 0.12)
-                        : Colors.transparent,
+                    gradient: isSelected
+                        ? LinearGradient(
+                            colors: [
+                              StorkTheme.primary.withValues(alpha: 0.16),
+                              StorkTheme.brandLight.withValues(alpha: 0.35),
+                            ],
+                          )
+                        : null,
                     borderRadius: BorderRadius.circular(16),
                   ),
                   child: Icon(
                     isSelected ? activeIcon : icon,
                     size: 22,
-                    color: color,
+                    color: isSelected
+                        ? StorkTheme.primaryDark
+                        : StorkTheme.textMuted,
                   ),
                 ),
                 if (badgeCount > 0)
@@ -149,8 +163,8 @@ class _NavItem extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 fontSize: 11,
-                fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
-                color: color,
+                fontWeight: isSelected ? FontWeight.w800 : FontWeight.w600,
+                color: isSelected ? StorkTheme.primaryDark : color,
                 letterSpacing: -0.1,
               ),
             ),

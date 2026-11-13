@@ -57,15 +57,9 @@ class ProductCard extends ConsumerWidget {
       child: Container(
         decoration: BoxDecoration(
           color: StorkTheme.surface,
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(18),
           border: Border.all(color: StorkTheme.borderSubtle),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.025),
-              blurRadius: 8,
-              offset: const Offset(0, 3),
-            ),
-          ],
+          boxShadow: StorkTheme.softCardShadow,
         ),
         clipBehavior: Clip.antiAlias,
         child: Column(
@@ -108,15 +102,17 @@ class ProductCard extends ConsumerWidget {
                           vertical: 3,
                         ),
                         decoration: BoxDecoration(
-                          color: StorkTheme.danger,
-                          borderRadius: BorderRadius.circular(6),
+                          gradient: const LinearGradient(
+                            colors: [StorkTheme.danger, StorkTheme.primary],
+                          ),
+                          borderRadius: BorderRadius.circular(8),
                         ),
                         child: Text(
                           '-${product.discount.toStringAsFixed(0)}%',
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 10,
-                            fontWeight: FontWeight.w800,
+                            fontWeight: FontWeight.w900,
                           ),
                         ),
                       ),
@@ -132,7 +128,7 @@ class ProductCard extends ConsumerWidget {
                         ),
                         decoration: BoxDecoration(
                           color: isSoldOut
-                              ? Colors.black.withValues(alpha: 0.75)
+                              ? Colors.black.withValues(alpha: 0.78)
                               : StorkTheme.warning,
                           borderRadius: BorderRadius.circular(6),
                         ),
@@ -141,7 +137,7 @@ class ProductCard extends ConsumerWidget {
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 9,
-                            fontWeight: FontWeight.w800,
+                            fontWeight: FontWeight.w900,
                           ),
                         ),
                       ),
@@ -151,7 +147,7 @@ class ProductCard extends ConsumerWidget {
                       top: 6,
                       right: 6,
                       child: Material(
-                        color: Colors.white.withValues(alpha: 0.9),
+                        color: Colors.white.withValues(alpha: 0.92),
                         shape: const CircleBorder(),
                         clipBehavior: Clip.hardEdge,
                         child: InkWell(
@@ -187,15 +183,27 @@ class ProductCard extends ConsumerWidget {
                   if (storeName.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(bottom: 2),
-                      child: Text(
-                        storeName,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w600,
-                          color: StorkTheme.textMuted,
-                        ),
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.storefront_rounded,
+                            size: 11,
+                            color: StorkTheme.textMuted,
+                          ),
+                          const SizedBox(width: 3),
+                          Expanded(
+                            child: Text(
+                              storeName,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w700,
+                                color: StorkTheme.textMuted,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   Text(
@@ -204,9 +212,9 @@ class ProductCard extends ConsumerWidget {
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                       fontSize: 12.5,
-                      fontWeight: FontWeight.w700,
+                      fontWeight: FontWeight.w800,
                       color: StorkTheme.textMain,
-                      height: 1.22,
+                      height: 1.2,
                     ),
                   ),
                   const SizedBox(height: 5),
@@ -221,7 +229,7 @@ class ProductCard extends ConsumerWidget {
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                             fontSize: 14,
-                            fontWeight: FontWeight.w800,
+                            fontWeight: FontWeight.w900,
                             color: product.discount > 0
                                 ? StorkTheme.price
                                 : StorkTheme.primary,
@@ -259,7 +267,7 @@ class ProductCard extends ConsumerWidget {
                           product.avgRating.toStringAsFixed(1),
                           style: const TextStyle(
                             fontSize: 10.5,
-                            fontWeight: FontWeight.w700,
+                            fontWeight: FontWeight.w800,
                             color: StorkTheme.textMain,
                           ),
                         ),
@@ -275,7 +283,7 @@ class ProductCard extends ConsumerWidget {
                           style: const TextStyle(
                             fontSize: 10,
                             color: StorkTheme.textMuted,
-                            fontWeight: FontWeight.w500,
+                            fontWeight: FontWeight.w600,
                           ),
                         ),
                       ),

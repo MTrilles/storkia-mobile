@@ -11,6 +11,9 @@ import '../providers/wishlist_provider.dart';
 import 'product_show.dart';
 
 typedef JsonMap = Map<String, dynamic>;
+typedef JsonList = List<JsonMap>;
+typedef IntBoolMap = Map<int, bool>;
+typedef StringIntMap = Map<String, int>;
 
 class TrendsScreen extends ConsumerStatefulWidget {
   final String baseUrl;
@@ -29,8 +32,8 @@ class TrendsScreen extends ConsumerStatefulWidget {
 class _TrendsScreenState extends ConsumerState<TrendsScreen>
     with WidgetsBindingObserver {
   bool _isLoading = true;
-  List<JsonMap> _trendEntries = [];
-  final Map<int, bool> _wishlistOverrides = {};
+  JsonList _trendEntries = [];
+  final IntBoolMap _wishlistOverrides = {};
   String _selectedCategory = 'All';
   String _sortBy = 'trending';
   Timer? _autoSyncTimer;
@@ -61,11 +64,11 @@ class _TrendsScreenState extends ConsumerState<TrendsScreen>
     }
   }
 
-  List<JsonMap> _extractMapList(dynamic raw) {
+  JsonList _extractMapList(dynamic raw) {
     if (raw is List) {
       return [
         for (final item in raw)
-          if (item is Map) Map<String, dynamic>.from(item),
+          if (item is Map) JsonMap.from(item),
       ];
     }
     if (raw is Map) {
@@ -109,7 +112,7 @@ class _TrendsScreenState extends ConsumerState<TrendsScreen>
 
       if (!mounted) return;
 
-      List<JsonMap> parsed = [];
+      JsonList parsed = [];
       if (response.statusCode == 200) {
         final body = json.decode(response.body);
         parsed = _extractMapList(body is Map ? (body['data'] ?? body) : body);
@@ -123,7 +126,7 @@ class _TrendsScreenState extends ConsumerState<TrendsScreen>
         if (homeRes.statusCode == 200) {
           final homeBody = json.decode(homeRes.body);
           if (homeBody is Map && homeBody['data'] is Map) {
-            final homeData = Map<String, dynamic>.from(homeBody['data'] as Map);
+            final homeData = JsonMap.from(homeBody['data'] as Map);
             parsed = _extractMapList(homeData['trending']);
           }
         }
@@ -144,9 +147,8 @@ class _TrendsScreenState extends ConsumerState<TrendsScreen>
   }
 
   Product _productFromEntry(JsonMap entry) {
-    final JsonMap prodMap = entry['product'] is Map
-        ? Map<String, dynamic>.from(entry['product'] as Map)
-        : entry;
+    final JsonMap prodMap =
+        entry['product'] is Map ? JsonMap.from(entry['product'] as Map) : entry;
     return Product.fromJson(prodMap);
   }
 
@@ -197,8 +199,8 @@ class _TrendsScreenState extends ConsumerState<TrendsScreen>
     return 'New & trending';
   }
 
-  Map<String, int> get _categoryCounts {
-    final Map<String, int> counts = {'All': _trendEntries.length};
+  StringIntMap get _categoryCounts {
+    final StringIntMap counts = {'All': _trendEntries.length};
     for (final entry in _trendEntries) {
       final cat = _categoryOfEntry(entry);
       if (cat.isNotEmpty) {
@@ -208,7 +210,7 @@ class _TrendsScreenState extends ConsumerState<TrendsScreen>
     return counts;
   }
 
-  List<JsonMap> get _filteredAndSortedEntries {
+  JsonList get _filteredAndSortedEntries {
     final filtered = _trendEntries.where((entry) {
       if (_selectedCategory == 'All') return true;
       return _categoryOfEntry(entry).toLowerCase() ==
@@ -259,6 +261,7 @@ class _TrendsScreenState extends ConsumerState<TrendsScreen>
   Widget build(BuildContext context) {
     final width = MediaQuery.sizeOf(context).width;
     final crossAxisCount = width >= 700 ? 3 : 2;
+    final aspectRatio = width < 350 ? 0.60 : 0.65;
     final categoryCounts = _categoryCounts;
     final visibleEntries = _filteredAndSortedEntries;
 
@@ -276,12 +279,42 @@ class _TrendsScreenState extends ConsumerState<TrendsScreen>
               onRefresh: () => _fetchTrends(),
               child: _trendEntries.isEmpty
                   ? ListView(
-                      children: const [
-                        SizedBox(height: 110),
+                      padding: const EdgeInsets.all(28),
+                      children: [
+                        const SizedBox(height: 90),
                         Center(
-                          child: Text(
-                            'No trending products recorded yet.',
-                            style: TextStyle(color: StorkTheme.textMuted),
+                          child: Container(
+                            width: 76,
+                            height: 76,
+                            decoration: BoxDecoration(
+                              color: StorkTheme.primary.withValues(alpha: 0.1),
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(
+                              Icons.local_fire_department_rounded,
+                              size: 38,
+                              color: StorkTheme.primary,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        const Text(
+                          'No Trending Products Recorded Yet',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w800,
+                            color: StorkTheme.primaryDark,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        const Text(
+                          'Top-selling products, most-saved items, and hot new arrivals across Storkia will appear here.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            color: StorkTheme.textMuted,
+                            height: 1.4,
                           ),
                         ),
                       ],
@@ -295,43 +328,75 @@ class _TrendsScreenState extends ConsumerState<TrendsScreen>
                               Container(
                                 width: double.infinity,
                                 margin:
-                                    const EdgeInsets.fromLTRB(14, 14, 14, 10),
+                                    const EdgeInsets.fromLTRB(14, 14, 14, 12),
                                 padding: const EdgeInsets.all(18),
                                 decoration: BoxDecoration(
-                                  color: StorkTheme.brandLight
-                                      .withValues(alpha: 0.38),
-                                  borderRadius: BorderRadius.circular(20),
-                                  border: Border.all(
-                                    color: StorkTheme.borderSubtle,
-                                  ),
+                                  gradient: StorkTheme.brandGradient,
+                                  borderRadius: BorderRadius.circular(22),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: StorkTheme.primaryDark
+                                          .withValues(alpha: 0.16),
+                                      blurRadius: 16,
+                                      offset: const Offset(0, 6),
+                                    ),
+                                  ],
                                 ),
-                                child: const Column(
+                                child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Row(
                                       children: [
-                                        Icon(
-                                          Icons.trending_up_rounded,
-                                          color: StorkTheme.primary,
-                                          size: 24,
+                                        Container(
+                                          padding: const EdgeInsets.all(8),
+                                          decoration: BoxDecoration(
+                                            color: Colors.white
+                                                .withValues(alpha: 0.18),
+                                            borderRadius:
+                                                BorderRadius.circular(12),
+                                          ),
+                                          child: const Icon(
+                                            Icons.trending_up_rounded,
+                                            color: Colors.white,
+                                            size: 22,
+                                          ),
                                         ),
-                                        SizedBox(width: 8),
-                                        Text(
-                                          'Trends',
-                                          style: TextStyle(
-                                            color: StorkTheme.primaryDark,
-                                            fontSize: 21,
-                                            fontWeight: FontWeight.w900,
+                                        const SizedBox(width: 10),
+                                        const Expanded(
+                                          child: Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              Text(
+                                                'LIVE MARKETPLACE RANKINGS',
+                                                style: TextStyle(
+                                                  color: StorkTheme.brandLight,
+                                                  fontSize: 10,
+                                                  fontWeight: FontWeight.w900,
+                                                  letterSpacing: 0.6,
+                                                ),
+                                              ),
+                                              SizedBox(height: 2),
+                                              Text(
+                                                'Trending on Storkia',
+                                                style: TextStyle(
+                                                  color: Colors.white,
+                                                  fontSize: 19,
+                                                  fontWeight: FontWeight.w900,
+                                                ),
+                                              ),
+                                            ],
                                           ),
                                         ),
                                       ],
                                     ),
-                                    SizedBox(height: 6),
+                                    const SizedBox(height: 10),
                                     Text(
-                                      'What shoppers on Storkia are searching for, ordering and saving the most over the last 30 days, with new arrivals mixed in.',
+                                      'What shoppers on Storkia are searching for, ordering, and saving the most over the last 30 days, with fresh arrivals mixed in.',
                                       style: TextStyle(
-                                        color: StorkTheme.textMuted,
-                                        fontSize: 12.5,
+                                        color: Colors.white
+                                            .withValues(alpha: 0.88),
+                                        fontSize: 12,
                                         height: 1.4,
                                       ),
                                     ),
@@ -348,69 +413,80 @@ class _TrendsScreenState extends ConsumerState<TrendsScreen>
                                         height: 36,
                                         child: ListView(
                                           scrollDirection: Axis.horizontal,
-                                          children: categoryCounts.entries
-                                              .map((entry) {
-                                            final bool active =
-                                                _selectedCategory == entry.key;
-                                            return GestureDetector(
-                                              onTap: () => setState(() =>
-                                                  _selectedCategory =
-                                                      entry.key),
-                                              child: Container(
-                                                margin: const EdgeInsets.only(
-                                                    right: 8),
-                                                padding:
-                                                    const EdgeInsets.symmetric(
+                                          children: [
+                                            for (final entry
+                                                in categoryCounts.entries)
+                                              Builder(builder: (context) {
+                                                final bool active =
+                                                    _selectedCategory ==
+                                                        entry.key;
+                                                return GestureDetector(
+                                                  onTap: () => setState(() =>
+                                                      _selectedCategory =
+                                                          entry.key),
+                                                  child: Container(
+                                                    margin:
+                                                        const EdgeInsets.only(
+                                                            right: 8),
+                                                    padding: const EdgeInsets
+                                                        .symmetric(
                                                         horizontal: 13),
-                                                alignment: Alignment.center,
-                                                decoration: BoxDecoration(
-                                                  color: active
-                                                      ? StorkTheme.primaryDark
-                                                      : StorkTheme.surface,
-                                                  borderRadius:
-                                                      BorderRadius.circular(18),
-                                                  border: Border.all(
-                                                    color: active
-                                                        ? StorkTheme.primaryDark
-                                                        : StorkTheme
-                                                            .borderSubtle,
+                                                    alignment: Alignment.center,
+                                                    decoration: BoxDecoration(
+                                                      gradient: active
+                                                          ? StorkTheme
+                                                              .brandGradient
+                                                          : null,
+                                                      color: active
+                                                          ? null
+                                                          : StorkTheme.surface,
+                                                      borderRadius:
+                                                          BorderRadius.circular(
+                                                              18),
+                                                      border: Border.all(
+                                                        color: active
+                                                            ? StorkTheme.primary
+                                                            : StorkTheme
+                                                                .borderSubtle,
+                                                      ),
+                                                    ),
+                                                    child: Row(
+                                                      mainAxisSize:
+                                                          MainAxisSize.min,
+                                                      children: [
+                                                        Text(
+                                                          entry.key,
+                                                          style: TextStyle(
+                                                            fontSize: 12,
+                                                            fontWeight:
+                                                                FontWeight.w800,
+                                                            color: active
+                                                                ? Colors.white
+                                                                : StorkTheme
+                                                                    .textMain,
+                                                          ),
+                                                        ),
+                                                        const SizedBox(
+                                                            width: 5),
+                                                        Text(
+                                                          '${entry.value}',
+                                                          style: TextStyle(
+                                                            fontSize: 11,
+                                                            fontWeight:
+                                                                FontWeight.w800,
+                                                            color: active
+                                                                ? StorkTheme
+                                                                    .brandLight
+                                                                : StorkTheme
+                                                                    .textMuted,
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    ),
                                                   ),
-                                                ),
-                                                child: Row(
-                                                  mainAxisSize:
-                                                      MainAxisSize.min,
-                                                  children: [
-                                                    Text(
-                                                      entry.key,
-                                                      style: TextStyle(
-                                                        fontSize: 12,
-                                                        fontWeight:
-                                                            FontWeight.w800,
-                                                        color: active
-                                                            ? Colors.white
-                                                            : StorkTheme
-                                                                .textMain,
-                                                      ),
-                                                    ),
-                                                    const SizedBox(width: 5),
-                                                    Text(
-                                                      '${entry.value}',
-                                                      style: TextStyle(
-                                                        fontSize: 11.5,
-                                                        fontWeight:
-                                                            FontWeight.w700,
-                                                        color: active
-                                                            ? StorkTheme
-                                                                .brandLight
-                                                            : StorkTheme
-                                                                .textMuted,
-                                                      ),
-                                                    ),
-                                                  ],
-                                                ),
-                                              ),
-                                            );
-                                          }).toList(),
+                                                );
+                                              }),
+                                          ],
                                         ),
                                       ),
                                     ),
@@ -444,21 +520,22 @@ class _TrendsScreenState extends ConsumerState<TrendsScreen>
                                       child: Container(
                                         height: 36,
                                         padding: const EdgeInsets.symmetric(
-                                            horizontal: 10),
+                                            horizontal: 11),
                                         decoration: BoxDecoration(
                                           color: StorkTheme.surface,
                                           borderRadius:
                                               BorderRadius.circular(12),
                                           border: Border.all(
                                               color: StorkTheme.borderSubtle),
+                                          boxShadow: StorkTheme.softCardShadow,
                                         ),
                                         child: const Row(
                                           mainAxisSize: MainAxisSize.min,
                                           children: [
                                             Icon(
-                                              Icons.sort_rounded,
+                                              Icons.tune_rounded,
                                               size: 16,
-                                              color: StorkTheme.textMain,
+                                              color: StorkTheme.primaryDark,
                                             ),
                                             SizedBox(width: 4),
                                             Text(
@@ -466,7 +543,7 @@ class _TrendsScreenState extends ConsumerState<TrendsScreen>
                                               style: TextStyle(
                                                 fontSize: 12,
                                                 fontWeight: FontWeight.w800,
-                                                color: StorkTheme.textMain,
+                                                color: StorkTheme.primaryDark,
                                               ),
                                             ),
                                           ],
@@ -486,7 +563,7 @@ class _TrendsScreenState extends ConsumerState<TrendsScreen>
                             gridDelegate:
                                 SliverGridDelegateWithFixedCrossAxisCount(
                               crossAxisCount: crossAxisCount,
-                              childAspectRatio: 0.65,
+                              childAspectRatio: aspectRatio,
                               crossAxisSpacing: 12,
                               mainAxisSpacing: 12,
                             ),
@@ -527,6 +604,7 @@ class _TrendsScreenState extends ConsumerState<TrendsScreen>
                                       borderRadius: BorderRadius.circular(18),
                                       border: Border.all(
                                           color: StorkTheme.borderSubtle),
+                                      boxShadow: StorkTheme.softCardShadow,
                                     ),
                                     clipBehavior: Clip.antiAlias,
                                     child: Column(
@@ -632,7 +710,7 @@ class _TrendsScreenState extends ConsumerState<TrendsScreen>
                                                 overflow: TextOverflow.ellipsis,
                                                 style: const TextStyle(
                                                   fontSize: 13,
-                                                  fontWeight: FontWeight.w700,
+                                                  fontWeight: FontWeight.w800,
                                                   color: StorkTheme.textMain,
                                                 ),
                                               ),
@@ -650,7 +728,7 @@ class _TrendsScreenState extends ConsumerState<TrendsScreen>
                                                         fontWeight:
                                                             FontWeight.w900,
                                                         color:
-                                                            StorkTheme.textMain,
+                                                            StorkTheme.primary,
                                                       ),
                                                     ),
                                                   ),
@@ -683,13 +761,16 @@ class _TrendsScreenState extends ConsumerState<TrendsScreen>
                                                   Container(
                                                     padding: const EdgeInsets
                                                         .symmetric(
-                                                      horizontal: 6.5,
+                                                      horizontal: 7,
                                                       vertical: 2,
                                                     ),
                                                     decoration: BoxDecoration(
-                                                      color: rank <= 3
+                                                      gradient: rank <= 3
                                                           ? StorkTheme
-                                                              .primaryDark
+                                                              .brandGradient
+                                                          : null,
+                                                      color: rank <= 3
+                                                          ? null
                                                           : StorkTheme
                                                               .surfaceSubtle,
                                                       borderRadius:
@@ -726,8 +807,8 @@ class _TrendsScreenState extends ConsumerState<TrendsScreen>
                                                         fontSize: 10.5,
                                                         fontWeight:
                                                             FontWeight.w700,
-                                                        color:
-                                                            StorkTheme.primary,
+                                                        color: StorkTheme
+                                                            .primaryDark,
                                                       ),
                                                     ),
                                                   ),

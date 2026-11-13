@@ -42,7 +42,7 @@ class _MyCouponsScreenState extends State<MyCouponsScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _tabController = TabController(length: 2, vsync: this);
-    _fetchVouchers();
+    _fetchVouchers(silent: false);
     _autoSyncTimer = Timer.periodic(const Duration(seconds: 6), (_) {
       _fetchVouchers(silent: true);
     });
@@ -79,7 +79,7 @@ class _MyCouponsScreenState extends State<MyCouponsScreen>
       return [
         for (final item in raw)
           if (item is Map)
-            Map<String, dynamic>.from(
+            JsonMap.from(
               item['voucher'] is Map ? (item['voucher'] as Map) : item,
             ),
       ];
@@ -90,8 +90,8 @@ class _MyCouponsScreenState extends State<MyCouponsScreen>
     return [];
   }
 
-  Future<void> _fetchVouchers({bool silent = false}) async {
-    if (!silent) {
+  Future<void> _fetchVouchers({bool silent = true}) async {
+    if (!silent && _walletVouchers.isEmpty && _discoverVouchers.isEmpty) {
       setState(() => _isLoading = true);
     }
     try {
@@ -298,38 +298,61 @@ class _MyCouponsScreenState extends State<MyCouponsScreen>
                   child: TextField(
                     controller: _codeController,
                     textCapitalization: TextCapitalization.characters,
+                    inputFormatters: [
+                      FilteringTextInputFormatter.allow(
+                          RegExp(r'[A-Za-z0-9_-]')),
+                      LengthLimitingTextInputFormatter(25),
+                    ],
                     decoration: const InputDecoration(
                       hintText: 'Enter secret or promo voucher code...',
+                      fillColor: StorkTheme.surfaceSubtle,
                       prefixIcon: Icon(
                         Icons.confirmation_number_outlined,
                         size: 19,
-                        color: StorkTheme.textMuted,
+                        color: StorkTheme.primary,
                       ),
                     ),
                     onSubmitted: _claimVoucher,
                   ),
                 ),
                 const SizedBox(width: 10),
-                ElevatedButton(
-                  onPressed: _isClaimingCode
-                      ? null
-                      : () => _claimVoucher(_codeController.text),
-                  child: _isClaimingCode
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(
-                            color: Colors.white,
-                            strokeWidth: 2,
-                          ),
-                        )
-                      : const Text('Claim Code'),
+                Container(
+                  height: 46,
+                  decoration: BoxDecoration(
+                    gradient: _isClaimingCode ? null : StorkTheme.brandGradient,
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: ElevatedButton(
+                    onPressed: _isClaimingCode
+                        ? null
+                        : () => _claimVoucher(_codeController.text),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.transparent,
+                      shadowColor: Colors.transparent,
+                      padding: const EdgeInsets.symmetric(horizontal: 18),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                    ),
+                    child: _isClaimingCode
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              color: Colors.white,
+                              strokeWidth: 2,
+                            ),
+                          )
+                        : const Text('Claim Code'),
+                  ),
                 ),
               ],
             ),
           ),
           Expanded(
-            child: _isLoading
+            child: _isLoading &&
+                    _walletVouchers.isEmpty &&
+                    _discoverVouchers.isEmpty
                 ? const Center(
                     child: CircularProgressIndicator(color: StorkTheme.primary),
                   )
@@ -339,14 +362,14 @@ class _MyCouponsScreenState extends State<MyCouponsScreen>
                       _buildVoucherList(
                         items: _walletVouchers,
                         isWallet: true,
-                        emptyTitle: 'Your Voucher Wallet is empty',
+                        emptyTitle: 'Your Voucher Wallet Is Empty',
                         emptySubtitle:
                             'Claim Platform or Free Shipping vouchers from the Claim tab, or follow verified stores!',
                       ),
                       _buildVoucherList(
                         items: _discoverVouchers,
                         isWallet: false,
-                        emptyTitle: 'No unclaimed platform vouchers right now',
+                        emptyTitle: 'No Unclaimed Platform Vouchers Right Now',
                         emptySubtitle:
                             'All available Platform and Free Shipping vouchers are already in your wallet.',
                       ),
@@ -366,25 +389,35 @@ class _MyCouponsScreenState extends State<MyCouponsScreen>
   }) {
     return RefreshIndicator(
       color: StorkTheme.primary,
-      onRefresh: () => _fetchVouchers(),
+      onRefresh: () => _fetchVouchers(silent: true),
       child: items.isEmpty
           ? ListView(
               padding: const EdgeInsets.all(32),
               children: [
                 const SizedBox(height: 60),
-                const Icon(
-                  Icons.local_activity_outlined,
-                  size: 56,
-                  color: StorkTheme.textMuted,
+                Center(
+                  child: Container(
+                    width: 76,
+                    height: 76,
+                    decoration: BoxDecoration(
+                      color: StorkTheme.primary.withValues(alpha: 0.1),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.local_activity_outlined,
+                      size: 38,
+                      color: StorkTheme.primary,
+                    ),
+                  ),
                 ),
-                const SizedBox(height: 14),
+                const SizedBox(height: 16),
                 Text(
                   emptyTitle,
                   textAlign: TextAlign.center,
                   style: const TextStyle(
-                    fontSize: 16,
+                    fontSize: 16.5,
                     fontWeight: FontWeight.w800,
-                    color: StorkTheme.textMain,
+                    color: StorkTheme.primaryDark,
                   ),
                 ),
                 const SizedBox(height: 6),
@@ -423,6 +456,14 @@ class _MyCouponsScreenState extends State<MyCouponsScreen>
     final String description =
         (voucher['description'] ?? 'Valid on qualifying orders.').toString();
     final String minSpend = _formatMoney(voucher['min_spend'] ?? 0);
+    final double? maxCap =
+        double.tryParse(voucher['max_discount_cap']?.toString() ?? '');
+    final String discountType =
+        (voucher['discount_type'] ?? 'fixed').toString().toLowerCase();
+    final int perBuyerLimit =
+        int.tryParse(voucher['per_buyer_limit']?.toString() ?? '1') ?? 1;
+    final int timesUsed =
+        int.tryParse(voucher['times_used']?.toString() ?? '0') ?? 0;
     final String expiresAt =
         (voucher['ends_at_formatted'] ?? voucher['expires_at'] ?? 'Active')
             .toString();
@@ -441,8 +482,9 @@ class _MyCouponsScreenState extends State<MyCouponsScreen>
       child: Container(
         decoration: BoxDecoration(
           color: StorkTheme.surface,
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(18),
           border: Border.all(color: StorkTheme.borderSubtle),
+          boxShadow: StorkTheme.softCardShadow,
         ),
         clipBehavior: Clip.antiAlias,
         child: IntrinsicHeight(
@@ -450,10 +492,17 @@ class _MyCouponsScreenState extends State<MyCouponsScreen>
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Container(
-                width: 108,
-                padding: const EdgeInsets.all(12),
+                width: 104,
+                padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
-                  color: accentColor,
+                  gradient: LinearGradient(
+                    colors: [
+                      accentColor,
+                      accentColor.withValues(alpha: 0.82),
+                    ],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
                 ),
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
@@ -467,6 +516,8 @@ class _MyCouponsScreenState extends State<MyCouponsScreen>
                       ),
                       child: Text(
                         scope.toUpperCase(),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
                           color: Colors.white,
                           fontSize: 8.5,
@@ -482,11 +533,27 @@ class _MyCouponsScreenState extends State<MyCouponsScreen>
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
                         color: Colors.white,
-                        fontSize: 13.5,
+                        fontSize: 13,
                         fontWeight: FontWeight.w900,
                         height: 1.15,
                       ),
                     ),
+                    if (discountType == 'percentage' &&
+                        maxCap != null &&
+                        maxCap > 0) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        'Cap ₱${maxCap.toStringAsFixed(0)}',
+                        textAlign: TextAlign.center,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.9),
+                          fontSize: 9.5,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
                     const SizedBox(height: 4),
                     Text(
                       'Min ₱$minSpend',
@@ -495,7 +562,7 @@ class _MyCouponsScreenState extends State<MyCouponsScreen>
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         color: Colors.white.withValues(alpha: 0.9),
-                        fontSize: 10,
+                        fontSize: 9.5,
                         fontWeight: FontWeight.w700,
                       ),
                     ),
@@ -504,7 +571,7 @@ class _MyCouponsScreenState extends State<MyCouponsScreen>
               ),
               Expanded(
                 child: Padding(
-                  padding: const EdgeInsets.all(14),
+                  padding: const EdgeInsets.all(12),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -536,6 +603,15 @@ class _MyCouponsScreenState extends State<MyCouponsScreen>
                               style: const TextStyle(
                                 fontSize: 11,
                                 fontWeight: FontWeight.w700,
+                                color: StorkTheme.textMuted,
+                              ),
+                            ),
+                          if (isWallet && perBuyerLimit > 0)
+                            Text(
+                              '• Used $timesUsed/$perBuyerLimit',
+                              style: const TextStyle(
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w600,
                                 color: StorkTheme.textMuted,
                               ),
                             ),

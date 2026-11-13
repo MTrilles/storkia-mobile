@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import '../config/api_config.dart';
@@ -13,6 +14,9 @@ import 'checkout_success_screen.dart';
 import 'points_rewards_screen.dart';
 
 typedef JsonMap = Map<String, dynamic>;
+typedef IntStringMap = Map<int, String>;
+typedef IntControllerMap = Map<int, TextEditingController>;
+typedef StringMap = Map<String, String>;
 
 class CheckoutScreen extends ConsumerStatefulWidget {
   final String baseUrl;
@@ -41,33 +45,40 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
   bool _isSubmitting = false;
   int _previewRequestSeq = 0;
   Timer? _autoSyncTimer;
+  String? _lastErrorMessage;
 
   JsonMap? _checkoutData;
   Address? _selectedAddress;
   bool _isAddressServiceable = true;
   String? _idempotencyKey;
   String? _priceSignature;
-
   double _buyerWalletBalance = 0.0;
+
   int _buyerCoinsBalance = 0;
   int _maxRedeemableCoins = 0;
   int _minRedeemableCoins = 10;
   bool _useStorkiaCoins = false;
   int _coinsToUse = 0;
+  String? _coinsValidationMessage;
   final TextEditingController _coinsInputController = TextEditingController();
 
-  final Map<int, String> _paymentMethods = {};
-  final Map<int, TextEditingController> _noteControllers = {};
-  final Map<int, TextEditingController> _storeVoucherControllers = {};
-  final Map<int, String> _appliedStoreVouchers = {};
+  final IntStringMap _paymentMethods = {};
+  final IntControllerMap _noteControllers = {};
+  final IntControllerMap _storeVoucherControllers = {};
+  final IntStringMap _appliedStoreVouchers = {};
+  final Set<String> _touchedSlots = <String>{};
+
+  final IntStringMap _recommendedStoreVouchers = {};
+  String _recommendedPlatformVoucher = '';
+  String _recommendedShippingVoucher = '';
 
   final TextEditingController _platformVoucherController =
       TextEditingController();
   final TextEditingController _shippingVoucherController =
       TextEditingController();
-
   String _appliedPlatformVoucherCode = '';
   String _appliedShippingVoucherCode = '';
+
   List<String> _voucherNotices = [];
   List<JsonMap> _availableVouchers = [];
 
@@ -180,21 +191,24 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
         0.0;
 
     double totalStoreAndBundleDisc = 0.0;
+
     for (final rawPkg in rawPackages) {
       if (rawPkg is! Map) continue;
       final sellerMap = rawPkg['seller_profile'] is Map
-          ? Map<String, dynamic>.from(rawPkg['seller_profile'] as Map)
+          ? JsonMap.from(rawPkg['seller_profile'] as Map)
           : <String, dynamic>{};
       final int spId = int.tryParse(sellerMap['id']?.toString() ?? '0') ?? 0;
       final double pkgSub =
           double.tryParse(rawPkg['subtotal']?.toString() ?? '0') ?? 0.0;
       final double bundleDisc =
           double.tryParse(rawPkg['bundle_discount']?.toString() ?? '0') ?? 0.0;
+
       final String storeCode = _appliedStoreVouchers[spId] ?? '';
       final storeVoucher =
           _findAvailableVoucher(storeCode, scope: 'store', sellerId: spId);
       final double storeDisc = _computeVoucherDiscount(
           storeVoucher, (pkgSub - bundleDisc).clamp(0.0, double.infinity));
+
       totalStoreAndBundleDisc += (bundleDisc + storeDisc);
     }
 
@@ -231,27 +245,75 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
     });
   }
 
+  Future<Address?> _resolveDefaultAddressSilently() async {
+    try {
+      final response = await http.get(
+        Uri.parse('$_domain/api/v1/addresses'),
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Accept': 'application/json',
+        },
+      ).timeout(const Duration(seconds: 6));
+
+      if (response.statusCode == 200) {
+        final body = json.decode(response.body);
+        final dynamic raw = body is Map ? (body['data'] ?? body) : body;
+        List<dynamic> list = [];
+        if (raw is List) {
+          list = raw;
+        } else if (raw is Map && raw['addresses'] is List) {
+          list = raw['addresses'] as List<dynamic>;
+        }
+        final List<Address> parsed = [
+          for (final item in list)
+            if (item is Map) Address.fromJson(JsonMap.from(item)),
+        ];
+        if (parsed.isNotEmpty) {
+          return parsed.firstWhere(
+            (a) => a.isDefault,
+            orElse: () => parsed.first,
+          );
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
   Future<void> _fetchPreview({int? addressId, bool silent = true}) async {
     final int reqId = ++_previewRequestSeq;
     final bool showFullLoader = !silent && _checkoutData == null;
+
     if (showFullLoader) {
-      setState(() => _isLoading = true);
+      setState(() {
+        _isLoading = true;
+        _lastErrorMessage = null;
+      });
     } else if (mounted) {
       setState(() => _isSyncingPreview = true);
     }
 
     try {
+      int? targetAddressId = addressId ?? _selectedAddress?.id;
+      if (targetAddressId == null) {
+        final preResolved = await _resolveDefaultAddressSilently();
+        if (preResolved != null) {
+          _selectedAddress ??= preResolved;
+          targetAddressId = preResolved.id;
+        }
+      }
+
       final JsonMap payload = {
         'mode': widget.mode,
         'use_storkia_coins': _useStorkiaCoins,
+        'touched_slots': _touchedSlots.toList(),
       };
       if (_useStorkiaCoins && _coinsToUse > 0) {
         payload['coins_to_use'] = _coinsToUse;
       }
 
-      final targetAddressId = addressId ?? _selectedAddress?.id;
       if (targetAddressId != null) {
         payload['address_id'] = targetAddressId;
+        payload['user_address_id'] = targetAddressId;
       }
 
       if (widget.mode == 'cart' && widget.cartIds != null) {
@@ -260,7 +322,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
         payload.addAll(widget.buyNowData!);
       }
 
-      final Map<String, String> storeCodes = {};
+      final StringMap storeCodes = {};
       _appliedStoreVouchers.forEach((spId, code) {
         if (code.trim().isNotEmpty) {
           storeCodes[spId.toString()] = code.trim().toUpperCase();
@@ -268,8 +330,8 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
       });
       if (storeCodes.isNotEmpty) {
         payload['store_vouchers'] = storeCodes;
+        payload['store_voucher_codes'] = storeCodes;
       }
-
       if (_appliedPlatformVoucherCode.trim().isNotEmpty) {
         payload['platform_voucher_code'] =
             _appliedPlatformVoucherCode.trim().toUpperCase();
@@ -294,11 +356,14 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
       if (!mounted || reqId != _previewRequestSeq) return;
       final body = json.decode(response.body);
 
-      if (response.statusCode == 200 &&
-          body is Map &&
-          body['success'] == true &&
-          body['data'] is Map) {
-        final data = Map<String, dynamic>.from(body['data'] as Map);
+      final JsonMap? resolvedDataMap = (body is Map && body['data'] is Map)
+          ? JsonMap.from(body['data'] as Map)
+          : (body is Map && body['seller_packages'] is List
+              ? JsonMap.from(body)
+              : null);
+
+      if (response.statusCode == 200 && resolvedDataMap != null) {
+        final data = resolvedDataMap;
         final List<dynamic> rawPackages = _extractList(data['seller_packages']);
         final List<dynamic> rawAvailableVouchers =
             _extractList(data['available_vouchers']);
@@ -306,10 +371,10 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
 
         setState(() {
           _checkoutData = data;
+          _lastErrorMessage = null;
           _idempotencyKey ??= data['idempotency_key']?.toString();
           _priceSignature = data['price_signature']?.toString();
           _isAddressServiceable = data['is_address_serviceable'] != false;
-
           _buyerWalletBalance = double.tryParse(
                   data['buyer_wallet_balance']?.toString() ?? '0') ??
               0.0;
@@ -324,7 +389,6 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
 
           final int serverCoinsUsed =
               int.tryParse(data['overall_coins_used']?.toString() ?? '0') ?? 0;
-
           if (_maxRedeemableCoins < _minRedeemableCoins) {
             _useStorkiaCoins = false;
             _coinsToUse = 0;
@@ -337,17 +401,32 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
 
           if (data['selected_address'] is Map) {
             _selectedAddress = Address.fromJson(
-              Map<String, dynamic>.from(data['selected_address'] as Map),
+              JsonMap.from(data['selected_address'] as Map),
             );
-          } else {
-            _selectedAddress = null;
+          }
+
+          if (data['recommended_vouchers'] is Map) {
+            final rec = JsonMap.from(data['recommended_vouchers'] as Map);
+            _recommendedStoreVouchers.clear();
+            if (rec['store'] is Map) {
+              (rec['store'] as Map).forEach((k, v) {
+                final id = int.tryParse(k.toString()) ?? 0;
+                if (id > 0 && v != null) {
+                  _recommendedStoreVouchers[id] = v.toString().toUpperCase();
+                }
+              });
+            }
+            _recommendedPlatformVoucher =
+                (rec['platform']?.toString() ?? '').toUpperCase();
+            _recommendedShippingVoucher =
+                (rec['shipping']?.toString() ?? '').toUpperCase();
           }
 
           _availableVouchers = [
             for (final v in rawAvailableVouchers)
-              if (v is Map) Map<String, dynamic>.from(v),
+              if (v is Map) JsonMap.from(v),
           ];
-          _voucherNotices = rawNotices.map((e) => e.toString()).toList();
+          _voucherNotices = [for (final e in rawNotices) e.toString()];
 
           final appliedPlat = data['applied_platform_voucher'];
           _appliedPlatformVoucherCode =
@@ -361,9 +440,9 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
 
           for (final rawPkg in rawPackages) {
             if (rawPkg is! Map) continue;
-            final pkg = Map<String, dynamic>.from(rawPkg);
+            final pkg = JsonMap.from(rawPkg);
             final sellerProfile = pkg['seller_profile'] is Map
-                ? Map<String, dynamic>.from(pkg['seller_profile'] as Map)
+                ? JsonMap.from(pkg['seller_profile'] as Map)
                 : <String, dynamic>{};
             final int spId =
                 int.tryParse(sellerProfile['id']?.toString() ?? '0') ?? 0;
@@ -392,10 +471,12 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
             ? (body['message']?.toString() ??
                 'Failed to load checkout preview.')
             : 'Failed to load checkout preview.';
+        _lastErrorMessage = msg;
         _showError(msg);
       }
     } catch (_) {
       if (!silent) {
+        _lastErrorMessage = 'Network error occurred while loading checkout.';
         _showError('Network error occurred while loading checkout.');
       }
     } finally {
@@ -416,7 +497,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
     for (final rawPkg in packages) {
       if (rawPkg is! Map) continue;
       final sellerMap = rawPkg['seller_profile'] is Map
-          ? Map<String, dynamic>.from(rawPkg['seller_profile'] as Map)
+          ? JsonMap.from(rawPkg['seller_profile'] as Map)
           : <String, dynamic>{};
       final int spId = int.tryParse(sellerMap['id']?.toString() ?? '0') ?? 0;
       if ((_paymentMethods[spId] ?? 'COD') == 'WALLET') {
@@ -449,21 +530,21 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
     setState(() => _isSubmitting = true);
 
     try {
-      final Map<String, String> notesMap = {};
+      final StringMap notesMap = {};
       _noteControllers.forEach((spId, ctrl) {
         if (ctrl.text.trim().isNotEmpty) {
           notesMap[spId.toString()] = ctrl.text.trim();
         }
       });
 
-      final Map<String, String> storeVoucherMap = {};
+      final StringMap storeVoucherMap = {};
       _appliedStoreVouchers.forEach((spId, code) {
         if (code.trim().isNotEmpty) {
           storeVoucherMap[spId.toString()] = code.trim().toUpperCase();
         }
       });
 
-      final Map<String, String> payMethodsMap = {};
+      final StringMap payMethodsMap = {};
       _paymentMethods.forEach((spId, method) {
         payMethodsMap[spId.toString()] = method;
       });
@@ -471,6 +552,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
       final JsonMap bodyPayload = {
         'mode': widget.mode,
         'user_address_id': _selectedAddress!.id,
+        'address_id': _selectedAddress!.id,
         'idempotency_key': _idempotencyKey ?? '',
         if (_priceSignature != null) 'price_signature': _priceSignature,
         if (_appliedPlatformVoucherCode.isNotEmpty)
@@ -510,7 +592,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
           data['success'] == true) {
         syncAllBuyerCounters(ref, widget.token);
         final orderPayload = data['data'] is Map
-            ? Map<String, dynamic>.from(data['data'] as Map)
+            ? JsonMap.from(data['data'] as Map)
             : <String, dynamic>{
                 'id': data['order_id'],
                 'order_number': 'ORD-${data['order_id']}',
@@ -617,16 +699,53 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
             )
           : _checkoutData == null
               ? Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Text('Unable to load checkout details.'),
-                      const SizedBox(height: 12),
-                      ElevatedButton(
-                        onPressed: () => _fetchPreview(silent: false),
-                        child: const Text('Retry'),
-                      ),
-                    ],
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: 72,
+                          height: 72,
+                          decoration: BoxDecoration(
+                            color: StorkTheme.primary.withValues(alpha: 0.1),
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(
+                            Icons.shopping_bag_outlined,
+                            size: 36,
+                            color: StorkTheme.primary,
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+                        const Text(
+                          'Unable to load checkout details.',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w800,
+                            color: StorkTheme.primaryDark,
+                          ),
+                        ),
+                        if (_lastErrorMessage != null &&
+                            _lastErrorMessage!.isNotEmpty) ...[
+                          const SizedBox(height: 6),
+                          Text(
+                            _lastErrorMessage!,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                              fontSize: 12.5,
+                              color: StorkTheme.textMuted,
+                            ),
+                          ),
+                        ],
+                        const SizedBox(height: 16),
+                        ElevatedButton.icon(
+                          onPressed: () => _fetchPreview(silent: false),
+                          icon: const Icon(Icons.refresh_rounded, size: 18),
+                          label: const Text('Retry'),
+                        ),
+                      ],
+                    ),
                   ),
                 )
               : ListView(
@@ -638,23 +757,40 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                         padding: const EdgeInsets.all(12),
                         decoration: BoxDecoration(
                           color: StorkTheme.warning.withValues(alpha: 0.14),
-                          borderRadius: BorderRadius.circular(14),
+                          borderRadius: BorderRadius.circular(16),
                           border: Border.all(
                             color: StorkTheme.warning.withValues(alpha: 0.35),
                           ),
                         ),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
-                          children: _voucherNotices
-                              .map((n) => Text(
-                                    n,
-                                    style: const TextStyle(
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.w700,
-                                      color: StorkTheme.textMain,
+                          children: [
+                            for (final n in _voucherNotices)
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 4),
+                                child: Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Icon(
+                                      Icons.info_outline_rounded,
+                                      size: 15,
+                                      color: Color(0xFF92400E),
                                     ),
-                                  ))
-                              .toList(),
+                                    const SizedBox(width: 6),
+                                    Expanded(
+                                      child: Text(
+                                        n,
+                                        style: const TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w700,
+                                          color: StorkTheme.textMain,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                          ],
                         ),
                       ),
                     _buildAddressSection(),
@@ -663,7 +799,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                       if (packages[i] is Map)
                         _buildSellerPackage(
                           i,
-                          Map<String, dynamic>.from(packages[i] as Map),
+                          JsonMap.from(packages[i] as Map),
                         ),
                     _buildPlatformAndShippingVouchersSection(),
                     const SizedBox(height: 12),
@@ -683,8 +819,8 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                     top: BorderSide(color: StorkTheme.borderSubtle)),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.05),
-                    blurRadius: 12,
+                    color: Colors.black.withValues(alpha: 0.06),
+                    blurRadius: 14,
                     offset: const Offset(0, -4),
                   ),
                 ],
@@ -704,7 +840,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                             style: TextStyle(
                               fontSize: 11.5,
                               color: StorkTheme.textMuted,
-                              fontWeight: FontWeight.w600,
+                              fontWeight: FontWeight.w700,
                             ),
                           ),
                           Text(
@@ -721,22 +857,33 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                       ),
                     ),
                     const SizedBox(width: 12),
-                    ElevatedButton(
-                      onPressed: canSubmit ? _placeOrder : null,
-                      style: ElevatedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 26, vertical: 14),
+                    Container(
+                      height: 50,
+                      decoration: BoxDecoration(
+                        gradient: canSubmit ? StorkTheme.brandGradient : null,
+                        borderRadius: BorderRadius.circular(14),
                       ),
-                      child: _isSubmitting
-                          ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(
-                                color: Colors.white,
-                                strokeWidth: 2,
-                              ),
-                            )
-                          : const Text('Place Order'),
+                      child: ElevatedButton(
+                        onPressed: canSubmit ? _placeOrder : null,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.transparent,
+                          shadowColor: Colors.transparent,
+                          padding: const EdgeInsets.symmetric(horizontal: 26),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                        ),
+                        child: _isSubmitting
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  color: Colors.white,
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Text('Place Order'),
+                      ),
                     ),
                   ],
                 ),
@@ -752,26 +899,39 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
           color: StorkTheme.surface,
-          borderRadius: BorderRadius.circular(18),
+          borderRadius: BorderRadius.circular(20),
           border: Border.all(
             color: !_isAddressServiceable
                 ? StorkTheme.danger
                 : StorkTheme.borderSubtle,
+            width: !_isAddressServiceable ? 1.5 : 1,
           ),
+          boxShadow: StorkTheme.softCardShadow,
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
               children: [
-                const Icon(Icons.location_on_rounded,
-                    color: StorkTheme.primary, size: 22),
+                Container(
+                  width: 36,
+                  height: 36,
+                  decoration: BoxDecoration(
+                    gradient: StorkTheme.brandGradient,
+                    borderRadius: BorderRadius.circular(11),
+                  ),
+                  child: const Icon(
+                    Icons.location_on_rounded,
+                    color: Colors.white,
+                    size: 19,
+                  ),
+                ),
                 const SizedBox(width: 10),
                 const Expanded(
                   child: Text(
                     'Delivery Address',
                     style: TextStyle(
-                      fontSize: 14,
+                      fontSize: 14.5,
                       fontWeight: FontWeight.w800,
                       color: StorkTheme.primaryDark,
                     ),
@@ -779,21 +939,25 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                 ),
                 TextButton(
                   onPressed: _navigateAndSelectAddress,
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                  ),
                   child: Text(
                     _selectedAddress != null ? 'Change' : 'Add Address',
                     style: const TextStyle(
                       fontSize: 12.5,
-                      fontWeight: FontWeight.w700,
+                      fontWeight: FontWeight.w800,
                     ),
                   ),
                 ),
               ],
             ),
+            const SizedBox(height: 8),
             if (_selectedAddress != null) ...[
               Text(
-                '${_selectedAddress!.recipientName}  •  +63 ${_selectedAddress!.phoneNumber.replaceFirst(RegExp(r'^0'), '')}',
+                '${_selectedAddress!.recipientName}  •  +63 ${_selectedAddress!.phoneNumber.replaceFirst(RegExp(r'^(\+?63|0)'), '')}',
                 style: const TextStyle(
-                  fontWeight: FontWeight.w700,
+                  fontWeight: FontWeight.w800,
                   fontSize: 13.5,
                   color: StorkTheme.textMain,
                 ),
@@ -804,17 +968,24 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                 style: const TextStyle(
                   fontSize: 12.5,
                   color: StorkTheme.textMuted,
-                  height: 1.35,
+                  height: 1.38,
                 ),
               ),
               if (!_isAddressServiceable) ...[
                 const SizedBox(height: 8),
-                const Text(
-                  'Delivery to this municipality/province is currently unserviceable by our partner logistics hubs. Please select another address.',
-                  style: TextStyle(
-                    fontSize: 11.5,
-                    fontWeight: FontWeight.w700,
-                    color: StorkTheme.danger,
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: StorkTheme.danger.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Text(
+                    'Delivery to this municipality/province is currently unserviceable by our partner logistics hubs. Please select another address.',
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w700,
+                      color: StorkTheme.danger,
+                    ),
                   ),
                 ),
               ],
@@ -838,14 +1009,14 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
 
   Widget _buildSellerPackage(int pkgIndex, JsonMap pkg) {
     final sellerProfile = pkg['seller_profile'] is Map
-        ? Map<String, dynamic>.from(pkg['seller_profile'] as Map)
+        ? JsonMap.from(pkg['seller_profile'] as Map)
         : <String, dynamic>{};
     final int spId = int.tryParse(sellerProfile['id']?.toString() ?? '0') ?? 0;
     final String storeName =
         sellerProfile['business_name']?.toString() ?? 'Store';
     final List<dynamic> items = _extractList(pkg['items']);
     final JsonMap shipping = pkg['shipping'] is Map
-        ? Map<String, dynamic>.from(pkg['shipping'] as Map)
+        ? JsonMap.from(pkg['shipping'] as Map)
         : <String, dynamic>{};
 
     final storeVouchers = _availableVouchers
@@ -856,20 +1027,37 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
 
     final selectedMethod = _paymentMethods[spId] ?? 'COD';
     final currentStoreCode = _appliedStoreVouchers[spId] ?? '';
+    final String recommendedStoreCode = _recommendedStoreVouchers[spId] ?? '';
+
     final double bundleDisc =
         double.tryParse(pkg['bundle_discount']?.toString() ?? '0') ?? 0.0;
     final String? bundleTitle = pkg['bundle_title']?.toString();
+    final double storeDisc =
+        double.tryParse(pkg['store_discount']?.toString() ?? '0') ?? 0.0;
+    final double platDisc =
+        double.tryParse(pkg['platform_discount']?.toString() ?? '0') ?? 0.0;
     final int pkgCoinsUsed =
         int.tryParse(pkg['coins_used']?.toString() ?? '0') ?? 0;
     final double pkgCoinsDisc =
         double.tryParse(pkg['coins_discount']?.toString() ?? '0') ?? 0.0;
+    final double origShippingFee = double.tryParse(
+            (pkg['original_shipping_fee'] ??
+                    shipping['shipping_fee'] ??
+                    pkg['net_shipping_fee'])
+                .toString()) ??
+        0.0;
+    final double pkgShipDiscount =
+        double.tryParse(pkg['shipping_discount']?.toString() ?? '0') ?? 0.0;
+    final double netShippingFee =
+        double.tryParse(pkg['net_shipping_fee']?.toString() ?? '0') ?? 0.0;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
       decoration: BoxDecoration(
         color: StorkTheme.surface,
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(20),
         border: Border.all(color: StorkTheme.borderSubtle),
+        boxShadow: StorkTheme.softCardShadow,
       ),
       clipBehavior: Clip.antiAlias,
       child: Column(
@@ -888,7 +1076,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                         padding: const EdgeInsets.symmetric(
                             horizontal: 8, vertical: 3),
                         decoration: BoxDecoration(
-                          color: StorkTheme.primaryDark,
+                          gradient: StorkTheme.brandGradient,
                           borderRadius: BorderRadius.circular(8),
                         ),
                         child: Text(
@@ -916,11 +1104,16 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                     ],
                   ),
                 ),
-                Text(
-                  'From: ${sellerProfile['municipality'] ?? ''}',
-                  style: const TextStyle(
-                    fontSize: 11,
-                    color: StorkTheme.textMuted,
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(
+                    'From: ${sellerProfile['municipality'] ?? ''}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: StorkTheme.textMuted,
+                    ),
                   ),
                 ),
               ],
@@ -934,24 +1127,30 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                 child: Row(
                   children: [
                     Container(
-                      width: 56,
-                      height: 56,
+                      width: 58,
+                      height: 58,
                       decoration: BoxDecoration(
                         color: StorkTheme.surfaceSubtle,
-                        borderRadius: BorderRadius.circular(10),
+                        borderRadius: BorderRadius.circular(12),
                         border: Border.all(color: StorkTheme.borderSubtle),
                       ),
                       child: rawItem['image_path'] != null
                           ? ClipRRect(
-                              borderRadius: BorderRadius.circular(9),
+                              borderRadius: BorderRadius.circular(11),
                               child: Image.network(
                                 ApiConfig.storageUrl(
                                     rawItem['image_path'].toString(), _domain),
                                 fit: BoxFit.cover,
+                                errorBuilder: (_, __, ___) => const Icon(
+                                  Icons.image_not_supported_outlined,
+                                  color: StorkTheme.textMuted,
+                                ),
                               ),
                             )
-                          : const Icon(Icons.inventory_2_outlined,
-                              color: StorkTheme.textMuted),
+                          : const Icon(
+                              Icons.inventory_2_outlined,
+                              color: StorkTheme.textMuted,
+                            ),
                     ),
                     const SizedBox(width: 12),
                     Expanded(
@@ -967,7 +1166,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
                               fontSize: 13,
-                              fontWeight: FontWeight.w700,
+                              fontWeight: FontWeight.w800,
                               color: StorkTheme.textMain,
                             ),
                           ),
@@ -980,6 +1179,8 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                                   .where((e) =>
                                       e != null && e.toString().isNotEmpty)
                                   .join(' / '),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
                               style: const TextStyle(
                                 fontSize: 11,
                                 color: StorkTheme.textMuted,
@@ -1014,13 +1215,18 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
-                              Text(
-                                '₱${_formatMoney(rawItem['discounted_unit_price'])} × ${rawItem['quantity']}',
-                                style: const TextStyle(
-                                  fontSize: 11.5,
-                                  color: StorkTheme.textMuted,
+                              Flexible(
+                                child: Text(
+                                  '₱${_formatMoney(rawItem['discounted_unit_price'])} × ${rawItem['quantity']}',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontSize: 11.5,
+                                    color: StorkTheme.textMuted,
+                                  ),
                                 ),
                               ),
+                              const SizedBox(width: 8),
                               Text(
                                 '₱${_formatMoney(rawItem['line_total'])}',
                                 style: const TextStyle(
@@ -1067,6 +1273,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                             ),
                           ),
                         ),
+                        const SizedBox(width: 8),
                         Text(
                           '-₱${_formatMoney(bundleDisc)}',
                           style: const TextStyle(
@@ -1085,21 +1292,41 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                   decoration: InputDecoration(
                     labelText: 'Optional Note to $storeName',
                     counterText: '',
+                    prefixIcon: const Icon(Icons.edit_note_rounded, size: 20),
                   ),
                 ),
                 const SizedBox(height: 12),
-                Text(
-                  'STORE VOUCHER ($storeName)',
-                  style: const TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w800,
-                    color: StorkTheme.primaryDark,
-                  ),
+                Wrap(
+                  alignment: WrapAlignment.spaceBetween,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  spacing: 8,
+                  runSpacing: 4,
+                  children: [
+                    Text(
+                      'STORE VOUCHER ($storeName)',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                        color: StorkTheme.primaryDark,
+                      ),
+                    ),
+                    if (recommendedStoreCode.isNotEmpty)
+                      Text(
+                        'Preferred: $recommendedStoreCode',
+                        style: const TextStyle(
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w800,
+                          color: StorkTheme.primary,
+                        ),
+                      ),
+                  ],
                 ),
                 const SizedBox(height: 8),
                 if (storeVouchers.isNotEmpty) ...[
                   SizedBox(
-                    height: 60,
+                    height: 78,
                     child: ListView(
                       scrollDirection: Axis.horizontal,
                       children: [
@@ -1108,10 +1335,12 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                           title: 'No Store Voucher',
                           subtitle: 'Skip discount',
                           isSelected: currentStoreCode.isEmpty,
+                          isMostPreferred: false,
                           activeColor: StorkTheme.primary,
                           onTap: () {
                             if (currentStoreCode.isEmpty) return;
                             setState(() {
+                              _touchedSlots.add('store_$spId');
                               _appliedStoreVouchers[spId] = '';
                               _storeVoucherControllers[spId]?.clear();
                             });
@@ -1126,6 +1355,11 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                             subtitle: 'Min ₱${_formatMoney(sv['min_spend'])}',
                             isSelected: currentStoreCode.toUpperCase() ==
                                 (sv['code']?.toString().toUpperCase() ?? ''),
+                            isMostPreferred: sv['is_most_preferred'] == true ||
+                                (recommendedStoreCode.isNotEmpty &&
+                                    recommendedStoreCode ==
+                                        (sv['code']?.toString().toUpperCase() ??
+                                            '')),
                             activeColor: StorkTheme.primary,
                             onTap: () {
                               final c = sv['code']?.toString() ?? '';
@@ -1134,6 +1368,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                                 return;
                               }
                               setState(() {
+                                _touchedSlots.add('store_$spId');
                                 _appliedStoreVouchers[spId] = c;
                                 _storeVoucherControllers[spId]?.text = c;
                               });
@@ -1161,6 +1396,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                     ElevatedButton(
                       onPressed: () {
                         setState(() {
+                          _touchedSlots.add('store_$spId');
                           _appliedStoreVouchers[spId] =
                               _storeVoucherControllers[spId]!
                                   .text
@@ -1184,6 +1420,8 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                     Expanded(
                       child: Text(
                         'PAYMENT METHOD FOR ${storeName.toUpperCase()} *',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
                           fontSize: 11,
                           fontWeight: FontWeight.w800,
@@ -1244,6 +1482,8 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                             children: [
                               Text(
                                 'Cash on Delivery',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
                                   fontWeight: FontWeight.w800,
                                   fontSize: 12.5,
@@ -1252,6 +1492,8 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                               SizedBox(height: 2),
                               Text(
                                 'Pay cash upon delivery',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
                                   fontSize: 10.5,
                                   color: StorkTheme.textMuted,
@@ -1287,6 +1529,8 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                             children: [
                               const Text(
                                 'Storkia E-Wallet',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
                                   fontWeight: FontWeight.w800,
                                   fontSize: 12.5,
@@ -1313,18 +1557,81 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                   ],
                 ),
                 const Divider(height: 22),
+                if (storeDisc > 0) ...[
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Flexible(
+                        child: Text(
+                          'Store Voucher ($currentStoreCode)',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: StorkTheme.success,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        '-₱${_formatMoney(storeDisc)}',
+                        style: const TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w800,
+                          color: StorkTheme.success,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                ],
+                if (platDisc > 0) ...[
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Flexible(
+                        child: Text(
+                          'Platform Voucher Share',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: Color(0xFF6B21A8),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        '-₱${_formatMoney(platDisc)}',
+                        style: const TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w800,
+                          color: Color(0xFF6B21A8),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                ],
                 if (pkgCoinsUsed > 0) ...[
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text(
-                        'Storkia Coins Redeemed ($pkgCoinsUsed Coins)',
-                        style: const TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w700,
-                          color: Color(0xFFB45309),
+                      Flexible(
+                        child: Text(
+                          'Storkia Coins Redeemed ($pkgCoinsUsed Coins)',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: Color(0xFFB45309),
+                          ),
                         ),
                       ),
+                      const SizedBox(width: 8),
                       Text(
                         '-₱${_formatMoney(pkgCoinsDisc)}',
                         style: const TextStyle(
@@ -1340,19 +1647,45 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text(
-                      'Shipping (${shipping['tier_label'] ?? 'Standard'} • ${pkg['total_weight']} kg)',
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: StorkTheme.textMuted,
+                    Expanded(
+                      child: Text(
+                        'Shipping (${shipping['tier_label'] ?? 'Standard'} • ${pkg['total_weight']} kg)',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: StorkTheme.textMuted,
+                        ),
                       ),
                     ),
-                    Text(
-                      '₱${_formatMoney(pkg['net_shipping_fee'])}',
-                      style: const TextStyle(
-                        fontSize: 12.5,
-                        fontWeight: FontWeight.w700,
-                      ),
+                    const SizedBox(width: 8),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (pkgShipDiscount > 0) ...[
+                          Text(
+                            '₱${_formatMoney(origShippingFee)}',
+                            style: const TextStyle(
+                              fontSize: 11,
+                              decoration: TextDecoration.lineThrough,
+                              color: StorkTheme.textMuted,
+                            ),
+                          ),
+                          const SizedBox(width: 5),
+                        ],
+                        Text(
+                          netShippingFee <= 0.001
+                              ? 'FREE (₱0.00)'
+                              : '₱${_formatMoney(netShippingFee)}',
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w800,
+                            color: pkgShipDiscount > 0
+                                ? const Color(0xFF047857)
+                                : StorkTheme.textMain,
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),
@@ -1394,12 +1727,13 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: StorkTheme.surface,
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(20),
         border: Border.all(
           color: _useStorkiaCoins
               ? const Color(0xFFD97706)
               : StorkTheme.borderSubtle,
         ),
+        boxShadow: StorkTheme.softCardShadow,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1451,6 +1785,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                     : (val) {
                         setState(() {
                           _useStorkiaCoins = val;
+                          _coinsValidationMessage = null;
                           if (val && _coinsToUse < _minRedeemableCoins) {
                             _coinsToUse = _maxRedeemableCoins;
                             _coinsInputController.text = '$_coinsToUse';
@@ -1500,6 +1835,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                   setState(() {
                     _coinsToUse = rounded;
                     _coinsInputController.text = '$rounded';
+                    _coinsValidationMessage = null;
                   });
                   _applyOptimisticLocalCalculation();
                 },
@@ -1511,9 +1847,12 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                   child: TextField(
                     controller: _coinsInputController,
                     keyboardType: TextInputType.number,
+                    inputFormatters: [
+                      FilteringTextInputFormatter.digitsOnly,
+                    ],
                     decoration: InputDecoration(
                       labelText:
-                          'Enter whole coins ($_minRedeemableCoins - $_maxRedeemableCoins)',
+                          'Coins ($_minRedeemableCoins - $_maxRedeemableCoins)',
                     ),
                   ),
                 ),
@@ -1523,6 +1862,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                     setState(() {
                       _coinsToUse = _maxRedeemableCoins;
                       _coinsInputController.text = '$_maxRedeemableCoins';
+                      _coinsValidationMessage = null;
                     });
                     _applyOptimisticLocalCalculation();
                     _fetchPreview(silent: true);
@@ -1533,13 +1873,28 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                 ElevatedButton(
                   onPressed: () {
                     final parsed =
-                        int.tryParse(_coinsInputController.text.trim()) ??
-                            _maxRedeemableCoins;
+                        int.tryParse(_coinsInputController.text.trim());
+                    if (parsed == null) {
+                      setState(() {
+                        _coinsValidationMessage =
+                            'Enter a valid whole number between $_minRedeemableCoins and $_maxRedeemableCoins.';
+                      });
+                      return;
+                    }
+                    String? note;
+                    if (parsed < _minRedeemableCoins) {
+                      note =
+                          'Minimum redeemable is $_minRedeemableCoins coins.';
+                    } else if (parsed > _maxRedeemableCoins) {
+                      note =
+                          'Maximum redeemable for this order is $_maxRedeemableCoins coins (25% cap).';
+                    }
                     final clamped =
                         parsed.clamp(_minRedeemableCoins, _maxRedeemableCoins);
                     setState(() {
                       _coinsToUse = clamped;
                       _coinsInputController.text = '$clamped';
+                      _coinsValidationMessage = note;
                     });
                     _applyOptimisticLocalCalculation();
                     _fetchPreview(silent: true);
@@ -1551,6 +1906,17 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                 ),
               ],
             ),
+            if (_coinsValidationMessage != null) ...[
+              const SizedBox(height: 6),
+              Text(
+                _coinsValidationMessage!,
+                style: const TextStyle(
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFFB45309),
+                ),
+              ),
+            ],
           ],
         ],
       ),
@@ -1569,33 +1935,65 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: StorkTheme.surface,
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(20),
         border: Border.all(color: StorkTheme.borderSubtle),
+        boxShadow: StorkTheme.softCardShadow,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            'Platform & Free Shipping Vouchers',
-            style: TextStyle(
-              fontSize: 15,
-              fontWeight: FontWeight.w800,
-              color: StorkTheme.primaryDark,
-            ),
+          const Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Expanded(
+                child: Text(
+                  'Platform & Free Shipping Vouchers',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w800,
+                    color: StorkTheme.primaryDark,
+                  ),
+                ),
+              ),
+              Text(
+                'Auto-Picks Best Savings',
+                style: TextStyle(
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.w800,
+                  color: StorkTheme.primary,
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 12),
-          const Text(
-            'PLATFORM VOUCHER (ADMIN-SPONSORED)',
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w800,
-              color: Color(0xFF581C87),
-            ),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Expanded(
+                child: Text(
+                  'PLATFORM VOUCHER (ADMIN-SPONSORED)',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF581C87),
+                  ),
+                ),
+              ),
+              if (_recommendedPlatformVoucher.isNotEmpty)
+                Text(
+                  'Preferred: $_recommendedPlatformVoucher',
+                  style: const TextStyle(
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF6B21A8),
+                  ),
+                ),
+            ],
           ),
           const SizedBox(height: 8),
           if (platformVouchers.isNotEmpty) ...[
             SizedBox(
-              height: 60,
+              height: 78,
               child: ListView(
                 scrollDirection: Axis.horizontal,
                 children: [
@@ -1604,10 +2002,12 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                     title: 'No Platform Voucher',
                     subtitle: 'None',
                     isSelected: _appliedPlatformVoucherCode.isEmpty,
+                    isMostPreferred: false,
                     activeColor: const Color(0xFF6B21A8),
                     onTap: () {
                       if (_appliedPlatformVoucherCode.isEmpty) return;
                       setState(() {
+                        _touchedSlots.add('platform');
                         _appliedPlatformVoucherCode = '';
                         _platformVoucherController.clear();
                       });
@@ -1622,6 +2022,10 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                       subtitle: 'Min ₱${_formatMoney(pv['min_spend'])}',
                       isSelected: _appliedPlatformVoucherCode.toUpperCase() ==
                           (pv['code']?.toString().toUpperCase() ?? ''),
+                      isMostPreferred: pv['is_most_preferred'] == true ||
+                          (_recommendedPlatformVoucher.isNotEmpty &&
+                              _recommendedPlatformVoucher ==
+                                  (pv['code']?.toString().toUpperCase() ?? '')),
                       activeColor: const Color(0xFF6B21A8),
                       onTap: () {
                         final c = pv['code']?.toString() ?? '';
@@ -1630,6 +2034,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                           return;
                         }
                         setState(() {
+                          _touchedSlots.add('platform');
                           _appliedPlatformVoucherCode = c;
                           _platformVoucherController.text = c;
                         });
@@ -1657,6 +2062,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
               ElevatedButton(
                 onPressed: () {
                   setState(() {
+                    _touchedSlots.add('platform');
                     _appliedPlatformVoucherCode =
                         _platformVoucherController.text.trim().toUpperCase();
                   });
@@ -1671,18 +2077,34 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
             ],
           ),
           const SizedBox(height: 16),
-          const Text(
-            'FREE SHIPPING VOUCHER',
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w800,
-              color: Color(0xFF065F46),
-            ),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Expanded(
+                child: Text(
+                  'FREE SHIPPING VOUCHER',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF065F46),
+                  ),
+                ),
+              ),
+              if (_recommendedShippingVoucher.isNotEmpty)
+                Text(
+                  'Preferred: $_recommendedShippingVoucher',
+                  style: const TextStyle(
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF047857),
+                  ),
+                ),
+            ],
           ),
           const SizedBox(height: 8),
           if (shippingVouchers.isNotEmpty) ...[
             SizedBox(
-              height: 60,
+              height: 78,
               child: ListView(
                 scrollDirection: Axis.horizontal,
                 children: [
@@ -1691,10 +2113,12 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                     title: 'No Shipping Voucher',
                     subtitle: 'None',
                     isSelected: _appliedShippingVoucherCode.isEmpty,
+                    isMostPreferred: false,
                     activeColor: const Color(0xFF047857),
                     onTap: () {
                       if (_appliedShippingVoucherCode.isEmpty) return;
                       setState(() {
+                        _touchedSlots.add('shipping');
                         _appliedShippingVoucherCode = '';
                         _shippingVoucherController.clear();
                       });
@@ -1709,6 +2133,11 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                       subtitle: 'Min ₱${_formatMoney(shv['min_spend'])}',
                       isSelected: _appliedShippingVoucherCode.toUpperCase() ==
                           (shv['code']?.toString().toUpperCase() ?? ''),
+                      isMostPreferred: shv['is_most_preferred'] == true ||
+                          (_recommendedShippingVoucher.isNotEmpty &&
+                              _recommendedShippingVoucher ==
+                                  (shv['code']?.toString().toUpperCase() ??
+                                      '')),
                       activeColor: const Color(0xFF047857),
                       onTap: () {
                         final c = shv['code']?.toString() ?? '';
@@ -1717,6 +2146,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                           return;
                         }
                         setState(() {
+                          _touchedSlots.add('shipping');
                           _appliedShippingVoucherCode = c;
                           _shippingVoucherController.text = c;
                         });
@@ -1744,6 +2174,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
               ElevatedButton(
                 onPressed: () {
                   setState(() {
+                    _touchedSlots.add('shipping');
                     _appliedShippingVoucherCode =
                         _shippingVoucherController.text.trim().toUpperCase();
                   });
@@ -1767,6 +2198,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
     required String title,
     required String subtitle,
     required bool isSelected,
+    required bool isMostPreferred,
     required Color activeColor,
     required VoidCallback onTap,
   }) {
@@ -1774,7 +2206,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
       onTap: onTap,
       child: Container(
         margin: const EdgeInsets.only(right: 10),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         decoration: BoxDecoration(
           color: isSelected
               ? activeColor.withValues(alpha: 0.08)
@@ -1788,9 +2220,29 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
           children: [
+            if (isMostPreferred)
+              Container(
+                margin: const EdgeInsets.only(bottom: 3),
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                decoration: BoxDecoration(
+                  color: activeColor,
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: const Text(
+                  '★ MOST PREFERRED',
+                  style: TextStyle(
+                    fontSize: 8.5,
+                    fontWeight: FontWeight.w900,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
             Text(
               code.isNotEmpty ? '$code • $title' : title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w800,
@@ -1799,6 +2251,8 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
             ),
             Text(
               subtitle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: const TextStyle(
                 fontSize: 10.5,
                 color: StorkTheme.textMuted,
@@ -1831,8 +2285,9 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: StorkTheme.surface,
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(20),
         border: Border.all(color: StorkTheme.borderSubtle),
+        boxShadow: StorkTheme.softCardShadow,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1852,7 +2307,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
           ),
           const SizedBox(height: 8),
           _buildSummaryRow(
-            'Shipping Subtotal',
+            'Original Shipping Subtotal',
             '₱${_formatMoney(_checkoutData!['overall_shipping'])}',
           ),
           if (storeDisc > 0) ...[
@@ -1901,14 +2356,17 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text(
-                'Total Payable Amount',
-                style: TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.w800,
-                  color: StorkTheme.textMain,
+              const Expanded(
+                child: Text(
+                  'Total Payable Amount',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w800,
+                    color: StorkTheme.textMain,
+                  ),
                 ),
               ),
+              const SizedBox(width: 8),
               Text(
                 '₱${_formatMoney(_checkoutData!['overall_total'])}',
                 style: const TextStyle(

@@ -31,6 +31,7 @@ class _CategoryProductsScreenState extends State<CategoryProductsScreen> {
   List<String> _subcategories = [];
   String _selectedSubcategory = 'All';
   String _sortBy = 'newest';
+
   List<Product> _allCachedProducts = [];
   List<Product> _products = [];
   int _currentPage = 1;
@@ -202,6 +203,19 @@ class _CategoryProductsScreenState extends State<CategoryProductsScreen> {
     }
   }
 
+  String get _sortLabel {
+    switch (_sortBy) {
+      case 'price_asc':
+        return 'Price: Low to High';
+      case 'price_desc':
+        return 'Price: High to Low';
+      case 'az':
+        return 'Name: A to Z';
+      default:
+        return 'Newest First';
+    }
+  }
+
   void _onSubcategorySelected(String subcategory) {
     if (_selectedSubcategory == subcategory) return;
     setState(() {
@@ -226,6 +240,7 @@ class _CategoryProductsScreenState extends State<CategoryProductsScreen> {
   Widget build(BuildContext context) {
     final screenWidth = MediaQuery.sizeOf(context).width;
     final crossAxisCount = screenWidth >= 700 ? 3 : 2;
+    final childAspectRatio = screenWidth < 350 ? 0.63 : 0.68;
 
     return Scaffold(
       backgroundColor: StorkTheme.surfaceSubtle,
@@ -233,7 +248,7 @@ class _CategoryProductsScreenState extends State<CategoryProductsScreen> {
         title: Text(_categoryName.isEmpty ? 'Category' : _categoryName),
         actions: [
           PopupMenuButton<String>(
-            icon: const Icon(Icons.sort_rounded),
+            icon: const Icon(Icons.tune_rounded),
             tooltip: 'Sort Products',
             onSelected: (val) {
               setState(() {
@@ -256,7 +271,7 @@ class _CategoryProductsScreenState extends State<CategoryProductsScreen> {
         children: [
           if (_subcategories.isNotEmpty)
             Container(
-              height: 52,
+              height: 54,
               decoration: const BoxDecoration(
                 color: StorkTheme.surface,
                 border: Border(
@@ -274,13 +289,13 @@ class _CategoryProductsScreenState extends State<CategoryProductsScreen> {
                   final isSelected = _selectedSubcategory == filter;
                   return GestureDetector(
                     onTap: () => _onSubcategorySelected(filter),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 14),
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 180),
+                      padding: const EdgeInsets.symmetric(horizontal: 15),
                       alignment: Alignment.center,
                       decoration: BoxDecoration(
-                        color: isSelected
-                            ? StorkTheme.primary
-                            : StorkTheme.surfaceSubtle,
+                        gradient: isSelected ? StorkTheme.brandGradient : null,
+                        color: isSelected ? null : StorkTheme.surfaceSubtle,
                         borderRadius: BorderRadius.circular(20),
                         border: Border.all(
                           color: isSelected
@@ -294,7 +309,7 @@ class _CategoryProductsScreenState extends State<CategoryProductsScreen> {
                           color:
                               isSelected ? Colors.white : StorkTheme.textMain,
                           fontWeight:
-                              isSelected ? FontWeight.w700 : FontWeight.w500,
+                              isSelected ? FontWeight.w800 : FontWeight.w600,
                           fontSize: 12.5,
                         ),
                       ),
@@ -303,6 +318,51 @@ class _CategoryProductsScreenState extends State<CategoryProductsScreen> {
                 },
               ),
             ),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            decoration: const BoxDecoration(
+              color: StorkTheme.surface,
+              border: Border(
+                bottom: BorderSide(color: StorkTheme.borderSubtle),
+              ),
+            ),
+            child: Wrap(
+              alignment: WrapAlignment.spaceBetween,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 8,
+              runSpacing: 4,
+              children: [
+                Text(
+                  'Showing ${_products.length} product(s) in $_selectedSubcategory',
+                  style: const TextStyle(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w700,
+                    color: StorkTheme.textMuted,
+                  ),
+                ),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.sort_rounded,
+                      size: 14,
+                      color: StorkTheme.primary,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      _sortLabel,
+                      style: const TextStyle(
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w800,
+                        color: StorkTheme.primaryDark,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
           Expanded(
             child: _isLoading && _products.isEmpty
                 ? const Center(
@@ -316,14 +376,37 @@ class _CategoryProductsScreenState extends State<CategoryProductsScreen> {
                       slivers: [
                         const SliverToBoxAdapter(child: SizedBox(height: 14)),
                         _products.isEmpty
-                            ? const SliverToBoxAdapter(
+                            ? SliverToBoxAdapter(
                                 child: Padding(
-                                  padding: EdgeInsets.all(40.0),
+                                  padding: const EdgeInsets.all(40.0),
                                   child: Center(
-                                    child: Text(
-                                      'No products found in this subcategory.',
-                                      style: TextStyle(
-                                          color: StorkTheme.textMuted),
+                                    child: Column(
+                                      children: [
+                                        Container(
+                                          width: 68,
+                                          height: 68,
+                                          decoration: BoxDecoration(
+                                            color: StorkTheme.primary
+                                                .withValues(alpha: 0.1),
+                                            shape: BoxShape.circle,
+                                          ),
+                                          child: const Icon(
+                                            Icons.inventory_2_outlined,
+                                            size: 32,
+                                            color: StorkTheme.primary,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 12),
+                                        const Text(
+                                          'No products found in this subcategory',
+                                          textAlign: TextAlign.center,
+                                          style: TextStyle(
+                                            fontSize: 15,
+                                            fontWeight: FontWeight.w800,
+                                            color: StorkTheme.primaryDark,
+                                          ),
+                                        ),
+                                      ],
                                     ),
                                   ),
                                 ),
@@ -335,7 +418,7 @@ class _CategoryProductsScreenState extends State<CategoryProductsScreen> {
                                   gridDelegate:
                                       SliverGridDelegateWithFixedCrossAxisCount(
                                     crossAxisCount: crossAxisCount,
-                                    childAspectRatio: 0.68,
+                                    childAspectRatio: childAspectRatio,
                                     crossAxisSpacing: 12,
                                     mainAxisSpacing: 12,
                                   ),

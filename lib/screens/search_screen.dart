@@ -11,6 +11,8 @@ import '../models/seller_profile_model.dart';
 import 'seller_store_screen.dart';
 
 typedef JsonMap = Map<String, dynamic>;
+typedef JsonList = List<JsonMap>;
+typedef StringMap = Map<String, String>;
 
 class SearchScreen extends StatefulWidget {
   final String baseUrl;
@@ -139,11 +141,11 @@ class _SearchScreenState extends State<SearchScreen> {
     } catch (_) {}
   }
 
-  List<JsonMap> _extractMapList(dynamic raw, List<String> keys) {
+  JsonList _extractMapList(dynamic raw, List<String> keys) {
     if (raw is List) {
       return [
         for (final item in raw)
-          if (item is Map) Map<String, dynamic>.from(item),
+          if (item is Map) JsonMap.from(item),
       ];
     }
     if (raw is Map) {
@@ -181,7 +183,7 @@ class _SearchScreenState extends State<SearchScreen> {
     final String q = _searchController.text.trim();
 
     try {
-      final Map<String, String> params = {
+      final StringMap params = {
         'page': '$targetPage',
         if (q.isNotEmpty) 'q': q,
         if (q.isNotEmpty) 'search': q,
@@ -205,11 +207,11 @@ class _SearchScreenState extends State<SearchScreen> {
         final body = json.decode(response.body);
         final dynamic data = body is Map ? (body['data'] ?? body) : body;
 
-        List<JsonMap> rawProducts = _extractMapList(
+        final JsonList rawProducts = _extractMapList(
           data,
           ['products', 'items', 'results', 'data'],
         );
-        List<JsonMap> rawSellers = [];
+        JsonList rawSellers = [];
         if (data is Map) {
           rawSellers = _extractMapList(
             data['sellers'] ?? data['stores'] ?? data['matched_sellers'],
@@ -296,6 +298,7 @@ class _SearchScreenState extends State<SearchScreen> {
   Widget build(BuildContext context) {
     final width = MediaQuery.sizeOf(context).width;
     final crossAxisCount = width >= 700 ? 3 : 2;
+    final aspectRatio = width < 350 ? 0.63 : 0.68;
 
     return Scaffold(
       backgroundColor: StorkTheme.surfaceSubtle,
@@ -313,10 +316,11 @@ class _SearchScreenState extends State<SearchScreen> {
             },
             decoration: InputDecoration(
               hintText: 'Search products, brands, or stores...',
+              fillColor: StorkTheme.surfaceSubtle,
               prefixIcon: const Icon(
                 Icons.search_rounded,
                 size: 19,
-                color: StorkTheme.textMuted,
+                color: StorkTheme.primary,
               ),
               suffixIcon: _searchController.text.isNotEmpty
                   ? IconButton(
@@ -334,7 +338,7 @@ class _SearchScreenState extends State<SearchScreen> {
           ),
         ),
         bottom: PreferredSize(
-          preferredSize: Size.fromHeight(_isSyncing ? 90 : 88),
+          preferredSize: Size.fromHeight(_isSyncing ? 92 : 90),
           child: Column(
             children: [
               if (_isSyncing)
@@ -344,11 +348,11 @@ class _SearchScreenState extends State<SearchScreen> {
                   backgroundColor: Colors.transparent,
                 ),
               SizedBox(
-                height: 40,
+                height: 42,
                 child: ListView.separated(
                   scrollDirection: Axis.horizontal,
                   padding:
-                      const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
                   itemCount: _categories.length,
                   separatorBuilder: (_, __) => const SizedBox(width: 8),
                   itemBuilder: (context, index) {
@@ -361,12 +365,11 @@ class _SearchScreenState extends State<SearchScreen> {
                         _performSearch(resetPage: true);
                       },
                       child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        padding: const EdgeInsets.symmetric(horizontal: 13),
                         alignment: Alignment.center,
                         decoration: BoxDecoration(
-                          color: active
-                              ? StorkTheme.primary
-                              : StorkTheme.surfaceSubtle,
+                          gradient: active ? StorkTheme.brandGradient : null,
+                          color: active ? null : StorkTheme.surfaceSubtle,
                           borderRadius: BorderRadius.circular(16),
                           border: Border.all(
                             color: active
@@ -427,31 +430,37 @@ class _SearchScreenState extends State<SearchScreen> {
                   SliverToBoxAdapter(
                     child: Container(
                       margin: const EdgeInsets.fromLTRB(14, 10, 14, 4),
-                      padding: const EdgeInsets.all(10),
+                      padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
                         color: StorkTheme.surface,
-                        borderRadius: BorderRadius.circular(14),
+                        borderRadius: BorderRadius.circular(18),
                         border: Border.all(color: StorkTheme.borderSubtle),
+                        boxShadow: StorkTheme.softCardShadow,
                       ),
                       child: Wrap(
                         spacing: 8,
                         runSpacing: 6,
-                        children: _suggestions.map((sug) {
-                          return ActionChip(
-                            label: Text(
-                              sug,
-                              style: const TextStyle(
-                                fontSize: 11.5,
-                                fontWeight: FontWeight.w700,
+                        children: [
+                          for (final sug in _suggestions)
+                            ActionChip(
+                              backgroundColor: StorkTheme.surfaceSubtle,
+                              side: const BorderSide(
+                                  color: StorkTheme.borderSubtle),
+                              label: Text(
+                                sug,
+                                style: const TextStyle(
+                                  fontSize: 11.5,
+                                  fontWeight: FontWeight.w700,
+                                  color: StorkTheme.primaryDark,
+                                ),
                               ),
+                              onPressed: () {
+                                _searchController.text = sug;
+                                setState(() => _suggestions = []);
+                                _performSearch(resetPage: true);
+                              },
                             ),
-                            onPressed: () {
-                              _searchController.text = sug;
-                              setState(() => _suggestions = []);
-                              _performSearch(resetPage: true);
-                            },
-                          );
-                        }).toList(),
+                        ],
                       ),
                     ),
                   ),
@@ -463,7 +472,7 @@ class _SearchScreenState extends State<SearchScreen> {
                         const Padding(
                           padding: EdgeInsets.fromLTRB(16, 14, 16, 8),
                           child: Text(
-                            'MATCHING STORES',
+                            'MATCHING OFFICIAL STORES',
                             style: TextStyle(
                               fontSize: 11,
                               fontWeight: FontWeight.w900,
@@ -473,7 +482,7 @@ class _SearchScreenState extends State<SearchScreen> {
                           ),
                         ),
                         SizedBox(
-                          height: 76,
+                          height: 80,
                           child: ListView.separated(
                             scrollDirection: Axis.horizontal,
                             padding: const EdgeInsets.symmetric(horizontal: 14),
@@ -500,18 +509,19 @@ class _SearchScreenState extends State<SearchScreen> {
                                   );
                                 },
                                 child: Container(
-                                  width: 210,
+                                  width: 215,
                                   padding: const EdgeInsets.all(10),
                                   decoration: BoxDecoration(
                                     color: StorkTheme.surface,
-                                    borderRadius: BorderRadius.circular(14),
+                                    borderRadius: BorderRadius.circular(16),
                                     border: Border.all(
                                         color: StorkTheme.borderSubtle),
+                                    boxShadow: StorkTheme.softCardShadow,
                                   ),
                                   child: Row(
                                     children: [
                                       CircleAvatar(
-                                        radius: 20,
+                                        radius: 21,
                                         backgroundColor: StorkTheme.primary
                                             .withValues(alpha: 0.12),
                                         backgroundImage: logoUrl.isNotEmpty
@@ -524,7 +534,7 @@ class _SearchScreenState extends State<SearchScreen> {
                                                         .toUpperCase()
                                                     : 'S',
                                                 style: const TextStyle(
-                                                  fontWeight: FontWeight.w800,
+                                                  fontWeight: FontWeight.w900,
                                                   color: StorkTheme.primary,
                                                 ),
                                               )
@@ -545,9 +555,10 @@ class _SearchScreenState extends State<SearchScreen> {
                                               style: const TextStyle(
                                                 fontSize: 12.5,
                                                 fontWeight: FontWeight.w800,
-                                                color: StorkTheme.textMain,
+                                                color: StorkTheme.primaryDark,
                                               ),
                                             ),
+                                            const SizedBox(height: 2),
                                             Text(
                                               seller.lineOfBusiness,
                                               maxLines: 1,
@@ -559,6 +570,11 @@ class _SearchScreenState extends State<SearchScreen> {
                                             ),
                                           ],
                                         ),
+                                      ),
+                                      const Icon(
+                                        Icons.chevron_right_rounded,
+                                        size: 18,
+                                        color: StorkTheme.textMuted,
                                       ),
                                     ],
                                   ),
@@ -572,13 +588,46 @@ class _SearchScreenState extends State<SearchScreen> {
                   ),
                 const SliverToBoxAdapter(child: SizedBox(height: 12)),
                 _products.isEmpty
-                    ? const SliverToBoxAdapter(
+                    ? SliverToBoxAdapter(
                         child: Padding(
-                          padding: EdgeInsets.all(48),
+                          padding: const EdgeInsets.all(48),
                           child: Center(
-                            child: Text(
-                              'No matching products found.',
-                              style: TextStyle(color: StorkTheme.textMuted),
+                            child: Column(
+                              children: [
+                                Container(
+                                  width: 68,
+                                  height: 68,
+                                  decoration: BoxDecoration(
+                                    color: StorkTheme.primary
+                                        .withValues(alpha: 0.1),
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: const Icon(
+                                    Icons.search_off_rounded,
+                                    size: 34,
+                                    color: StorkTheme.primary,
+                                  ),
+                                ),
+                                const SizedBox(height: 14),
+                                const Text(
+                                  'No Matching Products Found',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w800,
+                                    color: StorkTheme.primaryDark,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                const Text(
+                                  'Try adjusting your search keywords or switching category filters.',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    fontSize: 12.5,
+                                    color: StorkTheme.textMuted,
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
                         ),
@@ -589,7 +638,7 @@ class _SearchScreenState extends State<SearchScreen> {
                           gridDelegate:
                               SliverGridDelegateWithFixedCrossAxisCount(
                             crossAxisCount: crossAxisCount,
-                            childAspectRatio: 0.68,
+                            childAspectRatio: aspectRatio,
                             crossAxisSpacing: 12,
                             mainAxisSpacing: 12,
                           ),
@@ -652,6 +701,8 @@ class _SearchScreenState extends State<SearchScreen> {
           ),
           child: Text(
             label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
             style: TextStyle(
               fontSize: 12,
               fontWeight: active ? FontWeight.w900 : FontWeight.w600,

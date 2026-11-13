@@ -6,8 +6,8 @@ class StorkTheme {
   static const Color secondary = Color(0xFFF39399);
   static const Color brandLight = Color(0xFFF6D8BD);
   static const Color surface = Color(0xFFFFFFFF);
-  static const Color surfaceSubtle = Color(0xFFF5F5F4);
-  static const Color borderSubtle = Color(0xFFE7E5E4);
+  static const Color surfaceSubtle = Color(0xFFF7F5F4);
+  static const Color borderSubtle = Color(0xFFE7E2DF);
   static const Color textMuted = Color(0xFF78716C);
   static const Color textMain = Color(0xFF292524);
   static const Color darkGrey = Color(0xFF44403C);
@@ -16,6 +16,26 @@ class StorkTheme {
   static const Color danger = Color(0xFFE11D48);
   static const Color warning = Color(0xFFF59E0B);
   static const Color info = Color(0xFF3B82F6);
+
+  static const LinearGradient brandGradient = LinearGradient(
+    colors: [primaryDark, primary],
+    begin: Alignment.topLeft,
+    end: Alignment.bottomRight,
+  );
+
+  static const LinearGradient warmAccentGradient = LinearGradient(
+    colors: [primary, secondary],
+    begin: Alignment.centerLeft,
+    end: Alignment.centerRight,
+  );
+
+  static List<BoxShadow> get softCardShadow => [
+        BoxShadow(
+          color: primaryDark.withValues(alpha: 0.04),
+          blurRadius: 14,
+          offset: const Offset(0, 4),
+        ),
+      ];
 
   static ThemeData get lightTheme {
     final baseScheme = ColorScheme.fromSeed(
@@ -50,11 +70,11 @@ class StorkTheme {
         scrolledUnderElevation: 0.5,
         surfaceTintColor: Colors.transparent,
         centerTitle: false,
-        iconTheme: IconThemeData(color: textMain, size: 22),
+        iconTheme: IconThemeData(color: primaryDark, size: 22),
         titleTextStyle: TextStyle(
-          color: textMain,
+          color: primaryDark,
           fontSize: 17,
-          fontWeight: FontWeight.w700,
+          fontWeight: FontWeight.w800,
           letterSpacing: -0.3,
         ),
       ),
@@ -63,7 +83,7 @@ class StorkTheme {
         elevation: 0,
         margin: EdgeInsets.zero,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(18),
           side: const BorderSide(color: borderSubtle, width: 1),
         ),
       ),
@@ -72,34 +92,39 @@ class StorkTheme {
         fillColor: surface,
         isDense: true,
         contentPadding:
-            const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+            const EdgeInsets.symmetric(horizontal: 15, vertical: 14),
         labelStyle: const TextStyle(
           color: textMuted,
           fontSize: 13,
-          fontWeight: FontWeight.w500,
+          fontWeight: FontWeight.w600,
+        ),
+        floatingLabelStyle: const TextStyle(
+          color: primary,
+          fontSize: 13,
+          fontWeight: FontWeight.w700,
         ),
         hintStyle: TextStyle(
           color: textMuted.withValues(alpha: 0.65),
           fontSize: 13,
         ),
         enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(14),
           borderSide: const BorderSide(color: borderSubtle, width: 1),
         ),
         focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: primary, width: 1.5),
+          borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: primary, width: 1.6),
         ),
         errorBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(14),
           borderSide: const BorderSide(color: danger, width: 1.2),
         ),
         focusedErrorBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: danger, width: 1.5),
+          borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: danger, width: 1.6),
         ),
         disabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(14),
           borderSide:
               BorderSide(color: borderSubtle.withValues(alpha: 0.6), width: 1),
         ),
@@ -108,26 +133,37 @@ class StorkTheme {
         style: ElevatedButton.styleFrom(
           backgroundColor: primary,
           foregroundColor: surface,
+          disabledBackgroundColor: borderSubtle,
+          disabledForegroundColor: textMuted,
           elevation: 0,
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: BorderRadius.circular(14),
           ),
           textStyle: const TextStyle(
             fontSize: 14,
-            fontWeight: FontWeight.w700,
+            fontWeight: FontWeight.w800,
             letterSpacing: -0.1,
           ),
         ),
       ),
       outlinedButtonTheme: OutlinedButtonThemeData(
         style: OutlinedButton.styleFrom(
-          foregroundColor: textMain,
-          side: const BorderSide(color: borderSubtle, width: 1),
+          foregroundColor: primaryDark,
+          side: const BorderSide(color: borderSubtle, width: 1.2),
           padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 13),
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: BorderRadius.circular(14),
           ),
+          textStyle: const TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+      ),
+      textButtonTheme: TextButtonThemeData(
+        style: TextButton.styleFrom(
+          foregroundColor: primary,
           textStyle: const TextStyle(
             fontSize: 13,
             fontWeight: FontWeight.w700,
@@ -143,21 +179,21 @@ class StorkTheme {
           fontWeight: FontWeight.w600,
         ),
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(14),
         ),
       ),
       bottomSheetTheme: const BottomSheetThemeData(
         backgroundColor: surface,
         surfaceTintColor: Colors.transparent,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
         ),
       ),
       dialogTheme: DialogThemeData(
         backgroundColor: surface,
         surfaceTintColor: Colors.transparent,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(22),
         ),
       ),
     );

@@ -152,7 +152,7 @@ class _MessagesScreenState extends State<MessagesScreen>
     return Scaffold(
       backgroundColor: StorkTheme.surfaceSubtle,
       appBar: AppBar(
-        title: const Text('Messages'),
+        title: Text('Messages (${contacts.length})'),
       ),
       body: isLoading
           ? const Center(
@@ -163,14 +163,16 @@ class _MessagesScreenState extends State<MessagesScreen>
               onRefresh: _fetchContacts,
               child: contacts.isEmpty
                   ? ListView(
+                      padding: const EdgeInsets.all(28),
                       children: [
-                        const SizedBox(height: 120),
+                        const SizedBox(height: 90),
                         _buildEmptyState(),
                       ],
                     )
                   : ListView.separated(
+                      padding: const EdgeInsets.all(14),
                       itemCount: contacts.length,
-                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      separatorBuilder: (_, __) => const SizedBox(height: 10),
                       itemBuilder: (context, index) {
                         final contact = contacts[index];
                         if (contact.id == 0) return const SizedBox.shrink();
@@ -203,14 +205,37 @@ class _MessagesScreenState extends State<MessagesScreen>
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.chat_bubble_outline, size: 60, color: Colors.grey[400]),
+          Container(
+            width: 76,
+            height: 76,
+            decoration: BoxDecoration(
+              color: StorkTheme.primary.withValues(alpha: 0.1),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(
+              Icons.chat_bubble_outline_rounded,
+              size: 36,
+              color: StorkTheme.primary,
+            ),
+          ),
           const SizedBox(height: 16),
           const Text(
-            'No active conversations',
+            'No Active Conversations Yet',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: StorkTheme.primaryDark,
+              fontSize: 17,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            'Tap "Chat Now" on any product or official store page to message verified merchants directly.',
+            textAlign: TextAlign.center,
             style: TextStyle(
               color: StorkTheme.textMuted,
-              fontSize: 16,
-              fontWeight: FontWeight.w600,
+              fontSize: 12.5,
+              height: 1.4,
             ),
           ),
         ],
@@ -243,12 +268,26 @@ class _ContactTile extends StatelessWidget {
             contact.latestMessage!.trim().isNotEmpty)
         ? contact.latestMessage!.trim()
         : (isSeller ? 'Official Store' : 'Buyer');
+    final bool hasUnread = contact.unreadCount > 0;
 
     return InkWell(
       onTap: onTap,
+      borderRadius: BorderRadius.circular(18),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
-        color: StorkTheme.surface,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        decoration: BoxDecoration(
+          color: hasUnread
+              ? StorkTheme.primary.withValues(alpha: 0.04)
+              : StorkTheme.surface,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(
+            color: hasUnread
+                ? StorkTheme.primary.withValues(alpha: 0.35)
+                : StorkTheme.borderSubtle,
+            width: hasUnread ? 1.5 : 1,
+          ),
+          boxShadow: StorkTheme.softCardShadow,
+        ),
         child: Row(
           children: [
             Stack(
@@ -295,17 +334,45 @@ class _ContactTile extends StatelessWidget {
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       Expanded(
-                        child: Text(
-                          displayName,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 15,
-                            fontWeight: contact.unreadCount > 0
-                                ? FontWeight.w900
-                                : FontWeight.w700,
-                            color: StorkTheme.textMain,
-                          ),
+                        child: Row(
+                          children: [
+                            Flexible(
+                              child: Text(
+                                displayName,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: hasUnread
+                                      ? FontWeight.w900
+                                      : FontWeight.w800,
+                                  color: StorkTheme.primaryDark,
+                                ),
+                              ),
+                            ),
+                            if (isSeller) ...[
+                              const SizedBox(width: 6),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 6,
+                                  vertical: 1.5,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: StorkTheme.brandLight
+                                      .withValues(alpha: 0.45),
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: const Text(
+                                  'STORE',
+                                  style: TextStyle(
+                                    fontSize: 8.5,
+                                    fontWeight: FontWeight.w900,
+                                    color: StorkTheme.primaryDark,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
                         ),
                       ),
                       const SizedBox(width: 8),
@@ -313,17 +380,16 @@ class _ContactTile extends StatelessWidget {
                         timeAgo,
                         style: TextStyle(
                           fontSize: 11,
-                          fontWeight: contact.unreadCount > 0
-                              ? FontWeight.w800
-                              : FontWeight.w500,
-                          color: contact.unreadCount > 0
+                          fontWeight:
+                              hasUnread ? FontWeight.w800 : FontWeight.w600,
+                          color: hasUnread
                               ? StorkTheme.primary
                               : StorkTheme.textMuted,
                         ),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 4),
+                  const SizedBox(height: 5),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -334,22 +400,21 @@ class _ContactTile extends StatelessWidget {
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                             fontSize: 12.5,
-                            color: contact.unreadCount > 0
+                            color: hasUnread
                                 ? StorkTheme.textMain
                                 : StorkTheme.textMuted,
-                            fontWeight: contact.unreadCount > 0
-                                ? FontWeight.w700
-                                : FontWeight.w500,
+                            fontWeight:
+                                hasUnread ? FontWeight.w700 : FontWeight.w500,
                           ),
                         ),
                       ),
-                      if (contact.unreadCount > 0) ...[
+                      if (hasUnread) ...[
                         const SizedBox(width: 8),
                         Container(
                           padding: const EdgeInsets.symmetric(
                               horizontal: 8, vertical: 2),
                           decoration: BoxDecoration(
-                            color: StorkTheme.primary,
+                            gradient: StorkTheme.brandGradient,
                             borderRadius: BorderRadius.circular(10),
                           ),
                           child: Text(
@@ -357,7 +422,7 @@ class _ContactTile extends StatelessWidget {
                             style: const TextStyle(
                               color: Colors.white,
                               fontSize: 10,
-                              fontWeight: FontWeight.w800,
+                              fontWeight: FontWeight.w900,
                             ),
                           ),
                         ),

@@ -147,7 +147,6 @@ class _BundleDealsScreenState extends ConsumerState<BundleDealsScreen>
 
       if (!mounted) return;
       final data = json.decode(response.body);
-
       if ((response.statusCode == 200 || response.statusCode == 201) &&
           data is Map &&
           data['success'] == true) {
@@ -214,41 +213,48 @@ class _BundleDealsScreenState extends ConsumerState<BundleDealsScreen>
               onRefresh: () => _fetchBundles(),
               child: _bundles.isEmpty
                   ? ListView(
-                      children: const [
-                        SizedBox(height: 110),
+                      padding: const EdgeInsets.all(28),
+                      children: [
+                        const SizedBox(height: 80),
                         Center(
-                          child: Column(
-                            children: [
-                              Icon(
-                                Icons.redeem_rounded,
-                                size: 54,
-                                color: StorkTheme.textMuted,
-                              ),
-                              SizedBox(height: 12),
-                              Text(
-                                'No active Bundle Deals right now',
-                                style: TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w800,
-                                  color: StorkTheme.textMain,
-                                ),
-                              ),
-                              SizedBox(height: 4),
-                              Text(
-                                'Seller multi-item bundles and free gift promos will appear here.',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  fontSize: 12.5,
-                                  color: StorkTheme.textMuted,
-                                ),
-                              ),
-                            ],
+                          child: Container(
+                            width: 76,
+                            height: 76,
+                            decoration: BoxDecoration(
+                              color: StorkTheme.primary.withValues(alpha: 0.1),
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(
+                              Icons.redeem_rounded,
+                              size: 38,
+                              color: StorkTheme.primary,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        const Text(
+                          'No Active Bundle Deals Right Now',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w800,
+                            color: StorkTheme.primaryDark,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        const Text(
+                          'Seller multi-item bundles and Buy X Get Y free gift promotions will appear here.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            color: StorkTheme.textMuted,
+                            height: 1.4,
                           ),
                         ),
                       ],
                     )
                   : ListView.separated(
-                      padding: const EdgeInsets.all(14),
+                      padding: const EdgeInsets.all(16),
                       itemCount: _bundles.length,
                       separatorBuilder: (_, __) => const SizedBox(height: 14),
                       itemBuilder: (context, index) {
@@ -269,7 +275,6 @@ class _BundleDealsScreenState extends ConsumerState<BundleDealsScreen>
     final double discPct =
         double.tryParse(bundle['discount_percentage']?.toString() ?? '0') ??
             0.0;
-
     final sellerMap = bundle['seller_profile'] is Map
         ? Map<String, dynamic>.from(bundle['seller_profile'] as Map)
         : (bundle['seller'] is Map
@@ -302,80 +307,97 @@ class _BundleDealsScreenState extends ConsumerState<BundleDealsScreen>
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: StorkTheme.surface,
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(22),
         border: Border.all(color: StorkTheme.borderSubtle),
+        boxShadow: StorkTheme.softCardShadow,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 8,
+            runSpacing: 6,
             children: [
               Container(
                 padding:
                     const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                 decoration: BoxDecoration(
-                  color: bundleType == 'percentage_off'
-                      ? StorkTheme.primary.withValues(alpha: 0.12)
-                      : const Color(0xFF7C3AED).withValues(alpha: 0.12),
+                  gradient: bundleType == 'percentage_off'
+                      ? StorkTheme.brandGradient
+                      : const LinearGradient(
+                          colors: [Color(0xFF6D28D9), Color(0xFF9333EA)],
+                        ),
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: Text(
                   bundleType == 'percentage_off'
                       ? 'BUY $reqQty GET ${discPct.toStringAsFixed(0)}% OFF'
                       : 'BUY $reqQty GET FREE GIFT (₱0.00)',
-                  style: TextStyle(
-                    fontSize: 10.5,
+                  style: const TextStyle(
+                    fontSize: 10,
                     fontWeight: FontWeight.w900,
-                    color: bundleType == 'percentage_off'
-                        ? StorkTheme.primary
-                        : const Color(0xFF7C3AED),
+                    color: Colors.white,
                   ),
                 ),
               ),
-              Expanded(
-                child: Text(
-                  storeName,
-                  textAlign: TextAlign.right,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    Icons.storefront_rounded,
+                    size: 14,
                     color: StorkTheme.textMuted,
                   ),
-                ),
+                  const SizedBox(width: 4),
+                  Flexible(
+                    child: Text(
+                      storeName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                        color: StorkTheme.textMuted,
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 10),
           Text(
             title,
             style: const TextStyle(
               fontSize: 16,
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w900,
               color: StorkTheme.primaryDark,
             ),
           ),
           if (freeGiftMap != null) ...[
-            const SizedBox(height: 8),
+            const SizedBox(height: 10),
             Container(
-              padding: const EdgeInsets.all(10),
+              padding: const EdgeInsets.all(11),
               decoration: BoxDecoration(
                 color: const Color(0xFF7C3AED).withValues(alpha: 0.08),
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(
+                  color: const Color(0xFF7C3AED).withValues(alpha: 0.25),
+                ),
               ),
               child: Row(
                 children: [
                   const Icon(
                     Icons.card_giftcard_rounded,
                     color: Color(0xFF7C3AED),
-                    size: 18,
+                    size: 19,
                   ),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      'Free Gift: ${freeGiftMap['name'] ?? 'Bonus Item'}${giftVar.isNotEmpty ? ' ($giftVar)' : ''} — ₱0.00',
+                      'Free Gift: ${freeGiftMap['name'] ?? 'Bonus Item'}${giftVar.isNotEmpty ? ' ($giftVar)' : ''} • ₱0.00',
                       style: const TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.w800,
@@ -390,7 +412,7 @@ class _BundleDealsScreenState extends ConsumerState<BundleDealsScreen>
           if (products.isNotEmpty) ...[
             const SizedBox(height: 12),
             SizedBox(
-              height: 106,
+              height: 108,
               child: ListView.separated(
                 scrollDirection: Axis.horizontal,
                 itemCount: products.length,
@@ -414,7 +436,7 @@ class _BundleDealsScreenState extends ConsumerState<BundleDealsScreen>
                       );
                     },
                     child: Container(
-                      width: 195,
+                      width: 200,
                       padding: const EdgeInsets.all(8),
                       decoration: BoxDecoration(
                         color: StorkTheme.surfaceSubtle,
@@ -426,8 +448,8 @@ class _BundleDealsScreenState extends ConsumerState<BundleDealsScreen>
                           ClipRRect(
                             borderRadius: BorderRadius.circular(10),
                             child: Container(
-                              width: 56,
-                              height: 56,
+                              width: 58,
+                              height: 58,
                               color: StorkTheme.surface,
                               child: imgUrl.isNotEmpty
                                   ? Image.network(imgUrl, fit: BoxFit.cover)
@@ -437,7 +459,7 @@ class _BundleDealsScreenState extends ConsumerState<BundleDealsScreen>
                                     ),
                             ),
                           ),
-                          const SizedBox(width: 8),
+                          const SizedBox(width: 10),
                           Expanded(
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
@@ -453,11 +475,13 @@ class _BundleDealsScreenState extends ConsumerState<BundleDealsScreen>
                                     color: StorkTheme.textMain,
                                   ),
                                 ),
-                                const SizedBox(height: 3),
+                                const SizedBox(height: 4),
                                 Text(
                                   '₱${_formatMoney(prod.discountedPrice)}',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
                                   style: const TextStyle(
-                                    fontSize: 12,
+                                    fontSize: 12.5,
                                     fontWeight: FontWeight.w900,
                                     color: StorkTheme.primary,
                                   ),
@@ -476,6 +500,7 @@ class _BundleDealsScreenState extends ConsumerState<BundleDealsScreen>
           const SizedBox(height: 14),
           SizedBox(
             width: double.infinity,
+            height: 48,
             child: ElevatedButton.icon(
               onPressed: _addingBundleId != null
                   ? null

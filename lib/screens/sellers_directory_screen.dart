@@ -9,6 +9,9 @@ import '../models/seller_profile_model.dart';
 import 'seller_store_screen.dart';
 
 typedef JsonMap = Map<String, dynamic>;
+typedef JsonList = List<JsonMap>;
+typedef IntBoolMap = Map<int, bool>;
+typedef IntIntMap = Map<int, int>;
 
 class SellersDirectoryScreen extends StatefulWidget {
   final String baseUrl;
@@ -31,9 +34,9 @@ class _SellersDirectoryScreenState extends State<SellersDirectoryScreen>
 
   bool _isLoading = true;
   List<SellerProfile> _allSellers = [];
-  final Map<int, bool> _followOverrides = {};
-  final Map<int, int> _followerCountOverrides = {};
-  final Set<int> _togglingIds = {};
+  final IntBoolMap _followOverrides = {};
+  final IntIntMap _followerCountOverrides = {};
+  final Set<int> _togglingIds = <int>{};
 
   String _searchQuery = '';
   String _selectedCategory = 'All';
@@ -99,11 +102,11 @@ class _SellersDirectoryScreenState extends State<SellersDirectoryScreen>
     }
   }
 
-  List<JsonMap> _extractSellersList(dynamic raw) {
+  JsonList _extractSellersList(dynamic raw) {
     if (raw is List) {
       return [
         for (final item in raw)
-          if (item is Map) Map<String, dynamic>.from(item),
+          if (item is Map) JsonMap.from(item),
       ];
     }
     if (raw is Map) {
@@ -230,7 +233,7 @@ class _SellersDirectoryScreenState extends State<SellersDirectoryScreen>
   }
 
   List<String> get _categories {
-    final Set<String> cats = {'All'};
+    final Set<String> cats = <String>{'All'};
     for (final s in _allSellers) {
       if (s.lineOfBusiness.trim().isNotEmpty) {
         cats.add(s.lineOfBusiness.trim());
@@ -283,8 +286,13 @@ class _SellersDirectoryScreenState extends State<SellersDirectoryScreen>
       body: Column(
         children: [
           Container(
-            color: StorkTheme.surface,
-            padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+            padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+            decoration: const BoxDecoration(
+              color: StorkTheme.surface,
+              border: Border(
+                bottom: BorderSide(color: StorkTheme.borderSubtle),
+              ),
+            ),
             child: Column(
               children: [
                 TextField(
@@ -292,10 +300,11 @@ class _SellersDirectoryScreenState extends State<SellersDirectoryScreen>
                   onChanged: (val) => setState(() => _searchQuery = val),
                   decoration: InputDecoration(
                     hintText: 'Search verified stores, category, or city...',
+                    fillColor: StorkTheme.surfaceSubtle,
                     prefixIcon: const Icon(
                       Icons.search_rounded,
                       size: 19,
-                      color: StorkTheme.textMuted,
+                      color: StorkTheme.primary,
                     ),
                     suffixIcon: _searchQuery.isNotEmpty
                         ? IconButton(
@@ -310,7 +319,7 @@ class _SellersDirectoryScreenState extends State<SellersDirectoryScreen>
                 ),
                 const SizedBox(height: 10),
                 SizedBox(
-                  height: 34,
+                  height: 36,
                   child: ListView.separated(
                     scrollDirection: Axis.horizontal,
                     itemCount: categories.length,
@@ -321,12 +330,11 @@ class _SellersDirectoryScreenState extends State<SellersDirectoryScreen>
                       return GestureDetector(
                         onTap: () => setState(() => _selectedCategory = cat),
                         child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 13),
+                          padding: const EdgeInsets.symmetric(horizontal: 14),
                           alignment: Alignment.center,
                           decoration: BoxDecoration(
-                            color: active
-                                ? StorkTheme.primary
-                                : StorkTheme.surfaceSubtle,
+                            gradient: active ? StorkTheme.brandGradient : null,
+                            color: active ? null : StorkTheme.surfaceSubtle,
                             borderRadius: BorderRadius.circular(18),
                             border: Border.all(
                               color: active
@@ -366,7 +374,7 @@ class _SellersDirectoryScreenState extends State<SellersDirectoryScreen>
                           decoration: BoxDecoration(
                             color: active
                                 ? StorkTheme.primaryDark
-                                : Colors.transparent,
+                                : StorkTheme.surfaceSubtle,
                             borderRadius: BorderRadius.circular(8),
                           ),
                           child: Text(
@@ -386,7 +394,6 @@ class _SellersDirectoryScreenState extends State<SellersDirectoryScreen>
               ],
             ),
           ),
-          const Divider(height: 1),
           Expanded(
             child: _isLoading && _allSellers.isEmpty
                 ? const Center(
@@ -397,12 +404,42 @@ class _SellersDirectoryScreenState extends State<SellersDirectoryScreen>
                     onRefresh: () => _fetchSellers(silent: true),
                     child: visibleSellers.isEmpty
                         ? ListView(
-                            children: const [
-                              SizedBox(height: 100),
+                            padding: const EdgeInsets.all(28),
+                            children: [
+                              const SizedBox(height: 80),
                               Center(
-                                child: Text(
-                                  'No verified stores match your filter.',
-                                  style: TextStyle(color: StorkTheme.textMuted),
+                                child: Container(
+                                  width: 74,
+                                  height: 74,
+                                  decoration: BoxDecoration(
+                                    color: StorkTheme.primary
+                                        .withValues(alpha: 0.1),
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: const Icon(
+                                    Icons.storefront_outlined,
+                                    size: 36,
+                                    color: StorkTheme.primary,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 14),
+                              const Text(
+                                'No Verified Stores Match Your Filter',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  fontSize: 16.5,
+                                  fontWeight: FontWeight.w800,
+                                  color: StorkTheme.primaryDark,
+                                ),
+                              ),
+                              const SizedBox(height: 6),
+                              const Text(
+                                'Try selecting "ALL" letters or clearing your search filter.',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  fontSize: 12.5,
+                                  color: StorkTheme.textMuted,
                                 ),
                               ),
                             ],
@@ -436,7 +473,7 @@ class _SellersDirectoryScreenState extends State<SellersDirectoryScreen>
     final int productsCount =
         int.tryParse(stats['products_count']?.toString() ?? '0') ?? 0;
 
-    return GestureDetector(
+    return InkWell(
       onTap: () {
         Navigator.push(
           context,
@@ -449,32 +486,44 @@ class _SellersDirectoryScreenState extends State<SellersDirectoryScreen>
           ),
         ).then((_) => _fetchSellers(silent: true));
       },
+      borderRadius: BorderRadius.circular(20),
       child: Container(
         padding: const EdgeInsets.all(15),
         decoration: BoxDecoration(
           color: StorkTheme.surface,
-          borderRadius: BorderRadius.circular(18),
+          borderRadius: BorderRadius.circular(20),
           border: Border.all(color: StorkTheme.borderSubtle),
+          boxShadow: StorkTheme.softCardShadow,
         ),
         child: Row(
           children: [
-            CircleAvatar(
-              radius: 26,
-              backgroundColor: StorkTheme.primary.withValues(alpha: 0.12),
-              backgroundImage:
-                  logoUrl.isNotEmpty ? NetworkImage(logoUrl) : null,
-              child: logoUrl.isEmpty
-                  ? Text(
-                      seller.businessName.isNotEmpty
-                          ? seller.businessName[0].toUpperCase()
-                          : 'S',
-                      style: const TextStyle(
-                        fontSize: 19,
-                        fontWeight: FontWeight.w900,
-                        color: StorkTheme.primary,
-                      ),
-                    )
-                  : null,
+            Container(
+              padding: const EdgeInsets.all(2),
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: StorkTheme.primary.withValues(alpha: 0.3),
+                  width: 1.5,
+                ),
+              ),
+              child: CircleAvatar(
+                radius: 26,
+                backgroundColor: StorkTheme.primary.withValues(alpha: 0.12),
+                backgroundImage:
+                    logoUrl.isNotEmpty ? NetworkImage(logoUrl) : null,
+                child: logoUrl.isEmpty
+                    ? Text(
+                        seller.businessName.isNotEmpty
+                            ? seller.businessName[0].toUpperCase()
+                            : 'S',
+                        style: const TextStyle(
+                          fontSize: 19,
+                          fontWeight: FontWeight.w900,
+                          color: StorkTheme.primary,
+                        ),
+                      )
+                    : null,
+              ),
             ),
             const SizedBox(width: 12),
             Expanded(
@@ -491,7 +540,7 @@ class _SellersDirectoryScreenState extends State<SellersDirectoryScreen>
                           style: const TextStyle(
                             fontSize: 15,
                             fontWeight: FontWeight.w800,
-                            color: StorkTheme.textMain,
+                            color: StorkTheme.primaryDark,
                           ),
                         ),
                       ),
@@ -532,14 +581,15 @@ class _SellersDirectoryScreenState extends State<SellersDirectoryScreen>
                       color: StorkTheme.textMuted,
                     ),
                   ),
-                  const SizedBox(height: 5),
-                  Text(
-                    '★ $rating  •  $followers Followers  •  $productsCount Products',
-                    style: const TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700,
-                      color: StorkTheme.primaryDark,
-                    ),
+                  const SizedBox(height: 6),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 4,
+                    children: [
+                      _buildMiniStatPill('★ $rating'),
+                      _buildMiniStatPill('$followers Followers'),
+                      _buildMiniStatPill('$productsCount Products'),
+                    ],
                   ),
                 ],
               ),
@@ -571,6 +621,25 @@ class _SellersDirectoryScreenState extends State<SellersDirectoryScreen>
               ),
             ],
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMiniStatPill(String label) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+      decoration: BoxDecoration(
+        color: StorkTheme.surfaceSubtle,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: StorkTheme.borderSubtle),
+      ),
+      child: Text(
+        label,
+        style: const TextStyle(
+          fontSize: 10,
+          fontWeight: FontWeight.w700,
+          color: StorkTheme.primaryDark,
         ),
       ),
     );

@@ -15,6 +15,8 @@ import '../services/api_service.dart';
 import 'chat_screen.dart';
 
 typedef JsonMap = Map<String, dynamic>;
+typedef JsonList = List<JsonMap>;
+typedef XFileList = List<XFile>;
 
 class SellerStoreScreen extends StatefulWidget {
   final SellerProfile sellerProfile;
@@ -55,7 +57,7 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
   List<Product> _allProducts = [];
   List<String> _mainCategories = [];
   List<String> _subCategories = [];
-  List<JsonMap> _storeVouchers = [];
+  JsonList _storeVouchers = [];
 
   String _searchQuery = '';
   String _selectedMainCategory = '';
@@ -72,9 +74,9 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
     _isFollowing = _seller.isFollowing;
     _isOwnStore = _seller.isOwnStore;
     if (_seller.stats != null) {
-      _stats = Map<String, dynamic>.from(_seller.stats!);
+      _stats = JsonMap.from(_seller.stats!);
     }
-    _fetchStoreData();
+    _fetchStoreData(silent: false);
     _autoSyncTimer = Timer.periodic(const Duration(seconds: 6), (_) {
       _fetchStoreData(silent: true);
     });
@@ -94,8 +96,21 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
     }
   }
 
-  Future<void> _fetchStoreData({bool silent = false}) async {
-    if (!silent) {
+  List<dynamic> _extractProductsList(dynamic raw) {
+    if (raw is List) return List<dynamic>.from(raw);
+    if (raw is Map) {
+      for (final key in ['data', 'products', 'items']) {
+        if (raw.containsKey(key) && raw[key] != null && raw[key] != raw) {
+          final extracted = _extractProductsList(raw[key]);
+          if (extracted.isNotEmpty) return extracted;
+        }
+      }
+    }
+    return <dynamic>[];
+  }
+
+  Future<void> _fetchStoreData({bool silent = true}) async {
+    if (!silent && _allProducts.isEmpty) {
       setState(() => _isLoadingStore = true);
     }
     try {
@@ -112,10 +127,9 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
       if (response.statusCode == 200) {
         final body = json.decode(response.body);
         if (body['success'] == true && body['data'] is Map) {
-          final payload = Map<String, dynamic>.from(body['data'] as Map);
-          final List<dynamic> rawProducts = payload['products'] is List
-              ? List<dynamic>.from(payload['products'] as List)
-              : <dynamic>[];
+          final payload = JsonMap.from(body['data'] as Map);
+          final List<dynamic> rawProducts =
+              _extractProductsList(payload['products']);
           final List<dynamic> rawMainCats =
               payload['store_main_categories'] is List
                   ? List<dynamic>.from(payload['store_main_categories'] as List)
@@ -130,22 +144,22 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
           setState(() {
             if (payload['seller'] is Map) {
               _seller = SellerProfile.fromJson(
-                  Map<String, dynamic>.from(payload['seller'] as Map));
+                  JsonMap.from(payload['seller'] as Map));
             }
             if (payload['stats'] is Map) {
-              _stats = Map<String, dynamic>.from(payload['stats'] as Map);
+              _stats = JsonMap.from(payload['stats'] as Map);
             }
             _isFollowing = payload['is_following'] == true;
             _isOwnStore = payload['is_own_store'] == true;
-            _mainCategories = rawMainCats.map((e) => e.toString()).toList();
-            _subCategories = rawSubCats.map((e) => e.toString()).toList();
+            _mainCategories = [for (final e in rawMainCats) e.toString()];
+            _subCategories = [for (final e in rawSubCats) e.toString()];
             _storeVouchers = [
               for (final v in rawVouchers)
-                if (v is Map) Map<String, dynamic>.from(v),
+                if (v is Map) JsonMap.from(v),
             ];
             _allProducts = [
               for (final p in rawProducts)
-                if (p is Map) Product.fromJson(Map<String, dynamic>.from(p)),
+                if (p is Map) Product.fromJson(JsonMap.from(p)),
             ];
             _isLoadingStore = false;
           });
@@ -160,14 +174,22 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
   }
 
   Future<void> _openReportSellerModal() async {
-    List<JsonMap> reasons = [
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(
+        child: CircularProgressIndicator(color: StorkTheme.primary),
+      ),
+    );
+
+    JsonList reasons = [
       {'key': 'counterfeit', 'label': 'Counterfeit / Fake Goods'},
       {'key': 'scam_fraud', 'label': 'Suspected Scam or Off-Platform Payment'},
       {'key': 'abusive_chat', 'label': 'Abusive or Harassing Behavior'},
       {'key': 'prohibited_items', 'label': 'Prohibited or Illegal Listings'},
       {'key': 'other', 'label': 'Other Marketplace Violation'},
     ];
-    List<JsonMap> eligibleOrders = [];
+    JsonList eligibleOrders = [];
 
     try {
       final ctxRes = await http.get(
@@ -177,6 +199,8 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
           'Accept': 'application/json',
         },
       ).timeout(ApiConfig.requestTimeout);
+
+      if (mounted) Navigator.pop(context);
 
       if (ctxRes.statusCode == 200) {
         final body = json.decode(ctxRes.body);
@@ -192,40 +216,47 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
           if (d['reasons'] is List && (d['reasons'] as List).isNotEmpty) {
             final List<dynamic> rawReasons =
                 List<dynamic>.from(d['reasons'] as List);
-            reasons = rawReasons.map<JsonMap>((r) {
-              if (r is Map) {
-                return {
-                  'key': (r['key'] ?? r['value'] ?? 'other').toString(),
-                  'label': (r['label'] ?? r['title'] ?? 'Other').toString(),
-                };
-              }
-              return {'key': r.toString(), 'label': r.toString()};
-            }).toList();
+            reasons = [
+              for (final r in rawReasons)
+                if (r is Map)
+                  {
+                    'key': (r['key'] ?? r['value'] ?? 'other').toString(),
+                    'label': (r['label'] ?? r['title'] ?? 'Other').toString(),
+                  }
+                else
+                  {'key': r.toString(), 'label': r.toString()},
+            ];
           }
           if (d['orders'] is List) {
             final List<dynamic> rawOrders =
                 List<dynamic>.from(d['orders'] as List);
             eligibleOrders = [
               for (final o in rawOrders)
-                if (o is Map) Map<String, dynamic>.from(o),
+                if (o is Map) JsonMap.from(o),
             ];
           }
         }
       }
-    } catch (_) {}
+    } catch (_) {
+      if (mounted) Navigator.pop(context);
+    }
 
     if (!mounted) return;
 
     String selectedReasonKey = reasons.first['key']!.toString();
     int? selectedOrderId;
     final descCtrl = TextEditingController();
-    List<XFile> evidencePhotos = [];
+    XFileList evidencePhotos = [];
     String? modalError;
     bool isSubmitting = false;
 
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
+      backgroundColor: StorkTheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
       builder: (modalContext) {
         return StatefulBuilder(
           builder: (ctx, setModalState) {
@@ -233,14 +264,25 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
               padding: EdgeInsets.only(
                 left: 20,
                 right: 20,
-                top: 18,
-                bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
+                top: 14,
+                bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
               ),
               child: SingleChildScrollView(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    Center(
+                      child: Container(
+                        width: 42,
+                        height: 4,
+                        margin: const EdgeInsets.only(bottom: 16),
+                        decoration: BoxDecoration(
+                          color: StorkTheme.borderSubtle,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                      ),
+                    ),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
@@ -248,7 +290,7 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
                           child: Text(
                             'Report ${_seller.businessName}',
                             style: const TextStyle(
-                              fontSize: 16,
+                              fontSize: 16.5,
                               fontWeight: FontWeight.w800,
                               color: StorkTheme.primaryDark,
                             ),
@@ -263,18 +305,21 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
                     const SizedBox(height: 8),
                     DropdownButtonFormField<String>(
                       initialValue: selectedReasonKey,
+                      isExpanded: true,
                       decoration: const InputDecoration(
                         labelText: 'Violation Category *',
                       ),
-                      items: reasons
-                          .map((r) => DropdownMenuItem<String>(
-                                value: r['key']!.toString(),
-                                child: Text(
-                                  r['label']!.toString(),
-                                  style: const TextStyle(fontSize: 13),
-                                ),
-                              ))
-                          .toList(),
+                      items: [
+                        for (final r in reasons)
+                          DropdownMenuItem<String>(
+                            value: r['key']!.toString(),
+                            child: Text(
+                              r['label']!.toString(),
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(fontSize: 13),
+                            ),
+                          ),
+                      ],
                       onChanged: (val) {
                         if (val != null) {
                           setModalState(() => selectedReasonKey = val);
@@ -285,24 +330,27 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
                       const SizedBox(height: 12),
                       DropdownButtonFormField<int?>(
                         initialValue: selectedOrderId,
+                        isExpanded: true,
                         decoration: const InputDecoration(
                           labelText: 'Related Store Order (Optional)',
                         ),
                         items: [
                           const DropdownMenuItem<int?>(
                             value: null,
-                            child: Text('None / General Store Report'),
+                            child: Text(
+                              'None / General Store Report',
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           ),
-                          ...eligibleOrders.map((o) {
-                            final int oid =
-                                int.tryParse(o['id']?.toString() ?? '0') ?? 0;
-                            final String ono =
-                                o['seller_order_number']?.toString() ?? '#$oid';
-                            return DropdownMenuItem<int?>(
-                              value: oid,
-                              child: Text('Order $ono'),
-                            );
-                          }),
+                          for (final o in eligibleOrders)
+                            DropdownMenuItem<int?>(
+                              value:
+                                  int.tryParse(o['id']?.toString() ?? '0') ?? 0,
+                              child: Text(
+                                'Order ${o['seller_order_number']?.toString() ?? '#${o['id'] ?? 0}'}',
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
                         ],
                         onChanged: (val) =>
                             setModalState(() => selectedOrderId = val),
@@ -313,8 +361,14 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
                       controller: descCtrl,
                       maxLines: 3,
                       maxLength: 1000,
+                      onChanged: (_) {
+                        if (modalError != null) {
+                          setModalState(() => modalError = null);
+                        }
+                      },
                       decoration: const InputDecoration(
                         labelText: 'Describe the Violation (15+ chars) *',
+                        fillColor: StorkTheme.surfaceSubtle,
                       ),
                     ),
                     const SizedBox(height: 8),
@@ -324,8 +378,20 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
                         final picked =
                             await picker.pickMultiImage(imageQuality: 85);
                         if (picked.isNotEmpty) {
+                          final valid = <XFile>[];
+                          for (final f in picked.take(5)) {
+                            final len = await f.length();
+                            if (len > 5 * 1024 * 1024) {
+                              setModalState(() {
+                                modalError =
+                                    'Each evidence photo must not exceed 5MB.';
+                              });
+                              continue;
+                            }
+                            valid.add(f);
+                          }
                           setModalState(() {
-                            evidencePhotos = picked.take(5).toList();
+                            evidencePhotos = valid;
                           });
                         }
                       },
@@ -341,17 +407,41 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
                       Wrap(
                         spacing: 8,
                         runSpacing: 8,
-                        children: evidencePhotos
-                            .map((f) => ClipRRect(
-                                  borderRadius: BorderRadius.circular(8),
-                                  child: Image.file(
-                                    File(f.path),
-                                    width: 48,
-                                    height: 48,
-                                    fit: BoxFit.cover,
+                        children: List.generate(evidencePhotos.length, (pIdx) {
+                          return Stack(
+                            alignment: Alignment.topRight,
+                            children: [
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(8),
+                                child: Image.file(
+                                  File(evidencePhotos[pIdx].path),
+                                  width: 52,
+                                  height: 52,
+                                  fit: BoxFit.cover,
+                                ),
+                              ),
+                              GestureDetector(
+                                onTap: () {
+                                  setModalState(() {
+                                    evidencePhotos.removeAt(pIdx);
+                                  });
+                                },
+                                child: Container(
+                                  padding: const EdgeInsets.all(2),
+                                  decoration: const BoxDecoration(
+                                    color: Colors.black54,
+                                    shape: BoxShape.circle,
                                   ),
-                                ))
-                            .toList(),
+                                  child: const Icon(
+                                    Icons.close_rounded,
+                                    size: 12,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          );
+                        }),
                       ),
                     ],
                     if (modalError != null) ...[
@@ -365,10 +455,10 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
                         ),
                       ),
                     ],
-                    const SizedBox(height: 14),
+                    const SizedBox(height: 16),
                     SizedBox(
                       width: double.infinity,
-                      height: 48,
+                      height: 50,
                       child: ElevatedButton(
                         style: ElevatedButton.styleFrom(
                           backgroundColor: StorkTheme.danger,
@@ -433,12 +523,20 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
                                       false,
                                     );
                                   } else {
-                                    setModalState(() {
-                                      modalError = data is Map
-                                          ? (data['message']?.toString() ??
-                                              'Failed to submit report.')
-                                          : 'Failed to submit report.';
-                                    });
+                                    String err = data is Map
+                                        ? (data['message']?.toString() ??
+                                            'Failed to submit report.')
+                                        : 'Failed to submit report.';
+                                    if (data is Map &&
+                                        data['errors'] is Map &&
+                                        (data['errors'] as Map).isNotEmpty) {
+                                      final first =
+                                          (data['errors'] as Map).values.first;
+                                      if (first is List && first.isNotEmpty) {
+                                        err = first.first.toString();
+                                      }
+                                    }
+                                    setModalState(() => modalError = err);
                                   }
                                 } catch (_) {
                                   setModalState(() {
@@ -663,14 +761,19 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
     final filteredList = _filteredProducts;
     final width = MediaQuery.sizeOf(context).width;
     final crossAxisCount = width >= 700 ? 3 : 2;
+    final aspectRatio = width < 350 ? 0.63 : 0.68;
 
     return Scaffold(
       backgroundColor: StorkTheme.surfaceSubtle,
       appBar: AppBar(
-        title: Text(_seller.businessName),
+        title: Text(
+          _seller.businessName,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
         actions: [
           PopupMenuButton<String>(
-            icon: const Icon(Icons.sort_rounded),
+            icon: const Icon(Icons.tune_rounded),
             tooltip: 'Sort Store Products',
             onSelected: (v) => setState(() => _sortBy = v),
             itemBuilder: (_) => const [
@@ -695,327 +798,400 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
             ),
         ],
       ),
-      body: CustomScrollView(
-        slivers: [
-          SliverToBoxAdapter(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  color: StorkTheme.surface,
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          CircleAvatar(
-                            radius: 32,
-                            backgroundColor:
-                                StorkTheme.primary.withValues(alpha: 0.12),
-                            backgroundImage: logoUrl.isNotEmpty
-                                ? NetworkImage(logoUrl)
-                                : null,
-                            child: logoUrl.isEmpty
-                                ? Text(
-                                    _seller.businessName.isNotEmpty
-                                        ? _seller.businessName[0].toUpperCase()
-                                        : 'S',
+      body: RefreshIndicator(
+        color: StorkTheme.primary,
+        onRefresh: () => _fetchStoreData(silent: true),
+        child: CustomScrollView(
+          slivers: [
+            SliverToBoxAdapter(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    margin: const EdgeInsets.fromLTRB(14, 12, 14, 0),
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: StorkTheme.surface,
+                      borderRadius: BorderRadius.circular(22),
+                      border: Border.all(color: StorkTheme.borderSubtle),
+                      boxShadow: StorkTheme.softCardShadow,
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(2),
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                  color: StorkTheme.primary
+                                      .withValues(alpha: 0.35),
+                                  width: 1.5,
+                                ),
+                              ),
+                              child: CircleAvatar(
+                                radius: 32,
+                                backgroundColor:
+                                    StorkTheme.primary.withValues(alpha: 0.12),
+                                backgroundImage: logoUrl.isNotEmpty
+                                    ? NetworkImage(logoUrl)
+                                    : null,
+                                child: logoUrl.isEmpty
+                                    ? Text(
+                                        _seller.businessName.isNotEmpty
+                                            ? _seller.businessName[0]
+                                                .toUpperCase()
+                                            : 'S',
+                                        style: const TextStyle(
+                                          fontSize: 24,
+                                          fontWeight: FontWeight.w900,
+                                          color: StorkTheme.primary,
+                                        ),
+                                      )
+                                    : null,
+                              ),
+                            ),
+                            const SizedBox(width: 14),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    _seller.businessName,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
                                     style: const TextStyle(
-                                      fontSize: 24,
-                                      fontWeight: FontWeight.w800,
-                                      color: StorkTheme.primary,
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.w900,
+                                      color: StorkTheme.primaryDark,
                                     ),
-                                  )
-                                : null,
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    _mainCategories.isNotEmpty
+                                        ? _mainCategories.join(' • ')
+                                        : _seller.lineOfBusiness,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                      color: StorkTheme.textMuted,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Row(
+                                    children: [
+                                      const Icon(
+                                        Icons.location_on_outlined,
+                                        size: 13,
+                                        color: StorkTheme.primary,
+                                      ),
+                                      const SizedBox(width: 3),
+                                      Expanded(
+                                        child: Text(
+                                          '${_seller.municipality}, ${_seller.province}',
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                            fontSize: 11.5,
+                                            color: StorkTheme.textMuted,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 14),
+                        if (!_isOwnStore)
+                          Row(
+                            children: [
+                              Expanded(
+                                child: ElevatedButton(
+                                  onPressed:
+                                      _isTogglingFollow ? null : _toggleFollow,
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: _isFollowing
+                                        ? StorkTheme.surfaceSubtle
+                                        : StorkTheme.primary,
+                                    foregroundColor: _isFollowing
+                                        ? StorkTheme.textMain
+                                        : Colors.white,
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 10, vertical: 12),
+                                  ),
+                                  child: Text(
+                                    _isFollowing
+                                        ? '✓ Following Store'
+                                        : '+ Follow Store (₱30 Off)',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              OutlinedButton.icon(
+                                onPressed: _chatWithSeller,
+                                icon: const Icon(
+                                  Icons.chat_bubble_outline_rounded,
+                                  size: 16,
+                                ),
+                                label: const Text(
+                                  'Chat Now',
+                                  style: TextStyle(fontSize: 12),
+                                ),
+                              ),
+                            ],
                           ),
-                          const SizedBox(width: 14),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
+                        const SizedBox(height: 14),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              vertical: 10, horizontal: 12),
+                          decoration: BoxDecoration(
+                            color: StorkTheme.surfaceSubtle,
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Expanded(
+                                child: _buildStatColumn('Chat Rate',
+                                    '${_stats['chat_response_rate'] ?? 98}%'),
+                              ),
+                              Expanded(
+                                child: _buildStatColumn(
+                                    'Followers', '${_stats['followers'] ?? 0}'),
+                              ),
+                              Expanded(
+                                child: _buildStatColumn('Rating',
+                                    '${_stats['ratings'] ?? '0.0'} ★'),
+                              ),
+                              Expanded(
+                                child: _buildStatColumn('Products',
+                                    '${_stats['products_count'] ?? _allProducts.length}'),
+                              ),
+                            ],
+                          ),
+                        ),
+                        if (_storeVouchers.isNotEmpty) ...[
+                          const SizedBox(height: 16),
+                          const Text(
+                            'EXCLUSIVE STORE VOUCHERS',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w900,
+                              color: StorkTheme.primaryDark,
+                              letterSpacing: 0.4,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          SizedBox(
+                            height: 68,
+                            child: ListView.separated(
+                              scrollDirection: Axis.horizontal,
+                              itemCount: _storeVouchers.length,
+                              separatorBuilder: (_, __) =>
+                                  const SizedBox(width: 10),
+                              itemBuilder: (context, index) {
+                                final sv = _storeVouchers[index];
+                                final code = sv['code']?.toString() ?? '';
+                                final badge =
+                                    sv['badge_label']?.toString() ?? 'OFF';
+                                final minSpend = double.tryParse(
+                                        sv['min_spend']?.toString() ?? '0') ??
+                                    0;
+                                final claimed = sv['is_claimed'] == true;
+
+                                return Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 12, vertical: 8),
+                                  decoration: BoxDecoration(
+                                    color: StorkTheme.brandLight
+                                        .withValues(alpha: 0.25),
+                                    borderRadius: BorderRadius.circular(14),
+                                    border: Border.all(
+                                      color: StorkTheme.primary
+                                          .withValues(alpha: 0.3),
+                                    ),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.center,
+                                        children: [
+                                          Text(
+                                            '$code • $badge',
+                                            style: const TextStyle(
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.w800,
+                                              color: StorkTheme.primaryDark,
+                                            ),
+                                          ),
+                                          Text(
+                                            'Min. ₱${minSpend.toStringAsFixed(0)}',
+                                            style: const TextStyle(
+                                              fontSize: 10.5,
+                                              color: StorkTheme.textMuted,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(width: 12),
+                                      ElevatedButton(
+                                        onPressed: claimed
+                                            ? null
+                                            : () => _claimStoreVoucher(code),
+                                        style: ElevatedButton.styleFrom(
+                                          padding: const EdgeInsets.symmetric(
+                                              horizontal: 12, vertical: 6),
+                                          minimumSize: const Size(0, 32),
+                                        ),
+                                        child: Text(
+                                          claimed ? 'Claimed' : 'Claim',
+                                          style: const TextStyle(fontSize: 11),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 14),
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: StorkTheme.surface,
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: StorkTheme.borderSubtle),
+                      boxShadow: StorkTheme.softCardShadow,
+                    ),
+                    child: Column(
+                      children: [
+                        TextField(
+                          onChanged: (v) => setState(() => _searchQuery = v),
+                          decoration: const InputDecoration(
+                            hintText: 'Search products in this store...',
+                            fillColor: StorkTheme.surfaceSubtle,
+                            prefixIcon: Icon(
+                              Icons.search_rounded,
+                              size: 19,
+                              color: StorkTheme.primary,
+                            ),
+                          ),
+                        ),
+                        if (_mainCategories.length > 1 ||
+                            _subCategories.isNotEmpty) ...[
+                          const SizedBox(height: 10),
+                          SizedBox(
+                            height: 34,
+                            child: ListView(
+                              scrollDirection: Axis.horizontal,
                               children: [
-                                Text(
-                                  _seller.businessName,
-                                  style: const TextStyle(
-                                    fontSize: 18,
-                                    fontWeight: FontWeight.w800,
-                                    color: StorkTheme.textMain,
-                                  ),
+                                _buildCategoryChip(
+                                  label: 'All Items',
+                                  isSelected: _selectedMainCategory.isEmpty &&
+                                      _selectedSubCategory.isEmpty,
+                                  onTap: () => setState(() {
+                                    _selectedMainCategory = '';
+                                    _selectedSubCategory = '';
+                                  }),
                                 ),
-                                const SizedBox(height: 2),
-                                Text(
-                                  _mainCategories.isNotEmpty
-                                      ? _mainCategories.join(' • ')
-                                      : _seller.lineOfBusiness,
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: StorkTheme.textMuted,
+                                for (final mCat in _mainCategories)
+                                  _buildCategoryChip(
+                                    label: mCat,
+                                    isSelected: _selectedMainCategory == mCat &&
+                                        _selectedSubCategory.isEmpty,
+                                    onTap: () => setState(() {
+                                      _selectedMainCategory = mCat;
+                                      _selectedSubCategory = '';
+                                    }),
                                   ),
-                                ),
-                                const SizedBox(height: 2),
-                                Text(
-                                  '${_seller.municipality}, ${_seller.province}',
-                                  style: const TextStyle(
-                                    fontSize: 11.5,
-                                    color: StorkTheme.textMuted,
+                                for (final sCat in _subCategories)
+                                  _buildCategoryChip(
+                                    label: sCat,
+                                    isSelected: _selectedSubCategory == sCat,
+                                    onTap: () => setState(() {
+                                      _selectedSubCategory = sCat;
+                                    }),
                                   ),
-                                ),
                               ],
                             ),
                           ),
                         ],
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                ],
+              ),
+            ),
+            _isLoadingStore && _allProducts.isEmpty
+                ? const SliverToBoxAdapter(
+                    child: Padding(
+                      padding: EdgeInsets.all(40),
+                      child: Center(
+                        child: CircularProgressIndicator(
+                            color: StorkTheme.primary),
                       ),
-                      const SizedBox(height: 14),
-                      if (!_isOwnStore)
-                        Row(
-                          children: [
-                            Expanded(
-                              child: ElevatedButton(
-                                onPressed:
-                                    _isTogglingFollow ? null : _toggleFollow,
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: _isFollowing
-                                      ? StorkTheme.surfaceSubtle
-                                      : StorkTheme.primary,
-                                  foregroundColor: _isFollowing
-                                      ? StorkTheme.textMain
-                                      : Colors.white,
-                                ),
-                                child: Text(
-                                  _isFollowing
-                                      ? '✓ Following Store'
-                                      : '+ Follow Store (Get ₱30 Voucher)',
-                                  style: const TextStyle(fontSize: 12.5),
-                                ),
-                              ),
+                    ),
+                  )
+                : filteredList.isEmpty
+                    ? const SliverToBoxAdapter(
+                        child: Padding(
+                          padding: EdgeInsets.all(40),
+                          child: Center(
+                            child: Text(
+                              'No store products match your filter.',
+                              style: TextStyle(color: StorkTheme.textMuted),
                             ),
-                            const SizedBox(width: 10),
-                            OutlinedButton.icon(
-                              onPressed: _chatWithSeller,
-                              icon: const Icon(
-                                  Icons.chat_bubble_outline_rounded,
-                                  size: 17),
-                              label: const Text('Chat Now'),
-                            ),
-                          ],
-                        ),
-                      const SizedBox(height: 14),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            vertical: 10, horizontal: 12),
-                        decoration: BoxDecoration(
-                          color: StorkTheme.surfaceSubtle,
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            _buildStatColumn('Chat Rate',
-                                '${_stats['chat_response_rate'] ?? 98}%'),
-                            _buildStatColumn(
-                                'Followers', '${_stats['followers'] ?? 0}'),
-                            _buildStatColumn('Rating',
-                                '${_stats['ratings'] ?? '0.0'} / 5.0'),
-                            _buildStatColumn('Products',
-                                '${_stats['products_count'] ?? _allProducts.length}'),
-                          ],
-                        ),
-                      ),
-                      if (_storeVouchers.isNotEmpty) ...[
-                        const SizedBox(height: 16),
-                        const Text(
-                          'EXCLUSIVE STORE VOUCHERS',
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w800,
-                            color: StorkTheme.primaryDark,
                           ),
                         ),
-                        const SizedBox(height: 8),
-                        SizedBox(
-                          height: 68,
-                          child: ListView.separated(
-                            scrollDirection: Axis.horizontal,
-                            itemCount: _storeVouchers.length,
-                            separatorBuilder: (_, __) =>
-                                const SizedBox(width: 10),
-                            itemBuilder: (context, index) {
-                              final sv = _storeVouchers[index];
-                              final code = sv['code']?.toString() ?? '';
-                              final badge =
-                                  sv['badge_label']?.toString() ?? 'OFF';
-                              final minSpend = double.tryParse(
-                                      sv['min_spend']?.toString() ?? '0') ??
-                                  0;
-                              final claimed = sv['is_claimed'] == true;
-
-                              return Container(
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 12, vertical: 8),
-                                decoration: BoxDecoration(
-                                  color: StorkTheme.brandLight
-                                      .withValues(alpha: 0.25),
-                                  borderRadius: BorderRadius.circular(14),
-                                  border: Border.all(
-                                    color: StorkTheme.primary
-                                        .withValues(alpha: 0.3),
-                                  ),
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      mainAxisAlignment:
-                                          MainAxisAlignment.center,
-                                      children: [
-                                        Text(
-                                          '$code • $badge',
-                                          style: const TextStyle(
-                                            fontSize: 12,
-                                            fontWeight: FontWeight.w800,
-                                            color: StorkTheme.primaryDark,
-                                          ),
-                                        ),
-                                        Text(
-                                          'Min. ₱${minSpend.toStringAsFixed(0)}',
-                                          style: const TextStyle(
-                                            fontSize: 10.5,
-                                            color: StorkTheme.textMuted,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                    const SizedBox(width: 12),
-                                    ElevatedButton(
-                                      onPressed: claimed
-                                          ? null
-                                          : () => _claimStoreVoucher(code),
-                                      style: ElevatedButton.styleFrom(
-                                        padding: const EdgeInsets.symmetric(
-                                            horizontal: 12, vertical: 6),
-                                        minimumSize: const Size(0, 32),
-                                      ),
-                                      child: Text(
-                                        claimed ? 'Claimed' : 'Claim',
-                                        style: const TextStyle(fontSize: 11),
-                                      ),
-                                    ),
-                                  ],
-                                ),
+                      )
+                    : SliverPadding(
+                        padding: const EdgeInsets.symmetric(horizontal: 14),
+                        sliver: SliverGrid(
+                          gridDelegate:
+                              SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: crossAxisCount,
+                            childAspectRatio: aspectRatio,
+                            crossAxisSpacing: 12,
+                            mainAxisSpacing: 12,
+                          ),
+                          delegate: SliverChildBuilderDelegate(
+                            (context, index) {
+                              return ProductCard(
+                                product: filteredList[index],
+                                baseUrl: _domain,
+                                token: widget.token,
                               );
                             },
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Container(
-                  color: StorkTheme.surface,
-                  padding: const EdgeInsets.all(14),
-                  child: Column(
-                    children: [
-                      TextField(
-                        onChanged: (v) => setState(() => _searchQuery = v),
-                        decoration: const InputDecoration(
-                          hintText: 'Search products in this store...',
-                          prefixIcon: Icon(Icons.search_rounded, size: 19),
-                        ),
-                      ),
-                      if (_mainCategories.length > 1 ||
-                          _subCategories.isNotEmpty) ...[
-                        const SizedBox(height: 10),
-                        SizedBox(
-                          height: 34,
-                          child: ListView(
-                            scrollDirection: Axis.horizontal,
-                            children: [
-                              _buildCategoryChip(
-                                label: 'All Items',
-                                isSelected: _selectedMainCategory.isEmpty &&
-                                    _selectedSubCategory.isEmpty,
-                                onTap: () => setState(() {
-                                  _selectedMainCategory = '';
-                                  _selectedSubCategory = '';
-                                }),
-                              ),
-                              for (final mCat in _mainCategories)
-                                _buildCategoryChip(
-                                  label: mCat,
-                                  isSelected: _selectedMainCategory == mCat &&
-                                      _selectedSubCategory.isEmpty,
-                                  onTap: () => setState(() {
-                                    _selectedMainCategory = mCat;
-                                    _selectedSubCategory = '';
-                                  }),
-                                ),
-                              for (final sCat in _subCategories)
-                                _buildCategoryChip(
-                                  label: sCat,
-                                  isSelected: _selectedSubCategory == sCat,
-                                  onTap: () => setState(() {
-                                    _selectedSubCategory = sCat;
-                                  }),
-                                ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 12),
-              ],
-            ),
-          ),
-          _isLoadingStore
-              ? const SliverToBoxAdapter(
-                  child: Padding(
-                    padding: EdgeInsets.all(40),
-                    child: Center(
-                      child:
-                          CircularProgressIndicator(color: StorkTheme.primary),
-                    ),
-                  ),
-                )
-              : filteredList.isEmpty
-                  ? const SliverToBoxAdapter(
-                      child: Padding(
-                        padding: EdgeInsets.all(40),
-                        child: Center(
-                          child: Text(
-                            'No store products match your filter.',
-                            style: TextStyle(color: StorkTheme.textMuted),
+                            childCount: filteredList.length,
                           ),
                         ),
                       ),
-                    )
-                  : SliverPadding(
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
-                      sliver: SliverGrid(
-                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: crossAxisCount,
-                          childAspectRatio: 0.68,
-                          crossAxisSpacing: 12,
-                          mainAxisSpacing: 12,
-                        ),
-                        delegate: SliverChildBuilderDelegate(
-                          (context, index) {
-                            return ProductCard(
-                              product: filteredList[index],
-                              baseUrl: _domain,
-                              token: widget.token,
-                            );
-                          },
-                          childCount: filteredList.length,
-                        ),
-                      ),
-                    ),
-          const SliverToBoxAdapter(child: SizedBox(height: 28)),
-        ],
+            const SliverToBoxAdapter(child: SizedBox(height: 28)),
+          ],
+        ),
       ),
     );
   }
@@ -1025,8 +1201,10 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
       children: [
         Text(
           value,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
           style: const TextStyle(
-            fontSize: 13,
+            fontSize: 12.5,
             fontWeight: FontWeight.w800,
             color: StorkTheme.primaryDark,
           ),
@@ -1034,6 +1212,8 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
         const SizedBox(height: 2),
         Text(
           label,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
           style: const TextStyle(fontSize: 10.5, color: StorkTheme.textMuted),
         ),
       ],
@@ -1052,7 +1232,8 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
         padding: const EdgeInsets.symmetric(horizontal: 12),
         alignment: Alignment.center,
         decoration: BoxDecoration(
-          color: isSelected ? StorkTheme.primary : StorkTheme.surfaceSubtle,
+          gradient: isSelected ? StorkTheme.brandGradient : null,
+          color: isSelected ? null : StorkTheme.surfaceSubtle,
           borderRadius: BorderRadius.circular(18),
           border: Border.all(
             color: isSelected ? StorkTheme.primary : StorkTheme.borderSubtle,
@@ -1062,7 +1243,7 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
           label,
           style: TextStyle(
             fontSize: 12,
-            fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+            fontWeight: isSelected ? FontWeight.w800 : FontWeight.w600,
             color: isSelected ? Colors.white : StorkTheme.textMain,
           ),
         ),

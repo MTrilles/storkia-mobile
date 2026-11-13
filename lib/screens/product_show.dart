@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
@@ -21,6 +22,7 @@ import 'checkout_screen.dart';
 import 'seller_store_screen.dart';
 
 typedef JsonMap = Map<String, dynamic>;
+typedef StringMap = Map<String, String>;
 
 class ProductShowScreen extends ConsumerStatefulWidget {
   final Product product;
@@ -83,6 +85,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
 
   double _productAvgRating = 0.0;
   int _totalSoldUnits = 0;
+  int _selectedReviewStarFilter = 0;
   List<JsonMap> _storeVouchers = [];
   List<JsonMap> _reviews = [];
   List<JsonMap> _questions = [];
@@ -119,7 +122,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
     _totalStock = _calculateTotalStock(_product);
     _activeStock = _totalStock;
 
-    _fetchFullProductDetails();
+    _fetchFullProductDetails(silent: false);
     _autoSyncTimer = Timer.periodic(const Duration(seconds: 6), (_) {
       _fetchFullProductDetails(silent: true);
     });
@@ -206,6 +209,21 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
     return _activePrice;
   }
 
+  List<JsonMap> get _filteredReviews {
+    if (_selectedReviewStarFilter == 0) return _reviews;
+    return _reviews.where((r) {
+      final stars = int.tryParse(r['rating']?.toString() ?? '5') ?? 5;
+      return stars == _selectedReviewStarFilter;
+    }).toList();
+  }
+
+  int _countReviewsByStar(int star) {
+    return _reviews.where((r) {
+      final s = int.tryParse(r['rating']?.toString() ?? '5') ?? 5;
+      return s == star;
+    }).length;
+  }
+
   String _formatMoney(double value) {
     final parts = value.toStringAsFixed(2).split('.');
     final intPart = parts[0].replaceAllMapped(
@@ -215,7 +233,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
     return '$intPart.${parts[1]}';
   }
 
-  Future<void> _fetchFullProductDetails({bool silent = false}) async {
+  Future<void> _fetchFullProductDetails({bool silent = true}) async {
     try {
       final response = await http.get(
         Uri.parse('$_domain/api/v1/products/${_product.id}'),
@@ -230,18 +248,17 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
       if (response.statusCode == 200) {
         final body = json.decode(response.body);
         if (body['success'] == true && body['data'] is Map) {
-          final payload = Map<String, dynamic>.from(body['data'] as Map);
+          final payload = JsonMap.from(body['data'] as Map);
           final prodJson = payload['product'] is Map
-              ? Map<String, dynamic>.from(payload['product'] as Map)
+              ? JsonMap.from(payload['product'] as Map)
               : null;
           final sellerJson = payload['seller'] is Map
-              ? Map<String, dynamic>.from(payload['seller'] as Map)
+              ? JsonMap.from(payload['seller'] as Map)
               : null;
 
           setState(() {
             if (payload['deal_pricing'] is Map) {
-              _dealPricing =
-                  Map<String, dynamic>.from(payload['deal_pricing'] as Map);
+              _dealPricing = JsonMap.from(payload['deal_pricing'] as Map);
             }
             if (prodJson != null) {
               _product = Product.fromJson(prodJson);
@@ -260,7 +277,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
               _seller = SellerProfile.fromJson(sellerJson);
             }
             if (payload['stats'] is Map) {
-              _storeStats = Map<String, dynamic>.from(payload['stats'] as Map);
+              _storeStats = JsonMap.from(payload['stats'] as Map);
             }
             _productAvgRating = double.tryParse(
                     payload['product_avg_rating']?.toString() ?? '0') ??
@@ -284,7 +301,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                   List<dynamic>.from(payload['store_vouchers'] as List);
               _storeVouchers = [
                 for (final v in rawVouchers)
-                  if (v is Map) Map<String, dynamic>.from(v),
+                  if (v is Map) JsonMap.from(v),
               ];
             }
             if (payload['reviews'] is List) {
@@ -292,7 +309,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                   List<dynamic>.from(payload['reviews'] as List);
               _reviews = [
                 for (final r in rawReviews)
-                  if (r is Map) Map<String, dynamic>.from(r),
+                  if (r is Map) JsonMap.from(r),
               ];
             }
             if (payload['questions'] is List) {
@@ -300,7 +317,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                   List<dynamic>.from(payload['questions'] as List);
               _questions = [
                 for (final q in rawQuestions)
-                  if (q is Map) Map<String, dynamic>.from(q),
+                  if (q is Map) JsonMap.from(q),
               ];
             }
             if (payload['related_products'] is List) {
@@ -308,7 +325,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                   List<dynamic>.from(payload['related_products'] as List);
               _recommendedProducts = [
                 for (final p in rawRelated)
-                  if (p is Map) Product.fromJson(Map<String, dynamic>.from(p)),
+                  if (p is Map) Product.fromJson(JsonMap.from(p)),
               ];
             }
             _isLoadingDetails = false;
@@ -335,14 +352,14 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
         items[_selectedMainIndex!] is! Map) {
       return;
     }
-    final item = Map<String, dynamic>.from(items[_selectedMainIndex!] as Map);
+    final item = JsonMap.from(items[_selectedMainIndex!] as Map);
     final bool hasSubs =
         item['subs'] is List && (item['subs'] as List).isNotEmpty;
 
     if (hasSubs && _selectedSubIndex != null) {
       final List<dynamic> subs = List<dynamic>.from(item['subs'] as List);
       if (_selectedSubIndex! < subs.length && subs[_selectedSubIndex!] is Map) {
-        final sub = Map<String, dynamic>.from(subs[_selectedSubIndex!] as Map);
+        final sub = JsonMap.from(subs[_selectedSubIndex!] as Map);
         _activePrice = double.tryParse(sub['price']?.toString() ?? '') ??
             double.tryParse(item['price']?.toString() ?? '') ??
             _product.price;
@@ -519,6 +536,10 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
+      backgroundColor: StorkTheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
       builder: (modalContext) {
         return StatefulBuilder(
           builder: (ctx, setModalState) {
@@ -526,139 +547,158 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
               padding: EdgeInsets.only(
                 left: 20,
                 right: 20,
-                top: 18,
-                bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
+                top: 14,
+                bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
               ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Expanded(
-                        child: Text(
-                          'Ask the Seller a Question',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w800,
-                            color: StorkTheme.primaryDark,
-                          ),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 42,
+                        height: 4,
+                        margin: const EdgeInsets.only(bottom: 16),
+                        decoration: BoxDecoration(
+                          color: StorkTheme.borderSubtle,
+                          borderRadius: BorderRadius.circular(4),
                         ),
                       ),
-                      IconButton(
-                        onPressed: () => Navigator.pop(modalContext),
-                        icon: const Icon(Icons.close_rounded),
+                    ),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Expanded(
+                          child: Text(
+                            'Ask the Seller a Question',
+                            style: TextStyle(
+                              fontSize: 16.5,
+                              fontWeight: FontWeight.w800,
+                              color: StorkTheme.primaryDark,
+                            ),
+                          ),
+                        ),
+                        IconButton(
+                          onPressed: () => Navigator.pop(modalContext),
+                          icon: const Icon(Icons.close_rounded),
+                        ),
+                      ],
+                    ),
+                    const Text(
+                      'Your question and the seller\'s official answer will be visible on this product page to help shoppers.',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: StorkTheme.textMuted,
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    TextField(
+                      controller: questionCtrl,
+                      maxLines: 3,
+                      maxLength: 500,
+                      onChanged: (_) {
+                        if (modalError != null) {
+                          setModalState(() => modalError = null);
+                        }
+                      },
+                      decoration: const InputDecoration(
+                        labelText: 'Type your question (5–500 characters) *',
+                        fillColor: StorkTheme.surfaceSubtle,
+                      ),
+                    ),
+                    if (modalError != null) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        modalError!,
+                        style: const TextStyle(
+                          color: StorkTheme.danger,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                        ),
                       ),
                     ],
-                  ),
-                  const Text(
-                    'Your question and the seller\'s official answer will be visible on this product page to help shoppers.',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: StorkTheme.textMuted,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: questionCtrl,
-                    maxLines: 3,
-                    maxLength: 500,
-                    decoration: const InputDecoration(
-                      labelText: 'Type your question (5–500 characters) *',
-                    ),
-                  ),
-                  if (modalError != null) ...[
-                    const SizedBox(height: 6),
-                    Text(
-                      modalError!,
-                      style: const TextStyle(
-                        color: StorkTheme.danger,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w700,
+                    const SizedBox(height: 14),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 50,
+                      child: ElevatedButton(
+                        onPressed: isSubmitting
+                            ? null
+                            : () async {
+                                final qText = questionCtrl.text.trim();
+                                if (qText.length < 5) {
+                                  setModalState(() {
+                                    modalError =
+                                        'Question must be at least 5 characters.';
+                                  });
+                                  return;
+                                }
+                                setModalState(() {
+                                  isSubmitting = true;
+                                  modalError = null;
+                                });
+                                try {
+                                  final response = await http
+                                      .post(
+                                        Uri.parse(
+                                            '$_domain/api/v1/products/${_product.id}/questions'),
+                                        headers: {
+                                          'Authorization':
+                                              'Bearer ${widget.token}',
+                                          'Accept': 'application/json',
+                                          'Content-Type': 'application/json',
+                                        },
+                                        body: json.encode({'question': qText}),
+                                      )
+                                      .timeout(ApiConfig.requestTimeout);
+
+                                  final data = json.decode(response.body);
+                                  if ((response.statusCode == 200 ||
+                                          response.statusCode == 201) &&
+                                      data is Map &&
+                                      data['success'] == true) {
+                                    if (modalContext.mounted) {
+                                      Navigator.pop(modalContext);
+                                    }
+                                    _showToast(
+                                      data['message']?.toString() ??
+                                          'Question posted!',
+                                      isError: false,
+                                    );
+                                    _fetchFullProductDetails(silent: true);
+                                  } else {
+                                    setModalState(() {
+                                      modalError = data is Map
+                                          ? (data['message']?.toString() ??
+                                              'Unable to post question.')
+                                          : 'Unable to post question.';
+                                    });
+                                  }
+                                } catch (_) {
+                                  setModalState(() {
+                                    modalError = 'Network error occurred.';
+                                  });
+                                } finally {
+                                  if (modalContext.mounted) {
+                                    setModalState(() => isSubmitting = false);
+                                  }
+                                }
+                              },
+                        child: isSubmitting
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  color: Colors.white,
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Text('Post Question'),
                       ),
                     ),
                   ],
-                  const SizedBox(height: 12),
-                  SizedBox(
-                    width: double.infinity,
-                    height: 48,
-                    child: ElevatedButton(
-                      onPressed: isSubmitting
-                          ? null
-                          : () async {
-                              final qText = questionCtrl.text.trim();
-                              if (qText.length < 5) {
-                                setModalState(() {
-                                  modalError =
-                                      'Question must be at least 5 characters.';
-                                });
-                                return;
-                              }
-                              setModalState(() {
-                                isSubmitting = true;
-                                modalError = null;
-                              });
-                              try {
-                                final response = await http
-                                    .post(
-                                      Uri.parse(
-                                          '$_domain/api/v1/products/${_product.id}/questions'),
-                                      headers: {
-                                        'Authorization':
-                                            'Bearer ${widget.token}',
-                                        'Accept': 'application/json',
-                                        'Content-Type': 'application/json',
-                                      },
-                                      body: json.encode({'question': qText}),
-                                    )
-                                    .timeout(ApiConfig.requestTimeout);
-
-                                final data = json.decode(response.body);
-                                if ((response.statusCode == 200 ||
-                                        response.statusCode == 201) &&
-                                    data is Map &&
-                                    data['success'] == true) {
-                                  if (modalContext.mounted) {
-                                    Navigator.pop(modalContext);
-                                  }
-                                  _showToast(
-                                    data['message']?.toString() ??
-                                        'Question posted!',
-                                    isError: false,
-                                  );
-                                  _fetchFullProductDetails(silent: true);
-                                } else {
-                                  setModalState(() {
-                                    modalError = data is Map
-                                        ? (data['message']?.toString() ??
-                                            'Unable to post question.')
-                                        : 'Unable to post question.';
-                                  });
-                                }
-                              } catch (_) {
-                                setModalState(() {
-                                  modalError = 'Network error occurred.';
-                                });
-                              } finally {
-                                if (modalContext.mounted) {
-                                  setModalState(() => isSubmitting = false);
-                                }
-                              }
-                            },
-                      child: isSubmitting
-                          ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(
-                                color: Colors.white,
-                                strokeWidth: 2,
-                              ),
-                            )
-                          : const Text('Post Question'),
-                    ),
-                  ),
-                ],
+                ),
               ),
             );
           },
@@ -667,12 +707,12 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
     );
   }
 
-  Future<void> _toggleReviewHelpful(int index) async {
-    if (index < 0 || index >= _reviews.length) return;
-    final rev = _reviews[index];
-    final int reviewId = int.tryParse(rev['id']?.toString() ?? '0') ?? 0;
-    if (reviewId <= 0) return;
+  Future<void> _toggleReviewHelpful(int reviewId) async {
+    final index = _reviews.indexWhere(
+        (r) => (int.tryParse(r['id']?.toString() ?? '0') ?? 0) == reviewId);
+    if (index < 0) return;
 
+    final rev = _reviews[index];
     final bool wasUpvoted = rev['is_upvoted'] == true;
     final int prevCount =
         int.tryParse(rev['helpful_count']?.toString() ?? '0') ?? 0;
@@ -969,11 +1009,16 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
     final textCtrl =
         TextEditingController(text: rev['review_text']?.toString() ?? '');
     List<XFile> pickedPhotos = [];
+    String? modalError;
     bool isSaving = false;
 
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
+      backgroundColor: StorkTheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
       builder: (modalContext) {
         return StatefulBuilder(
           builder: (ctx, setModalState) {
@@ -981,146 +1026,241 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
               padding: EdgeInsets.only(
                 left: 20,
                 right: 20,
-                top: 20,
+                top: 14,
                 bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
               ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text(
-                        'Edit Your Review (1-Time Edit)',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w800,
-                          color: StorkTheme.primaryDark,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 42,
+                        height: 4,
+                        margin: const EdgeInsets.only(bottom: 16),
+                        decoration: BoxDecoration(
+                          color: StorkTheme.borderSubtle,
+                          borderRadius: BorderRadius.circular(4),
                         ),
                       ),
-                      IconButton(
-                        onPressed: () => Navigator.pop(modalContext),
-                        icon: const Icon(Icons.close_rounded),
+                    ),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Expanded(
+                          child: Text(
+                            'Edit Your Review (1-Time Edit)',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w800,
+                              color: StorkTheme.primaryDark,
+                            ),
+                          ),
+                        ),
+                        IconButton(
+                          onPressed: () => Navigator.pop(modalContext),
+                          icon: const Icon(Icons.close_rounded),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      children: List.generate(5, (i) {
+                        final star = i + 1;
+                        return IconButton(
+                          onPressed: () =>
+                              setModalState(() => editRating = star),
+                          icon: Icon(
+                            star <= editRating
+                                ? Icons.star_rounded
+                                : Icons.star_border_rounded,
+                            color: Colors.amber,
+                            size: 30,
+                          ),
+                        );
+                      }),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: textCtrl,
+                      maxLines: 3,
+                      maxLength: 500,
+                      onChanged: (_) {
+                        if (modalError != null) {
+                          setModalState(() => modalError = null);
+                        }
+                      },
+                      decoration: const InputDecoration(
+                        labelText: 'Update Review Comment',
+                        fillColor: StorkTheme.surfaceSubtle,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    OutlinedButton.icon(
+                      onPressed: () async {
+                        final picker = ImagePicker();
+                        final files = await picker.pickMultiImage(
+                          imageQuality: 82,
+                        );
+                        if (files.isNotEmpty) {
+                          final valid = <XFile>[];
+                          for (final f in files.take(5)) {
+                            final len = await f.length();
+                            if (len > 5 * 1024 * 1024) {
+                              setModalState(() {
+                                modalError =
+                                    'Each review photo must not exceed 5MB.';
+                              });
+                              continue;
+                            }
+                            valid.add(f);
+                          }
+                          setModalState(() {
+                            pickedPhotos = valid;
+                          });
+                        }
+                      },
+                      icon: const Icon(Icons.photo_camera_outlined, size: 18),
+                      label: Text(pickedPhotos.isEmpty
+                          ? 'Replace Review Photos (Max 5)'
+                          : '${pickedPhotos.length} photo(s) selected'),
+                    ),
+                    if (pickedPhotos.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: List.generate(pickedPhotos.length, (pIdx) {
+                          return Stack(
+                            alignment: Alignment.topRight,
+                            children: [
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(8),
+                                child: Image.file(
+                                  File(pickedPhotos[pIdx].path),
+                                  width: 48,
+                                  height: 48,
+                                  fit: BoxFit.cover,
+                                ),
+                              ),
+                              GestureDetector(
+                                onTap: () {
+                                  setModalState(() {
+                                    pickedPhotos.removeAt(pIdx);
+                                  });
+                                },
+                                child: Container(
+                                  padding: const EdgeInsets.all(2),
+                                  decoration: const BoxDecoration(
+                                    color: Colors.black54,
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: const Icon(
+                                    Icons.close_rounded,
+                                    size: 12,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          );
+                        }),
                       ),
                     ],
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: List.generate(5, (i) {
-                      final star = i + 1;
-                      return IconButton(
-                        onPressed: () => setModalState(() => editRating = star),
-                        icon: Icon(
-                          star <= editRating
-                              ? Icons.star_rounded
-                              : Icons.star_border_rounded,
-                          color: Colors.amber,
-                          size: 30,
+                    if (modalError != null) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        modalError!,
+                        style: const TextStyle(
+                          color: StorkTheme.danger,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
                         ),
-                      );
-                    }),
-                  ),
-                  const SizedBox(height: 8),
-                  TextField(
-                    controller: textCtrl,
-                    maxLines: 3,
-                    maxLength: 500,
-                    decoration: const InputDecoration(
-                      labelText: 'Update Review Comment',
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  OutlinedButton.icon(
-                    onPressed: () async {
-                      final picker = ImagePicker();
-                      final files = await picker.pickMultiImage(
-                        imageQuality: 82,
-                      );
-                      if (files.isNotEmpty) {
-                        setModalState(() {
-                          pickedPhotos = files.take(5).toList();
-                        });
-                      }
-                    },
-                    icon: const Icon(Icons.photo_camera_outlined, size: 18),
-                    label: Text(pickedPhotos.isEmpty
-                        ? 'Replace Review Photos (Max 5)'
-                        : '${pickedPhotos.length} photo(s) selected'),
-                  ),
-                  const SizedBox(height: 16),
-                  SizedBox(
-                    width: double.infinity,
-                    height: 48,
-                    child: ElevatedButton(
-                      onPressed: isSaving
-                          ? null
-                          : () async {
-                              setModalState(() => isSaving = true);
-                              try {
-                                final req = http.MultipartRequest(
-                                  'POST',
-                                  Uri.parse(
-                                      '$_domain/api/v1/reviews/${rev['id']}'),
-                                );
-                                req.headers['Authorization'] =
-                                    'Bearer ${widget.token}';
-                                req.headers['Accept'] = 'application/json';
-                                req.fields['rating'] = '$editRating';
-                                req.fields['review_text'] =
-                                    textCtrl.text.trim();
-
-                                for (final f in pickedPhotos) {
-                                  req.files.add(
-                                    await http.MultipartFile.fromPath(
-                                      'review_photos[]',
-                                      f.path,
-                                    ),
+                      ),
+                    ],
+                    const SizedBox(height: 16),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 50,
+                      child: ElevatedButton(
+                        onPressed: isSaving
+                            ? null
+                            : () async {
+                                setModalState(() {
+                                  isSaving = true;
+                                  modalError = null;
+                                });
+                                try {
+                                  final req = http.MultipartRequest(
+                                    'POST',
+                                    Uri.parse(
+                                        '$_domain/api/v1/reviews/${rev['id']}'),
                                   );
-                                }
+                                  req.headers['Authorization'] =
+                                      'Bearer ${widget.token}';
+                                  req.headers['Accept'] = 'application/json';
+                                  req.fields['rating'] = '$editRating';
+                                  req.fields['review_text'] =
+                                      textCtrl.text.trim();
 
-                                final streamed = await req
-                                    .send()
-                                    .timeout(ApiConfig.requestTimeout);
-                                final res =
-                                    await http.Response.fromStream(streamed);
-                                final data = json.decode(res.body);
-
-                                if (res.statusCode == 200 &&
-                                    data['success'] == true) {
-                                  if (modalContext.mounted) {
-                                    Navigator.pop(modalContext);
+                                  for (final f in pickedPhotos) {
+                                    req.files.add(
+                                      await http.MultipartFile.fromPath(
+                                        'review_photos[]',
+                                        f.path,
+                                      ),
+                                    );
                                   }
-                                  _showToast(
-                                      data['message']?.toString() ??
-                                          'Review updated!',
-                                      isError: false);
-                                  _fetchFullProductDetails(silent: true);
-                                } else {
-                                  _showToast(data['message']?.toString() ??
-                                      'Failed to update review.');
+
+                                  final streamed = await req
+                                      .send()
+                                      .timeout(ApiConfig.requestTimeout);
+                                  final res =
+                                      await http.Response.fromStream(streamed);
+                                  final data = json.decode(res.body);
+
+                                  if (res.statusCode == 200 &&
+                                      data['success'] == true) {
+                                    if (modalContext.mounted) {
+                                      Navigator.pop(modalContext);
+                                    }
+                                    _showToast(
+                                        data['message']?.toString() ??
+                                            'Review updated!',
+                                        isError: false);
+                                    _fetchFullProductDetails(silent: true);
+                                  } else {
+                                    setModalState(() {
+                                      modalError =
+                                          data['message']?.toString() ??
+                                              'Failed to update review.';
+                                    });
+                                  }
+                                } catch (_) {
+                                  setModalState(() {
+                                    modalError = 'Network error occurred.';
+                                  });
+                                } finally {
+                                  if (modalContext.mounted) {
+                                    setModalState(() => isSaving = false);
+                                  }
                                 }
-                              } catch (_) {
-                                _showToast('Network error occurred.');
-                              } finally {
-                                if (modalContext.mounted) {
-                                  setModalState(() => isSaving = false);
-                                }
-                              }
-                            },
-                      child: isSaving
-                          ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(
-                                color: Colors.white,
-                                strokeWidth: 2,
-                              ),
-                            )
-                          : const Text('Save Updated Review'),
+                              },
+                        child: isSaving
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  color: Colors.white,
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Text('Save Updated Review'),
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             );
           },
@@ -1184,6 +1324,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
     final cartCount = ref.watch(cartCountProvider);
     final screenWidth = MediaQuery.sizeOf(context).width;
     final gridColumns = screenWidth >= 700 ? 3 : 2;
+    final aspectRatio = screenWidth < 350 ? 0.63 : 0.68;
 
     return Scaffold(
       backgroundColor: StorkTheme.surfaceSubtle,
@@ -1237,109 +1378,113 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
           const SizedBox(width: 6),
         ],
       ),
-      body: CustomScrollView(
-        controller: _scrollController,
-        slivers: [
-          SliverToBoxAdapter(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (_isStoreOnVacation)
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 16, vertical: 10),
-                    color: StorkTheme.warning.withValues(alpha: 0.14),
-                    child: Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 3),
-                          decoration: BoxDecoration(
-                            color: StorkTheme.warning,
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: const Text(
-                            'ON VACATION',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 9.5,
-                              fontWeight: FontWeight.w800,
+      body: RefreshIndicator(
+        color: StorkTheme.primary,
+        onRefresh: () => _fetchFullProductDetails(silent: true),
+        child: CustomScrollView(
+          controller: _scrollController,
+          slivers: [
+            SliverToBoxAdapter(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (_isStoreOnVacation)
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 10),
+                      color: StorkTheme.warning.withValues(alpha: 0.14),
+                      child: Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: StorkTheme.warning,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: const Text(
+                              'ON VACATION',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 9.5,
+                                fontWeight: FontWeight.w800,
+                              ),
                             ),
                           ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Text(
-                            '${_seller?.businessName ?? 'This store'} is currently on vacation. Add to Cart and Buy Now are temporarily paused.',
-                            style: const TextStyle(
-                              fontSize: 11.5,
-                              fontWeight: FontWeight.w700,
-                              color: StorkTheme.textMain,
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              '${_seller?.businessName ?? 'This store'} is currently on vacation. Add to Cart and Buy Now are temporarily paused.',
+                              style: const TextStyle(
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w700,
+                                color: StorkTheme.textMain,
+                              ),
                             ),
                           ),
-                        ),
-                      ],
-                    ),
-                  ),
-                _buildImageGallerySection(),
-                const SizedBox(height: 8),
-                _buildPrimaryInfoSection(),
-                if (_storeVouchers.isNotEmpty) ...[
-                  const SizedBox(height: 8),
-                  _buildStoreVouchersSection(),
-                ],
-                const SizedBox(height: 8),
-                _buildVariantsAndQuantitySection(),
-                if (_seller != null) ...[
-                  const SizedBox(height: 8),
-                  _buildSellerStoreCard(),
-                ],
-                const SizedBox(height: 8),
-                _buildSpecificationsAndDescriptionSection(),
-                const SizedBox(height: 8),
-                _buildProductQnaSection(),
-                const SizedBox(height: 8),
-                _buildReviewsSection(),
-                if (_recommendedProducts.isNotEmpty)
-                  const Padding(
-                    padding: EdgeInsets.fromLTRB(16, 18, 16, 10),
-                    child: Text(
-                      'Recommended Products You May Also Like',
-                      style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w800,
-                        color: StorkTheme.textMain,
+                        ],
                       ),
                     ),
-                  ),
-              ],
-            ),
-          ),
-          if (_recommendedProducts.isNotEmpty)
-            SliverPadding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              sliver: SliverGrid(
-                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: gridColumns,
-                  childAspectRatio: 0.68,
-                  crossAxisSpacing: 12,
-                  mainAxisSpacing: 12,
-                ),
-                delegate: SliverChildBuilderDelegate(
-                  (context, index) {
-                    return ProductCard(
-                      product: _recommendedProducts[index],
-                      baseUrl: _domain,
-                      token: widget.token,
-                    );
-                  },
-                  childCount: _recommendedProducts.length,
-                ),
+                  _buildImageGallerySection(),
+                  const SizedBox(height: 10),
+                  _buildPrimaryInfoSection(),
+                  if (_storeVouchers.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    _buildStoreVouchersSection(),
+                  ],
+                  const SizedBox(height: 10),
+                  _buildVariantsAndQuantitySection(),
+                  if (_seller != null) ...[
+                    const SizedBox(height: 10),
+                    _buildSellerStoreCard(),
+                  ],
+                  const SizedBox(height: 10),
+                  _buildSpecificationsAndDescriptionSection(),
+                  const SizedBox(height: 10),
+                  _buildProductQnaSection(),
+                  const SizedBox(height: 10),
+                  _buildReviewsSection(),
+                  if (_recommendedProducts.isNotEmpty)
+                    const Padding(
+                      padding: EdgeInsets.fromLTRB(16, 18, 16, 10),
+                      child: Text(
+                        'Recommended Products You May Also Like',
+                        style: TextStyle(
+                          fontSize: 15.5,
+                          fontWeight: FontWeight.w800,
+                          color: StorkTheme.primaryDark,
+                        ),
+                      ),
+                    ),
+                ],
               ),
             ),
-          const SliverToBoxAdapter(child: SizedBox(height: 28)),
-        ],
+            if (_recommendedProducts.isNotEmpty)
+              SliverPadding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                sliver: SliverGrid(
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: gridColumns,
+                    childAspectRatio: aspectRatio,
+                    crossAxisSpacing: 12,
+                    mainAxisSpacing: 12,
+                  ),
+                  delegate: SliverChildBuilderDelegate(
+                    (context, index) {
+                      return ProductCard(
+                        product: _recommendedProducts[index],
+                        baseUrl: _domain,
+                        token: widget.token,
+                      );
+                    },
+                    childCount: _recommendedProducts.length,
+                  ),
+                ),
+              ),
+            const SliverToBoxAdapter(child: SizedBox(height: 28)),
+          ],
+        ),
       ),
       bottomNavigationBar: _buildBottomActionBar(),
     );
@@ -1347,7 +1492,11 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
 
   Widget _buildImageGallerySection() {
     return Container(
-      color: StorkTheme.surface,
+      decoration: const BoxDecoration(
+        color: StorkTheme.surface,
+        borderRadius: BorderRadius.vertical(bottom: Radius.circular(24)),
+      ),
+      clipBehavior: Clip.antiAlias,
       child: Column(
         children: [
           Stack(
@@ -1405,44 +1554,50 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
               Positioned(
                 bottom: 12,
                 left: 12,
-                child: _isViewingVariantImage
-                    ? GestureDetector(
-                        onTap: () => _selectGalleryImage(_activeGalleryIndex),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 10, vertical: 5),
-                          decoration: BoxDecoration(
-                            color: StorkTheme.primary,
-                            borderRadius: BorderRadius.circular(18),
-                          ),
-                          child: const Text(
-                            'Viewing Variant Photo (Tap for Main Gallery)',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 10.5,
-                              fontWeight: FontWeight.w800,
-                            ),
-                          ),
-                        ),
-                      )
-                    : (_product.pictures.isNotEmpty
-                        ? Container(
+                right: 12,
+                child: Align(
+                  alignment: Alignment.bottomLeft,
+                  child: _isViewingVariantImage
+                      ? GestureDetector(
+                          onTap: () => _selectGalleryImage(_activeGalleryIndex),
+                          child: Container(
                             padding: const EdgeInsets.symmetric(
-                                horizontal: 10, vertical: 4),
+                                horizontal: 10, vertical: 5),
                             decoration: BoxDecoration(
-                              color: Colors.black.withValues(alpha: 0.65),
-                              borderRadius: BorderRadius.circular(16),
+                              gradient: StorkTheme.brandGradient,
+                              borderRadius: BorderRadius.circular(18),
                             ),
-                            child: Text(
-                              'Gallery ${_activeGalleryIndex + 1} / ${_product.pictures.length}',
-                              style: const TextStyle(
+                            child: const Text(
+                              'Viewing Variant Photo (Tap for Main Gallery)',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
                                 color: Colors.white,
                                 fontSize: 10.5,
                                 fontWeight: FontWeight.w800,
                               ),
                             ),
-                          )
-                        : const SizedBox.shrink()),
+                          ),
+                        )
+                      : (_product.pictures.isNotEmpty
+                          ? Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withValues(alpha: 0.65),
+                                borderRadius: BorderRadius.circular(16),
+                              ),
+                              child: Text(
+                                'Gallery ${_activeGalleryIndex + 1} / ${_product.pictures.length}',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 10.5,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            )
+                          : const SizedBox.shrink()),
+                ),
               ),
               Positioned(
                 top: 12,
@@ -1473,7 +1628,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
           ),
           if (_product.pictures.length > 1)
             SizedBox(
-              height: 76,
+              height: 78,
               child: ListView.separated(
                 scrollDirection: Axis.horizontal,
                 padding:
@@ -1488,10 +1643,10 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                   return GestureDetector(
                     onTap: () => _selectGalleryImage(index),
                     child: Container(
-                      width: 56,
-                      height: 56,
+                      width: 58,
+                      height: 58,
                       decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(10),
+                        borderRadius: BorderRadius.circular(12),
                         border: Border.all(
                           color: isSelected
                               ? StorkTheme.primary
@@ -1500,7 +1655,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                         ),
                       ),
                       child: ClipRRect(
-                        borderRadius: BorderRadius.circular(8),
+                        borderRadius: BorderRadius.circular(10),
                         child: Image.network(picUrl, fit: BoxFit.cover),
                       ),
                     ),
@@ -1520,21 +1675,25 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
 
     return Container(
       width: double.infinity,
-      color: StorkTheme.surface,
+      margin: const EdgeInsets.symmetric(horizontal: 14),
       padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: StorkTheme.surface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: StorkTheme.borderSubtle),
+        boxShadow: StorkTheme.softCardShadow,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (hasDeal) ...[
             Container(
               width: double.infinity,
-              margin: const EdgeInsets.only(bottom: 10),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              margin: const EdgeInsets.only(bottom: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
               decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                  colors: [StorkTheme.primaryDark, StorkTheme.primary],
-                ),
-                borderRadius: BorderRadius.circular(12),
+                gradient: StorkTheme.brandGradient,
+                borderRadius: BorderRadius.circular(14),
               ),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1566,7 +1725,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
             _product.name,
             style: const TextStyle(
               fontSize: 19,
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w900,
               color: StorkTheme.textMain,
               height: 1.25,
             ),
@@ -1605,7 +1764,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                 '$_totalSoldUnits Sold',
                 style: const TextStyle(
                   fontSize: 12.5,
-                  fontWeight: FontWeight.w600,
+                  fontWeight: FontWeight.w700,
                   color: StorkTheme.textMuted,
                 ),
               ),
@@ -1621,7 +1780,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                     'Max $_perBuyerLimit per buyer',
                     style: const TextStyle(
                       fontSize: 11,
-                      fontWeight: FontWeight.w700,
+                      fontWeight: FontWeight.w800,
                       color: StorkTheme.primary,
                     ),
                   ),
@@ -1633,10 +1792,17 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
             width: double.infinity,
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
-              color: StorkTheme.primary.withValues(alpha: 0.05),
-              borderRadius: BorderRadius.circular(14),
+              gradient: LinearGradient(
+                colors: [
+                  StorkTheme.primary.withValues(alpha: 0.08),
+                  StorkTheme.brandLight.withValues(alpha: 0.22),
+                ],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(16),
               border: Border.all(
-                color: StorkTheme.primary.withValues(alpha: 0.15),
+                color: StorkTheme.primary.withValues(alpha: 0.2),
               ),
             ),
             child: Wrap(
@@ -1665,15 +1831,15 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                     padding: const EdgeInsets.symmetric(
                         horizontal: 8, vertical: 3.5),
                     decoration: BoxDecoration(
-                      color: StorkTheme.danger.withValues(alpha: 0.12),
+                      color: StorkTheme.danger,
                       borderRadius: BorderRadius.circular(20),
                     ),
                     child: Text(
                       '${discountPct.toStringAsFixed(0)}% OFF',
                       style: const TextStyle(
-                        color: StorkTheme.danger,
+                        color: Colors.white,
                         fontSize: 10.5,
-                        fontWeight: FontWeight.w800,
+                        fontWeight: FontWeight.w900,
                       ),
                     ),
                   ),
@@ -1689,22 +1855,33 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
   Widget _buildStoreVouchersSection() {
     return Container(
       width: double.infinity,
-      color: StorkTheme.surface,
+      margin: const EdgeInsets.symmetric(horizontal: 14),
       padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: StorkTheme.surface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: StorkTheme.borderSubtle),
+        boxShadow: StorkTheme.softCardShadow,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                'STORE VOUCHERS (${_seller?.businessName ?? 'STORE'})',
-                style: const TextStyle(
-                  fontSize: 11.5,
-                  fontWeight: FontWeight.w800,
-                  color: StorkTheme.primaryDark,
+              Expanded(
+                child: Text(
+                  'STORE VOUCHERS (${_seller?.businessName ?? 'STORE'})',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w800,
+                    color: StorkTheme.primaryDark,
+                  ),
                 ),
               ),
+              const SizedBox(width: 8),
               const Text(
                 'Claimable here only',
                 style: TextStyle(fontSize: 11, color: StorkTheme.textMuted),
@@ -1713,7 +1890,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
           ),
           const SizedBox(height: 10),
           SizedBox(
-            height: 68,
+            height: 70,
             child: ListView.separated(
               scrollDirection: Axis.horizontal,
               itemCount: _storeVouchers.length,
@@ -1813,8 +1990,14 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
 
     return Container(
       width: double.infinity,
-      color: StorkTheme.surface,
+      margin: const EdgeInsets.symmetric(horizontal: 14),
       padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: StorkTheme.surface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: StorkTheme.borderSubtle),
+        boxShadow: StorkTheme.softCardShadow,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -1826,7 +2009,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
               style: const TextStyle(
                 fontSize: 11.5,
                 fontWeight: FontWeight.w800,
-                color: StorkTheme.textMuted,
+                color: StorkTheme.primaryDark,
               ),
             ),
             const SizedBox(height: 10),
@@ -1862,8 +2045,8 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                 final isSelected = _selectedMainIndex == index;
 
                 return GestureDetector(
-                  onTap: () => _onMainVariantSelected(
-                      index, Map<String, dynamic>.from(item)),
+                  onTap: () =>
+                      _onMainVariantSelected(index, JsonMap.from(item)),
                   child: Container(
                     padding:
                         const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
@@ -1886,7 +2069,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                       style: TextStyle(
                         fontSize: 13,
                         fontWeight:
-                            isSelected ? FontWeight.w700 : FontWeight.w500,
+                            isSelected ? FontWeight.w800 : FontWeight.w600,
                         decoration: isOut ? TextDecoration.lineThrough : null,
                         color: isSelected
                             ? StorkTheme.primary
@@ -1911,13 +2094,13 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
               style: const TextStyle(
                 fontSize: 11.5,
                 fontWeight: FontWeight.w800,
-                color: StorkTheme.textMuted,
+                color: StorkTheme.primaryDark,
               ),
             ),
             const SizedBox(height: 10),
             Builder(builder: (context) {
-              final parentItem = Map<String, dynamic>.from(
-                  rawVariantItems[_selectedMainIndex!] as Map);
+              final parentItem =
+                  JsonMap.from(rawVariantItems[_selectedMainIndex!] as Map);
               final List<dynamic> subs = parentItem['subs'] is List
                   ? List<dynamic>.from(parentItem['subs'] as List)
                   : <dynamic>[];
@@ -1939,7 +2122,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                   return GestureDetector(
                     onTap: () => _onSubVariantSelected(
                       sIndex,
-                      Map<String, dynamic>.from(sub),
+                      JsonMap.from(sub),
                       parentItem,
                     ),
                     child: Container(
@@ -1964,7 +2147,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                         style: TextStyle(
                           fontSize: 13,
                           fontWeight:
-                              isSelected ? FontWeight.w700 : FontWeight.w500,
+                              isSelected ? FontWeight.w800 : FontWeight.w600,
                           decoration: isOut ? TextDecoration.lineThrough : null,
                           color: isSelected
                               ? StorkTheme.primary
@@ -1980,24 +2163,29 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
             }),
             const SizedBox(height: 18),
           ],
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 10,
+            runSpacing: 8,
             children: [
               const Text(
                 'QUANTITY',
                 style: TextStyle(
                   fontSize: 11.5,
                   fontWeight: FontWeight.w800,
-                  color: StorkTheme.textMuted,
+                  color: StorkTheme.primaryDark,
                 ),
               ),
               Row(
+                mainAxisSize: MainAxisSize.min,
                 children: [
                   Container(
                     height: 38,
                     decoration: BoxDecoration(
+                      color: StorkTheme.surfaceSubtle,
                       border: Border.all(color: StorkTheme.borderSubtle),
-                      borderRadius: BorderRadius.circular(10),
+                      borderRadius: BorderRadius.circular(12),
                     ),
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
@@ -2092,8 +2280,14 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
 
     return Container(
       width: double.infinity,
-      color: StorkTheme.surface,
+      margin: const EdgeInsets.symmetric(horizontal: 14),
       padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: StorkTheme.surface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: StorkTheme.borderSubtle),
+        boxShadow: StorkTheme.softCardShadow,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -2163,7 +2357,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                       style: const TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.w800,
-                        color: StorkTheme.textMain,
+                        color: StorkTheme.primaryDark,
                       ),
                     ),
                     const SizedBox(height: 2),
@@ -2181,7 +2375,8 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                   ],
                 ),
               ),
-              if (!_isOwnStore)
+              if (!_isOwnStore) ...[
+                const SizedBox(width: 8),
                 ElevatedButton(
                   onPressed: _isTogglingFollow ? null : _toggleFollowStore,
                   style: ElevatedButton.styleFrom(
@@ -2191,17 +2386,18 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                     foregroundColor:
                         _isFollowingStore ? StorkTheme.textMain : Colors.white,
                     padding:
-                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                     minimumSize: const Size(0, 36),
                   ),
                   child: Text(
                     _isFollowingStore ? 'Following' : '+ Follow (₱30 Off)',
                     style: const TextStyle(
-                      fontSize: 11.5,
-                      fontWeight: FontWeight.w700,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w800,
                     ),
                   ),
                 ),
+              ],
             ],
           ),
           const SizedBox(height: 14),
@@ -2245,19 +2441,27 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
             padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
             decoration: BoxDecoration(
               color: StorkTheme.surfaceSubtle,
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(14),
             ),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                _buildStoreStatItem(
-                    'Chat Rate', '${_storeStats['chat_response_rate'] ?? 98}%'),
-                _buildStoreStatItem(
-                    'Followers', '${_storeStats['followers'] ?? 0}'),
-                _buildStoreStatItem(
-                    'Rating', '${_storeStats['ratings'] ?? '0.0'} ★'),
-                _buildStoreStatItem(
-                    'Products', '${_storeStats['products_count'] ?? 1}'),
+                Expanded(
+                  child: _buildStoreStatItem('Chat Rate',
+                      '${_storeStats['chat_response_rate'] ?? 98}%'),
+                ),
+                Expanded(
+                  child: _buildStoreStatItem(
+                      'Followers', '${_storeStats['followers'] ?? 0}'),
+                ),
+                Expanded(
+                  child: _buildStoreStatItem(
+                      'Rating', '${_storeStats['ratings'] ?? '0.0'} ★'),
+                ),
+                Expanded(
+                  child: _buildStoreStatItem(
+                      'Products', '${_storeStats['products_count'] ?? 1}'),
+                ),
               ],
             ),
           ),
@@ -2271,8 +2475,10 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
       children: [
         Text(
           value,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
           style: const TextStyle(
-            fontSize: 13,
+            fontSize: 12.5,
             fontWeight: FontWeight.w800,
             color: StorkTheme.primaryDark,
           ),
@@ -2280,6 +2486,8 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
         const SizedBox(height: 2),
         Text(
           label,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
           style: const TextStyle(
             fontSize: 10.5,
             color: StorkTheme.textMuted,
@@ -2292,8 +2500,14 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
   Widget _buildSpecificationsAndDescriptionSection() {
     return Container(
       width: double.infinity,
-      color: StorkTheme.surface,
+      margin: const EdgeInsets.symmetric(horizontal: 14),
       padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: StorkTheme.surface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: StorkTheme.borderSubtle),
+        boxShadow: StorkTheme.softCardShadow,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -2362,7 +2576,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SizedBox(
-            width: 120,
+            width: 110,
             child: Text(
               label,
               style: const TextStyle(
@@ -2371,6 +2585,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
               ),
             ),
           ),
+          const SizedBox(width: 8),
           Expanded(
             child: Text(
               value,
@@ -2389,21 +2604,29 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
   Widget _buildProductQnaSection() {
     return Container(
       width: double.infinity,
-      color: StorkTheme.surface,
+      margin: const EdgeInsets.symmetric(horizontal: 14),
       padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: StorkTheme.surface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: StorkTheme.borderSubtle),
+        boxShadow: StorkTheme.softCardShadow,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                'BUYER PRODUCT Q&A (${_questions.length})',
-                style: const TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w800,
-                  color: StorkTheme.primaryDark,
-                  letterSpacing: 0.4,
+              Expanded(
+                child: Text(
+                  'BUYER PRODUCT Q&A (${_questions.length})',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                    color: StorkTheme.primaryDark,
+                    letterSpacing: 0.4,
+                  ),
                 ),
               ),
               if (!_isOwnStore)
@@ -2444,14 +2667,19 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text(
-                          'Q by ${q['buyer_name'] ?? 'Buyer'}',
-                          style: const TextStyle(
-                            fontSize: 11.5,
-                            fontWeight: FontWeight.w700,
-                            color: StorkTheme.textMuted,
+                        Expanded(
+                          child: Text(
+                            'Q by ${q['buyer_name'] ?? 'Buyer'}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w700,
+                              color: StorkTheme.textMuted,
+                            ),
                           ),
                         ),
+                        const SizedBox(width: 8),
                         Text(
                           q['created_at']?.toString() ?? '',
                           style: const TextStyle(
@@ -2477,7 +2705,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                         padding: const EdgeInsets.all(10),
                         decoration: BoxDecoration(
                           color: StorkTheme.brandLight.withValues(alpha: 0.25),
-                          borderRadius: BorderRadius.circular(10),
+                          borderRadius: BorderRadius.circular(12),
                           border: Border.all(color: StorkTheme.borderSubtle),
                         ),
                         child: Column(
@@ -2524,23 +2752,33 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
   }
 
   Widget _buildReviewsSection() {
+    final visibleReviews = _filteredReviews;
+
     return Container(
       width: double.infinity,
-      color: StorkTheme.surface,
+      margin: const EdgeInsets.symmetric(horizontal: 14),
       padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: StorkTheme.surface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: StorkTheme.borderSubtle),
+        boxShadow: StorkTheme.softCardShadow,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                'VERIFIED BUYER RATINGS (${_reviews.length})',
-                style: const TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w800,
-                  color: StorkTheme.primaryDark,
-                  letterSpacing: 0.4,
+              Expanded(
+                child: Text(
+                  'VERIFIED BUYER RATINGS (${_reviews.length})',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                    color: StorkTheme.primaryDark,
+                    letterSpacing: 0.4,
+                  ),
                 ),
               ),
               Text(
@@ -2553,30 +2791,58 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
               ),
             ],
           ),
+          if (_reviews.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            SizedBox(
+              height: 34,
+              child: ListView(
+                scrollDirection: Axis.horizontal,
+                children: [
+                  _buildReviewFilterChip(
+                    label: 'All (${_reviews.length})',
+                    isSelected: _selectedReviewStarFilter == 0,
+                    onTap: () => setState(() => _selectedReviewStarFilter = 0),
+                  ),
+                  for (int star = 5; star >= 1; star--)
+                    _buildReviewFilterChip(
+                      label: '$star ★ (${_countReviewsByStar(star)})',
+                      isSelected: _selectedReviewStarFilter == star,
+                      onTap: () =>
+                          setState(() => _selectedReviewStarFilter = star),
+                    ),
+                ],
+              ),
+            ),
+          ],
           const SizedBox(height: 12),
-          if (_isLoadingDetails)
+          if (_isLoadingDetails && _reviews.isEmpty)
             const Padding(
               padding: EdgeInsets.all(16),
               child: Center(
                 child: CircularProgressIndicator(color: StorkTheme.primary),
               ),
             )
-          else if (_reviews.isEmpty)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 12),
+          else if (visibleReviews.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 12),
               child: Text(
-                'No buyer ratings submitted for this product yet. Complete an order to leave the first review and earn up to +10 Storkia Coins!',
-                style: TextStyle(fontSize: 12.5, color: StorkTheme.textMuted),
+                _selectedReviewStarFilter == 0
+                    ? 'No buyer ratings submitted for this product yet. Complete an order to leave the first review and earn up to +10 Storkia Coins!'
+                    : 'No $_selectedReviewStarFilter-star reviews found for this filter.',
+                style: const TextStyle(
+                    fontSize: 12.5, color: StorkTheme.textMuted),
               ),
             )
           else
             ListView.separated(
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
-              itemCount: _reviews.length,
+              itemCount: visibleReviews.length,
               separatorBuilder: (_, __) => const Divider(height: 24),
               itemBuilder: (context, index) {
-                final rev = _reviews[index];
+                final rev = visibleReviews[index];
+                final int reviewId =
+                    int.tryParse(rev['id']?.toString() ?? '0') ?? 0;
                 final int rating =
                     int.tryParse(rev['rating']?.toString() ?? '5') ?? 5;
                 final List<dynamic> photos = rev['review_photos'] is List
@@ -2595,6 +2861,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                   children: [
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Expanded(
                           child: Wrap(
@@ -2606,7 +2873,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                                 rev['buyer_name']?.toString() ??
                                     'Verified Buyer',
                                 style: const TextStyle(
-                                  fontWeight: FontWeight.w700,
+                                  fontWeight: FontWeight.w800,
                                   fontSize: 13,
                                 ),
                               ),
@@ -2653,6 +2920,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                             ],
                           ),
                         ),
+                        const SizedBox(width: 8),
                         Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
@@ -2671,7 +2939,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                                   'Edit',
                                   style: TextStyle(
                                     fontSize: 11.5,
-                                    fontWeight: FontWeight.w700,
+                                    fontWeight: FontWeight.w800,
                                     color: StorkTheme.primary,
                                   ),
                                 ),
@@ -2721,7 +2989,9 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                       mainAxisAlignment: MainAxisAlignment.end,
                       children: [
                         InkWell(
-                          onTap: () => _toggleReviewHelpful(index),
+                          onTap: reviewId > 0
+                              ? () => _toggleReviewHelpful(reviewId)
+                              : null,
                           borderRadius: BorderRadius.circular(14),
                           child: Container(
                             padding: const EdgeInsets.symmetric(
@@ -2811,6 +3081,37 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
     );
   }
 
+  Widget _buildReviewFilterChip({
+    required String label,
+    required bool isSelected,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        margin: const EdgeInsets.only(right: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          gradient: isSelected ? StorkTheme.brandGradient : null,
+          color: isSelected ? null : StorkTheme.surfaceSubtle,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(
+            color: isSelected ? StorkTheme.primary : StorkTheme.borderSubtle,
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 11.5,
+            fontWeight: isSelected ? FontWeight.w800 : FontWeight.w600,
+            color: isSelected ? Colors.white : StorkTheme.textMain,
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildBottomActionBar() {
     final bool isDisabled = _isStoreOnVacation || _activeStock <= 0;
 
@@ -2821,8 +3122,8 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
         border: const Border(top: BorderSide(color: StorkTheme.borderSubtle)),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.04),
-            blurRadius: 10,
+            color: Colors.black.withValues(alpha: 0.05),
+            blurRadius: 12,
             offset: const Offset(0, -4),
           ),
         ],
@@ -2850,6 +3151,8 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                       : (_activeStock <= 0
                           ? 'Sold Out'
                           : (_isAddingToCart ? 'Adding...' : 'Add To Cart')),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
                 style: OutlinedButton.styleFrom(
                   foregroundColor: StorkTheme.primary,
@@ -2865,15 +3168,30 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
             ),
             const SizedBox(width: 12),
             Expanded(
-              child: ElevatedButton(
-                onPressed: (_isAddingToCart || isDisabled) ? null : _buyNow,
-                style: ElevatedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(vertical: 14),
+              child: Container(
+                height: 48,
+                decoration: BoxDecoration(
+                  gradient: (_isAddingToCart || isDisabled)
+                      ? null
+                      : StorkTheme.brandGradient,
+                  borderRadius: BorderRadius.circular(14),
                 ),
-                child: Text(
-                  _isStoreOnVacation
-                      ? 'Store On Vacation'
-                      : (_activeStock <= 0 ? 'Sold Out' : 'Buy Now'),
+                child: ElevatedButton(
+                  onPressed: (_isAddingToCart || isDisabled) ? null : _buyNow,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.transparent,
+                    shadowColor: Colors.transparent,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                  ),
+                  child: Text(
+                    _isStoreOnVacation
+                        ? 'Store On Vacation'
+                        : (_activeStock <= 0 ? 'Sold Out' : 'Buy Now'),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
               ),
             ),

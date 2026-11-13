@@ -98,8 +98,8 @@ class _HelpCenterScreenState extends State<HelpCenterScreen>
         for (final m in rawList)
           if (m is Map) Map<String, dynamic>.from(m),
       ];
-
       final bool hadNew = parsed.length != _messages.length;
+
       setState(() {
         _messages = parsed;
         _conversationStatus = status;
@@ -166,7 +166,6 @@ class _HelpCenterScreenState extends State<HelpCenterScreen>
       final streamed = await req.send().timeout(ApiConfig.requestTimeout);
       final response = await http.Response.fromStream(streamed);
       if (!mounted) return;
-
       if (response.statusCode == 200 || response.statusCode == 201) {
         await _fetchMessages(silent: true);
         _scrollToBottom();
@@ -197,19 +196,62 @@ class _HelpCenterScreenState extends State<HelpCenterScreen>
     return Scaffold(
       backgroundColor: StorkTheme.surfaceSubtle,
       appBar: AppBar(
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        title: Row(
           children: [
-            const Text(
-              'Storkia Help Center',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+            Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                gradient: StorkTheme.brandGradient,
+                borderRadius: BorderRadius.circular(11),
+              ),
+              child: const Icon(
+                Icons.support_agent_rounded,
+                color: Colors.white,
+                size: 20,
+              ),
             ),
-            Text(
-              'Direct Support Thread • ${_conversationStatus.toUpperCase()}',
-              style: const TextStyle(
-                fontSize: 11,
-                color: StorkTheme.success,
-                fontWeight: FontWeight.w700,
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Storkia Help Center',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 15.5,
+                      fontWeight: FontWeight.w800,
+                      color: StorkTheme.primaryDark,
+                    ),
+                  ),
+                  Row(
+                    children: [
+                      Container(
+                        width: 6,
+                        height: 6,
+                        decoration: const BoxDecoration(
+                          color: StorkTheme.success,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                      const SizedBox(width: 5),
+                      Flexible(
+                        child: Text(
+                          'Direct Support Thread • ${_conversationStatus.toUpperCase()}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: StorkTheme.success,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ),
             ),
           ],
@@ -223,33 +265,44 @@ class _HelpCenterScreenState extends State<HelpCenterScreen>
                     child: CircularProgressIndicator(color: StorkTheme.primary),
                   )
                 : _messages.isEmpty
-                    ? const Center(
+                    ? Center(
                         child: Padding(
-                          padding: EdgeInsets.all(28),
+                          padding: const EdgeInsets.all(28),
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Icon(
-                                Icons.support_agent_rounded,
-                                size: 54,
-                                color: StorkTheme.primary,
+                              Container(
+                                width: 74,
+                                height: 74,
+                                decoration: BoxDecoration(
+                                  color:
+                                      StorkTheme.primary.withValues(alpha: 0.1),
+                                  shape: BoxShape.circle,
+                                ),
+                                child: const Icon(
+                                  Icons.support_agent_rounded,
+                                  size: 38,
+                                  color: StorkTheme.primary,
+                                ),
                               ),
-                              SizedBox(height: 12),
-                              Text(
+                              const SizedBox(height: 14),
+                              const Text(
                                 'How can Storkia Support help you?',
+                                textAlign: TextAlign.center,
                                 style: TextStyle(
-                                  fontSize: 16,
+                                  fontSize: 17,
                                   fontWeight: FontWeight.w800,
                                   color: StorkTheme.primaryDark,
                                 ),
                               ),
-                              SizedBox(height: 6),
-                              Text(
+                              const SizedBox(height: 6),
+                              const Text(
                                 'Send us a message below regarding orders, E-Wallet top-ups, refunds, or account inquiries.',
                                 textAlign: TextAlign.center,
                                 style: TextStyle(
                                   fontSize: 12.5,
                                   color: StorkTheme.textMuted,
+                                  height: 1.4,
                                 ),
                               ),
                             ],
@@ -283,47 +336,69 @@ class _HelpCenterScreenState extends State<HelpCenterScreen>
                             child: Container(
                               margin: const EdgeInsets.only(bottom: 12),
                               padding: const EdgeInsets.symmetric(
-                                  horizontal: 14, vertical: 10),
+                                  horizontal: 15, vertical: 11),
                               constraints: BoxConstraints(
                                 maxWidth:
                                     MediaQuery.sizeOf(context).width * 0.76,
                               ),
                               decoration: BoxDecoration(
-                                color: isMe
-                                    ? StorkTheme.primary
-                                    : StorkTheme.surface,
-                                borderRadius: BorderRadius.circular(18),
+                                gradient:
+                                    isMe ? StorkTheme.brandGradient : null,
+                                color: isMe ? null : StorkTheme.surface,
+                                borderRadius:
+                                    BorderRadius.circular(20).copyWith(
+                                  bottomRight:
+                                      isMe ? const Radius.circular(4) : null,
+                                  bottomLeft:
+                                      !isMe ? const Radius.circular(4) : null,
+                                ),
                                 border: isMe
                                     ? null
                                     : Border.all(
                                         color: StorkTheme.borderSubtle),
+                                boxShadow:
+                                    isMe ? null : StorkTheme.softCardShadow,
                               ),
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   if (!isMe)
                                     const Padding(
-                                      padding: EdgeInsets.only(bottom: 4),
-                                      child: Text(
-                                        'Storkia Support Admin',
-                                        style: TextStyle(
-                                          fontSize: 10,
-                                          fontWeight: FontWeight.w900,
-                                          color: StorkTheme.primary,
-                                        ),
+                                      padding: EdgeInsets.only(bottom: 5),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(
+                                            Icons.verified_rounded,
+                                            size: 13,
+                                            color: StorkTheme.primary,
+                                          ),
+                                          SizedBox(width: 4),
+                                          Flexible(
+                                            child: Text(
+                                              'Storkia Support Admin',
+                                              style: TextStyle(
+                                                fontSize: 10.5,
+                                                fontWeight: FontWeight.w900,
+                                                color: StorkTheme.primaryDark,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
                                       ),
                                     ),
                                   if (attachmentUrl != null &&
                                       attachmentUrl.isNotEmpty) ...[
                                     ClipRRect(
-                                      borderRadius: BorderRadius.circular(10),
+                                      borderRadius: BorderRadius.circular(12),
                                       child: Image.network(
                                         attachmentUrl,
                                         height: 140,
                                         fit: BoxFit.cover,
                                       ),
                                     ),
-                                    const SizedBox(height: 6),
+                                    if (text.isNotEmpty)
+                                      const SizedBox(height: 6),
                                   ],
                                   if (text.isNotEmpty)
                                     Text(
@@ -333,7 +408,7 @@ class _HelpCenterScreenState extends State<HelpCenterScreen>
                                         color: isMe
                                             ? Colors.white
                                             : StorkTheme.textMain,
-                                        height: 1.35,
+                                        height: 1.38,
                                       ),
                                     ),
                                 ],
@@ -345,12 +420,25 @@ class _HelpCenterScreenState extends State<HelpCenterScreen>
           ),
           if (_attachment != null)
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-              color: StorkTheme.surface,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              decoration: const BoxDecoration(
+                color: StorkTheme.surface,
+                border: Border(top: BorderSide(color: StorkTheme.borderSubtle)),
+              ),
               child: Row(
                 children: [
-                  const Icon(Icons.image_outlined,
-                      size: 18, color: StorkTheme.primary),
+                  Container(
+                    padding: const EdgeInsets.all(6),
+                    decoration: BoxDecoration(
+                      color: StorkTheme.primary.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(
+                      Icons.image_outlined,
+                      size: 16,
+                      color: StorkTheme.primary,
+                    ),
+                  ),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
@@ -385,7 +473,7 @@ class _HelpCenterScreenState extends State<HelpCenterScreen>
                     onPressed: _pickAttachment,
                     icon: const Icon(
                       Icons.attach_file_rounded,
-                      color: StorkTheme.textMuted,
+                      color: StorkTheme.primaryDark,
                     ),
                   ),
                   Expanded(
@@ -395,18 +483,23 @@ class _HelpCenterScreenState extends State<HelpCenterScreen>
                       maxLines: 4,
                       decoration: const InputDecoration(
                         hintText: 'Write a message to Storkia Support...',
+                        fillColor: StorkTheme.surfaceSubtle,
                       ),
                       onSubmitted: (_) => _sendMessage(),
                     ),
                   ),
                   const SizedBox(width: 8),
-                  CircleAvatar(
-                    radius: 22,
-                    backgroundColor:
-                        _isSending ? Colors.grey : StorkTheme.primary,
-                    child: IconButton(
-                      onPressed: _isSending ? null : _sendMessage,
-                      icon: const Icon(
+                  GestureDetector(
+                    onTap: _isSending ? null : _sendMessage,
+                    child: Container(
+                      width: 44,
+                      height: 44,
+                      decoration: BoxDecoration(
+                        gradient: _isSending ? null : StorkTheme.brandGradient,
+                        color: _isSending ? Colors.grey : null,
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(
                         Icons.send_rounded,
                         color: Colors.white,
                         size: 18,

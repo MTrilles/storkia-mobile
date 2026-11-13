@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:core';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
@@ -13,7 +12,10 @@ import 'leave_review_screen.dart';
 import 'order_details_screen.dart';
 
 typedef JsonMap = Map<String, dynamic>;
+typedef JsonList = List<JsonMap>;
+typedef TabOrdersCache = Map<String, JsonList>;
 typedef StringMap = Map<String, String>;
+typedef StringIntMap = Map<String, int>;
 
 class OrdersScreen extends ConsumerStatefulWidget {
   final String baseUrl;
@@ -52,9 +54,9 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
 
   bool _isLoading = true;
   bool _isFetchingMore = false;
-  List<JsonMap> _orders = [];
-  final Map<String, List<JsonMap>> _ordersCacheByTab = {};
-  Map<String, int> _counts = {};
+  JsonList _orders = [];
+  final TabOrdersCache _ordersCacheByTab = {};
+  StringIntMap _counts = {};
   int _currentPage = 1;
   bool _hasMore = false;
   String _activeTabKey = 'all';
@@ -113,6 +115,29 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
     return <dynamic>[];
   }
 
+  bool _isTerminalStatus(String status) {
+    return const [
+      'completed',
+      'cancelled',
+      'rejected',
+      'returned_to_seller',
+    ].contains(status.toLowerCase());
+  }
+
+  JsonList _sortActiveFirst(JsonList list) {
+    final active = <JsonMap>[];
+    final terminal = <JsonMap>[];
+    for (final o in list) {
+      final s = (o['status'] ?? '').toString();
+      if (_isTerminalStatus(s)) {
+        terminal.add(o);
+      } else {
+        active.add(o);
+      }
+    }
+    return [...active, ...terminal];
+  }
+
   bool _matchesTabKey(JsonMap order, String tabKey) {
     if (tabKey == 'all') return true;
     final String status = (order['status'] ?? '').toString().toLowerCase();
@@ -123,12 +148,12 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
 
     switch (tabKey) {
       case 'unpaid':
-        return status == 'pending_seller_acceptance' ||
-            (payStatus == 'unpaid' &&
-                !['cancelled', 'rejected', 'returned_to_seller', 'completed']
-                    .contains(status));
+        return ['unpaid', 'flagged'].contains(payStatus) &&
+            !['cancelled', 'rejected', 'returned_to_seller'].contains(status);
       case 'processing':
         return [
+          'pending_seller_acceptance',
+          'pending_buyer_response',
           'accepted',
           'preparing',
           'ready_for_pickup',
@@ -139,20 +164,20 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
           'picked_up',
           'at_logistics_hub',
           'out_for_delivery',
+          'delivery_failed',
         ].contains(status);
       case 'to_confirm':
         return status == 'delivered' && order['has_unresolved_dispute'] != true;
       case 'to_rate':
         return status == 'completed' && !isRated;
       case 'completed':
-        return status == 'completed';
+        return status == 'completed' && isRated;
       case 'returns':
         return [
               'cancelled',
               'rejected',
               'returned_to_seller',
               'disputed',
-              'delivery_failed',
             ].contains(status) ||
             order['has_unresolved_dispute'] == true;
       default:
@@ -182,10 +207,11 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
       _currentPage = 1;
       _hasMore = false;
       if (cachedForTab != null) {
-        _orders = List<JsonMap>.from(cachedForTab);
+        _orders = JsonList.from(cachedForTab);
       } else if (allCached != null && _searchQuery.isEmpty) {
-        _orders =
-            allCached.where((o) => _matchesTabKey(o, selectedKey)).toList();
+        _orders = _sortActiveFirst(
+          allCached.where((o) => _matchesTabKey(o, selectedKey)).toList(),
+        );
       }
     });
     _fetchOrders(silent: true);
@@ -251,16 +277,19 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
         if (data is Map && data['success'] == true && data['data'] is Map) {
           final paginatedData = Map<String, dynamic>.from(data['data'] as Map);
           final List<dynamic> rawList = _extractList(paginatedData['data']);
-          final List<JsonMap> parsedOrders = [
+          final JsonList parsedOrders = [
             for (final e in rawList)
               if (e is Map) Map<String, dynamic>.from(e),
           ];
 
-          final Map<String, int> parsedCounts = {};
+          final StringIntMap parsedCounts = {};
           if (data['counts'] is Map) {
             (data['counts'] as Map).forEach((k, v) {
               parsedCounts[k.toString()] = int.tryParse(v.toString()) ?? 0;
             });
+            ref
+                .read(orderCountsProvider.notifier)
+                .updateFromMap(data['counts'] as Map);
           }
 
           final int current =
@@ -271,16 +300,25 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
 
           setState(() {
             if (loadMore) {
-              _orders.addAll(parsedOrders);
+              final existingIds = _orders
+                  .map((o) => int.tryParse(o['id']?.toString() ?? '0') ?? 0)
+                  .toSet();
+              for (final item in parsedOrders) {
+                final id = int.tryParse(item['id']?.toString() ?? '0') ?? 0;
+                if (!existingIds.contains(id)) {
+                  _orders.add(item);
+                }
+              }
+              _orders = _sortActiveFirst(_orders);
               _currentPage = current;
               _hasMore = current < last;
             } else {
-              _orders = parsedOrders;
+              _orders = _sortActiveFirst(parsedOrders);
               _currentPage = current;
               _hasMore = current < last;
             }
             if (_searchQuery.isEmpty) {
-              _ordersCacheByTab[requestedTab] = List<JsonMap>.from(_orders);
+              _ordersCacheByTab[requestedTab] = JsonList.from(_orders);
             }
             if (parsedCounts.isNotEmpty) {
               _counts = parsedCounts;
@@ -305,6 +343,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
     final confirm = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
         title: const Text(
           'Confirm Order Received',
           style: TextStyle(fontWeight: FontWeight.w800, fontSize: 17),
@@ -423,12 +462,14 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
 
   @override
   Widget build(BuildContext context) {
+    final globalOrderCounts = ref.watch(orderCountsProvider);
+
     return Scaffold(
       backgroundColor: StorkTheme.surfaceSubtle,
       appBar: AppBar(
         title: const Text('My Orders'),
         bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(104),
+          preferredSize: const Size.fromHeight(106),
           child: Column(
             children: [
               Padding(
@@ -442,7 +483,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
                     prefixIcon: const Icon(
                       Icons.search_rounded,
                       size: 19,
-                      color: StorkTheme.textMuted,
+                      color: StorkTheme.primary,
                     ),
                     suffixIcon: _searchController.text.isNotEmpty
                         ? IconButton(
@@ -473,7 +514,9 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
                 ),
                 tabs: _tabs.map((tab) {
                   final key = tab['key']!;
-                  final count = _counts[key] ?? 0;
+                  final count = _counts.containsKey(key)
+                      ? (_counts[key] ?? 0)
+                      : globalOrderCounts.countForTab(key);
                   return Tab(
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
@@ -520,44 +563,42 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
               onRefresh: () => _fetchOrders(isRefresh: true, silent: true),
               child: _orders.isEmpty
                   ? ListView(
+                      padding: const EdgeInsets.all(28),
                       children: [
-                        const SizedBox(height: 100),
+                        const SizedBox(height: 80),
                         Center(
-                          child: Column(
-                            children: [
-                              Container(
-                                width: 64,
-                                height: 64,
-                                decoration: BoxDecoration(
-                                  color: StorkTheme.surface,
-                                  borderRadius: BorderRadius.circular(18),
-                                  border: Border.all(
-                                      color: StorkTheme.borderSubtle),
-                                ),
-                                child: const Icon(
-                                  Icons.shopping_bag_outlined,
-                                  size: 32,
-                                  color: StorkTheme.textMuted,
-                                ),
-                              ),
-                              const SizedBox(height: 14),
-                              const Text(
-                                'No orders found in this section',
-                                style: TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w800,
-                                  color: StorkTheme.textMain,
-                                ),
-                              ),
-                              const SizedBox(height: 6),
-                              const Text(
-                                'Your newly placed orders appear at the top (LIFO).',
-                                style: TextStyle(
-                                  fontSize: 12.5,
-                                  color: StorkTheme.textMuted,
-                                ),
-                              ),
-                            ],
+                          child: Container(
+                            width: 74,
+                            height: 74,
+                            decoration: BoxDecoration(
+                              color: StorkTheme.primary.withValues(alpha: 0.1),
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(
+                              Icons.shopping_bag_outlined,
+                              size: 36,
+                              color: StorkTheme.primary,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+                        const Text(
+                          'No Orders Found in This Section',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 16.5,
+                            fontWeight: FontWeight.w800,
+                            color: StorkTheme.primaryDark,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        const Text(
+                          'Active orders appear at the top; completed and cancelled orders move to the bottom.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            color: StorkTheme.textMuted,
+                            height: 1.4,
                           ),
                         ),
                       ],
@@ -635,13 +676,17 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
               token: widget.token,
             ),
           ),
-        ).then((_) => _fetchOrders(isRefresh: true, silent: true));
+        ).then((_) {
+          syncAllBuyerCounters(ref, widget.token);
+          _fetchOrders(isRefresh: true, silent: true);
+        });
       },
       child: Container(
         decoration: BoxDecoration(
           color: StorkTheme.surface,
-          borderRadius: BorderRadius.circular(18),
+          borderRadius: BorderRadius.circular(20),
           border: Border.all(color: StorkTheme.borderSubtle),
+          boxShadow: StorkTheme.softCardShadow,
         ),
         clipBehavior: Clip.antiAlias,
         child: Column(
@@ -649,7 +694,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
           children: [
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-              color: StorkTheme.surfaceSubtle.withValues(alpha: 0.6),
+              color: StorkTheme.surfaceSubtle.withValues(alpha: 0.7),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
@@ -659,6 +704,11 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
                       spacing: 6,
                       runSpacing: 4,
                       children: [
+                        const Icon(
+                          Icons.storefront_rounded,
+                          size: 16,
+                          color: StorkTheme.primaryDark,
+                        ),
                         Text(
                           seller['business_name']?.toString() ?? 'Seller Store',
                           style: const TextStyle(
@@ -744,16 +794,16 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
                   child: Row(
                     children: [
                       Container(
-                        width: 56,
-                        height: 56,
+                        width: 58,
+                        height: 58,
                         decoration: BoxDecoration(
                           color: StorkTheme.surfaceSubtle,
-                          borderRadius: BorderRadius.circular(10),
+                          borderRadius: BorderRadius.circular(12),
                           border: Border.all(color: StorkTheme.borderSubtle),
                         ),
                         child: rawItem['product_image'] != null
                             ? ClipRRect(
-                                borderRadius: BorderRadius.circular(9),
+                                borderRadius: BorderRadius.circular(11),
                                 child: Image.network(
                                   ApiConfig.storageUrl(
                                       rawItem['product_image'].toString(),
@@ -765,8 +815,10 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
                                   ),
                                 ),
                               )
-                            : const Icon(Icons.inventory_2_outlined,
-                                color: StorkTheme.textMuted),
+                            : const Icon(
+                                Icons.inventory_2_outlined,
+                                color: StorkTheme.textMuted,
+                              ),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
@@ -779,7 +831,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
                               overflow: TextOverflow.ellipsis,
                               style: const TextStyle(
                                 fontSize: 13,
-                                fontWeight: FontWeight.w700,
+                                fontWeight: FontWeight.w800,
                                 color: StorkTheme.textMain,
                               ),
                             ),
@@ -810,6 +862,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
                           ],
                         ),
                       ),
+                      const SizedBox(width: 8),
                       Text(
                         '₱${_formatMoney(rawItem['line_total'])}',
                         style: const TextStyle(
@@ -847,7 +900,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
                       Text(
                         'Total: ₱${_formatMoney(sellerOrder['total_amount'])}',
                         style: const TextStyle(
-                          fontSize: 14,
+                          fontSize: 14.5,
                           fontWeight: FontWeight.w900,
                           color: StorkTheme.primary,
                         ),
@@ -936,8 +989,10 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
                                   token: widget.token,
                                 ),
                               ),
-                            ).then((_) =>
-                                _fetchOrders(isRefresh: true, silent: true));
+                            ).then((_) {
+                              syncAllBuyerCounters(ref, widget.token);
+                              _fetchOrders(isRefresh: true, silent: true);
+                            });
                           },
                           icon: const Icon(Icons.star_rounded, size: 16),
                           label: const Text(
@@ -976,8 +1031,10 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
                                 token: widget.token,
                               ),
                             ),
-                          ).then((_) =>
-                              _fetchOrders(isRefresh: true, silent: true));
+                          ).then((_) {
+                            syncAllBuyerCounters(ref, widget.token);
+                            _fetchOrders(isRefresh: true, silent: true);
+                          });
                         },
                         style: OutlinedButton.styleFrom(
                           backgroundColor: StorkTheme.primaryDark,

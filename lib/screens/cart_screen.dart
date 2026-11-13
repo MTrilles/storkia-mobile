@@ -11,6 +11,11 @@ import '../providers/global_counters_provider.dart';
 import 'checkout_screen.dart';
 import 'product_show.dart';
 
+typedef JsonMap = Map<String, dynamic>;
+typedef CartItemList = List<CartItem>;
+typedef CartGroupMap = Map<String, CartItemList>;
+typedef SelectionMap = Map<int, bool>;
+
 class AnimatedPrice extends ImplicitlyAnimatedWidget {
   final double price;
   final TextStyle? style;
@@ -66,7 +71,11 @@ class CartScreen extends ConsumerStatefulWidget {
   final String baseUrl;
   final String token;
 
-  const CartScreen({super.key, required this.baseUrl, required this.token});
+  const CartScreen({
+    super.key,
+    required this.baseUrl,
+    required this.token,
+  });
 
   @override
   ConsumerState<CartScreen> createState() => _CartScreenState();
@@ -77,9 +86,8 @@ class _CartScreenState extends ConsumerState<CartScreen>
   bool _isLoading = true;
   bool _summaryExpanded = false;
   Timer? _autoSyncTimer;
-
-  List<CartItem> _cartItems = [];
-  final Map<String, List<CartItem>> _groupedItems = {};
+  CartItemList _cartItems = [];
+  final CartGroupMap _groupedItems = {};
 
   String get _domain => ApiConfig.resolveBaseDomain(widget.baseUrl);
 
@@ -109,6 +117,19 @@ class _CartScreenState extends ConsumerState<CartScreen>
     }
   }
 
+  List<dynamic> _extractCartItemsList(dynamic raw) {
+    if (raw is List) return List<dynamic>.from(raw);
+    if (raw is Map) {
+      for (final key in ['items', 'cart_items', 'cart', 'data']) {
+        if (raw.containsKey(key) && raw[key] != null && raw[key] != raw) {
+          final extracted = _extractCartItemsList(raw[key]);
+          if (extracted.isNotEmpty) return extracted;
+        }
+      }
+    }
+    return <dynamic>[];
+  }
+
   Future<void> _fetchCartItems({bool silent = false}) async {
     try {
       final response = await http.get(
@@ -123,23 +144,22 @@ class _CartScreenState extends ConsumerState<CartScreen>
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
-        final List<dynamic> items =
-            data['data'] is List ? data['data'] as List<dynamic> : <dynamic>[];
-        final Map<int, bool> previousSelections = {
+        final List<dynamic> items = _extractCartItemsList(
+          data is Map ? (data['data'] ?? data) : data,
+        );
+        final SelectionMap previousSelections = {
           for (final item in _cartItems) item.id: item.isSelected
         };
-
-        final List<CartItem> parsed = [];
+        final CartItemList parsed = [];
         for (final e in items) {
           if (e is Map) {
-            final cartItem = CartItem.fromJson(Map<String, dynamic>.from(e));
+            final cartItem = CartItem.fromJson(JsonMap.from(e));
             if (previousSelections.containsKey(cartItem.id)) {
               cartItem.isSelected = previousSelections[cartItem.id]!;
             }
             parsed.add(cartItem);
           }
         }
-
         setState(() {
           _cartItems = parsed;
           _groupCartItems();
@@ -160,7 +180,7 @@ class _CartScreenState extends ConsumerState<CartScreen>
     }
   }
 
-  List<CartItem> get _selectedItems =>
+  CartItemList get _selectedItems =>
       _cartItems.where((i) => i.isSelected).toList();
 
   bool get _isAllSelected =>
@@ -223,7 +243,6 @@ class _CartScreenState extends ConsumerState<CartScreen>
           .timeout(ApiConfig.requestTimeout);
 
       if (!mounted) return;
-
       if (response.statusCode != 200) {
         final data = json.decode(response.body);
         setState(() => item.quantity = previousQty);
@@ -250,6 +269,7 @@ class _CartScreenState extends ConsumerState<CartScreen>
     final bool? confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
         title: const Text(
           'Remove Item',
           style: TextStyle(fontWeight: FontWeight.w800, fontSize: 17),
@@ -345,45 +365,50 @@ class _CartScreenState extends ConsumerState<CartScreen>
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Container(
-              width: 76,
-              height: 76,
+              width: 82,
+              height: 82,
               decoration: BoxDecoration(
-                color: StorkTheme.surface,
+                color: StorkTheme.primary.withValues(alpha: 0.1),
                 shape: BoxShape.circle,
-                border: Border.all(color: StorkTheme.borderSubtle),
               ),
               child: const Icon(
                 Icons.shopping_bag_outlined,
-                size: 36,
-                color: StorkTheme.textMuted,
+                size: 40,
+                color: StorkTheme.primary,
               ),
             ),
             const SizedBox(height: 16),
             const Text(
               'Your Shopping Cart is Empty',
+              textAlign: TextAlign.center,
               style: TextStyle(
                 fontSize: 19,
-                fontWeight: FontWeight.w800,
+                fontWeight: FontWeight.w900,
                 color: StorkTheme.primaryDark,
               ),
             ),
             const SizedBox(height: 6),
             const Text(
-              "Looks like you haven't added anything to your cart yet.",
+              "Looks like you haven't added anything to your cart yet. Discover curated deals and verified stores!",
               textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 13, color: StorkTheme.textMuted),
+              style: TextStyle(
+                fontSize: 13,
+                color: StorkTheme.textMuted,
+                height: 1.4,
+              ),
             ),
             const SizedBox(height: 22),
-            ElevatedButton(
+            ElevatedButton.icon(
               onPressed: () => Navigator.pop(context),
+              icon: const Icon(Icons.storefront_rounded, size: 18),
+              label: const Text('Start Shopping'),
               style: ElevatedButton.styleFrom(
                 padding:
-                    const EdgeInsets.symmetric(horizontal: 28, vertical: 13),
+                    const EdgeInsets.symmetric(horizontal: 26, vertical: 14),
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(24),
                 ),
               ),
-              child: const Text('Start Shopping'),
             ),
           ],
         ),
@@ -393,21 +418,22 @@ class _CartScreenState extends ConsumerState<CartScreen>
 
   Widget _buildStepper() {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
       decoration: BoxDecoration(
         color: StorkTheme.surface,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(18),
         border: Border.all(color: StorkTheme.borderSubtle),
+        boxShadow: StorkTheme.softCardShadow,
       ),
       child: Row(
         children: [
           _stepperItem('1', 'Cart', isActive: true),
           Expanded(child: _buildStepDivider(isActive: true)),
-          _stepperItem('2', 'Place Order'),
+          _stepperItem('2', 'Order'),
           Expanded(child: _buildStepDivider()),
           _stepperItem('3', 'Pay'),
           Expanded(child: _buildStepDivider()),
-          _stepperItem('4', 'Complete'),
+          _stepperItem('4', 'Done'),
         ],
       ),
     );
@@ -417,7 +443,7 @@ class _CartScreenState extends ConsumerState<CartScreen>
     return Container(
       height: 2,
       color: isActive
-          ? StorkTheme.primary.withValues(alpha: 0.25)
+          ? StorkTheme.primary.withValues(alpha: 0.35)
           : StorkTheme.borderSubtle,
       margin: const EdgeInsets.symmetric(horizontal: 4),
     );
@@ -432,7 +458,8 @@ class _CartScreenState extends ConsumerState<CartScreen>
           height: 22,
           alignment: Alignment.center,
           decoration: BoxDecoration(
-            color: isActive ? StorkTheme.primary : StorkTheme.surfaceSubtle,
+            gradient: isActive ? StorkTheme.brandGradient : null,
+            color: isActive ? null : StorkTheme.surfaceSubtle,
             shape: BoxShape.circle,
             border:
                 isActive ? null : Border.all(color: StorkTheme.borderSubtle),
@@ -451,8 +478,8 @@ class _CartScreenState extends ConsumerState<CartScreen>
           label,
           style: TextStyle(
             fontSize: 10.5,
-            fontWeight: isActive ? FontWeight.w800 : FontWeight.w500,
-            color: isActive ? StorkTheme.primary : StorkTheme.textMuted,
+            fontWeight: isActive ? FontWeight.w800 : FontWeight.w600,
+            color: isActive ? StorkTheme.primaryDark : StorkTheme.textMuted,
           ),
         ),
       ],
@@ -464,8 +491,9 @@ class _CartScreenState extends ConsumerState<CartScreen>
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
         color: StorkTheme.surface,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(18),
         border: Border.all(color: StorkTheme.borderSubtle),
+        boxShadow: StorkTheme.softCardShadow,
       ),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -473,6 +501,7 @@ class _CartScreenState extends ConsumerState<CartScreen>
           Expanded(
             child: InkWell(
               onTap: () => _toggleAll(!_isAllSelected),
+              borderRadius: BorderRadius.circular(12),
               child: Row(
                 children: [
                   Checkbox(
@@ -487,7 +516,7 @@ class _CartScreenState extends ConsumerState<CartScreen>
                       style: const TextStyle(
                         fontWeight: FontWeight.w800,
                         fontSize: 13,
-                        color: StorkTheme.textMain,
+                        color: StorkTheme.primaryDark,
                       ),
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -496,12 +525,19 @@ class _CartScreenState extends ConsumerState<CartScreen>
               ),
             ),
           ),
-          Text(
-            '$_selectedCount of ${_cartItems.length} selected',
-            style: const TextStyle(
-              fontSize: 11.5,
-              fontWeight: FontWeight.w600,
-              color: StorkTheme.textMuted,
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: StorkTheme.primary.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Text(
+              '$_selectedCount of ${_cartItems.length} selected',
+              style: const TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w800,
+                color: StorkTheme.primary,
+              ),
             ),
           ),
         ],
@@ -509,13 +545,14 @@ class _CartScreenState extends ConsumerState<CartScreen>
     );
   }
 
-  Widget _buildStoreGroup(String storeName, List<CartItem> items) {
+  Widget _buildStoreGroup(String storeName, CartItemList items) {
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
         color: StorkTheme.surface,
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(20),
         border: Border.all(color: StorkTheme.borderSubtle),
+        boxShadow: StorkTheme.softCardShadow,
       ),
       clipBehavior: Clip.antiAlias,
       child: Column(
@@ -523,7 +560,7 @@ class _CartScreenState extends ConsumerState<CartScreen>
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             decoration: BoxDecoration(
-              color: StorkTheme.surfaceSubtle.withValues(alpha: 0.6),
+              color: StorkTheme.surfaceSubtle.withValues(alpha: 0.7),
               border: const Border(
                 bottom: BorderSide(color: StorkTheme.borderSubtle),
               ),
@@ -536,10 +573,18 @@ class _CartScreenState extends ConsumerState<CartScreen>
                   activeColor: StorkTheme.primary,
                   visualDensity: VisualDensity.compact,
                 ),
-                const Icon(
-                  Icons.storefront_rounded,
-                  size: 18,
-                  color: StorkTheme.primaryDark,
+                Container(
+                  width: 28,
+                  height: 28,
+                  decoration: BoxDecoration(
+                    color: StorkTheme.primary.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(
+                    Icons.storefront_rounded,
+                    size: 16,
+                    color: StorkTheme.primaryDark,
+                  ),
                 ),
                 const SizedBox(width: 8),
                 Expanded(
@@ -576,7 +621,7 @@ class _CartScreenState extends ConsumerState<CartScreen>
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Padding(
-            padding: const EdgeInsets.only(top: 16),
+            padding: const EdgeInsets.only(top: 18),
             child: Checkbox(
               value: item.isSelected,
               onChanged: (val) =>
@@ -599,17 +644,17 @@ class _CartScreenState extends ConsumerState<CartScreen>
               ).then((_) => _fetchCartItems(silent: true));
             },
             child: Container(
-              width: 76,
-              height: 76,
+              width: 78,
+              height: 78,
               margin: const EdgeInsets.only(right: 12),
               decoration: BoxDecoration(
                 color: StorkTheme.surfaceSubtle,
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(14),
                 border: Border.all(color: StorkTheme.borderSubtle),
               ),
               child: imgUrl.isNotEmpty
                   ? ClipRRect(
-                      borderRadius: BorderRadius.circular(11),
+                      borderRadius: BorderRadius.circular(13),
                       child: Image.network(
                         imgUrl,
                         fit: BoxFit.cover,
@@ -619,8 +664,10 @@ class _CartScreenState extends ConsumerState<CartScreen>
                         ),
                       ),
                     )
-                  : const Icon(Icons.inventory_2_outlined,
-                      color: StorkTheme.textMuted),
+                  : const Icon(
+                      Icons.inventory_2_outlined,
+                      color: StorkTheme.textMuted,
+                    ),
             ),
           ),
           Expanded(
@@ -649,7 +696,7 @@ class _CartScreenState extends ConsumerState<CartScreen>
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
-                            fontWeight: FontWeight.w700,
+                            fontWeight: FontWeight.w800,
                             fontSize: 13.5,
                             color: StorkTheme.textMain,
                             height: 1.25,
@@ -680,85 +727,87 @@ class _CartScreenState extends ConsumerState<CartScreen>
                         const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                     decoration: BoxDecoration(
                       color: StorkTheme.surfaceSubtle,
-                      borderRadius: BorderRadius.circular(6),
+                      borderRadius: BorderRadius.circular(8),
                       border: Border.all(color: StorkTheme.borderSubtle),
                     ),
                     child: Text(
                       item.variantLabel,
                       style: const TextStyle(
                         fontSize: 10.5,
-                        fontWeight: FontWeight.w600,
-                        color: StorkTheme.textMuted,
+                        fontWeight: FontWeight.w700,
+                        color: StorkTheme.primaryDark,
                       ),
                       overflow: TextOverflow.ellipsis,
                     ),
                   )
                 else
                   const SizedBox(height: 8),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  crossAxisAlignment: CrossAxisAlignment.end,
+                Wrap(
+                  alignment: WrapAlignment.spaceBetween,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  spacing: 8,
+                  runSpacing: 8,
                   children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          AnimatedPrice(
-                            price: item.discountedPrice * item.quantity,
-                            style: TextStyle(
-                              fontWeight: FontWeight.w800,
-                              fontSize: 15,
-                              color: item.product.discount > 0
-                                  ? StorkTheme.price
-                                  : StorkTheme.textMain,
-                            ),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        AnimatedPrice(
+                          price: item.discountedPrice * item.quantity,
+                          style: TextStyle(
+                            fontWeight: FontWeight.w900,
+                            fontSize: 15,
+                            color: item.product.discount > 0
+                                ? StorkTheme.price
+                                : StorkTheme.primary,
                           ),
-                          if (item.product.discount > 0)
-                            Wrap(
-                              crossAxisAlignment: WrapCrossAlignment.center,
-                              spacing: 4,
-                              children: [
-                                AnimatedPrice(
-                                  price: item.activePrice * item.quantity,
+                        ),
+                        if (item.product.discount > 0)
+                          Wrap(
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            spacing: 4,
+                            children: [
+                              AnimatedPrice(
+                                price: item.activePrice * item.quantity,
+                                style: const TextStyle(
+                                  fontSize: 10.5,
+                                  decoration: TextDecoration.lineThrough,
+                                  color: StorkTheme.textMuted,
+                                ),
+                              ),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 5, vertical: 1),
+                                decoration: BoxDecoration(
+                                  color:
+                                      StorkTheme.danger.withValues(alpha: 0.1),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(
+                                  '-${item.product.discount.toStringAsFixed(0)}%',
                                   style: const TextStyle(
-                                    fontSize: 10.5,
-                                    decoration: TextDecoration.lineThrough,
-                                    color: StorkTheme.textMuted,
+                                    fontSize: 9,
+                                    fontWeight: FontWeight.w800,
+                                    color: StorkTheme.danger,
                                   ),
                                 ),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 4, vertical: 1),
-                                  decoration: BoxDecoration(
-                                    color: StorkTheme.danger
-                                        .withValues(alpha: 0.1),
-                                    borderRadius: BorderRadius.circular(4),
-                                  ),
-                                  child: Text(
-                                    '-${item.product.discount.toStringAsFixed(0)}%',
-                                    style: const TextStyle(
-                                      fontSize: 9,
-                                      fontWeight: FontWeight.w800,
-                                      color: StorkTheme.danger,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                        ],
-                      ),
+                              ),
+                            ],
+                          ),
+                      ],
                     ),
                     Container(
-                      height: 30,
+                      height: 32,
                       decoration: BoxDecoration(
+                        color: StorkTheme.surfaceSubtle,
                         border: Border.all(color: StorkTheme.borderSubtle),
-                        borderRadius: BorderRadius.circular(8),
+                        borderRadius: BorderRadius.circular(10),
                       ),
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           IconButton(
-                            icon: const Icon(Icons.remove_rounded, size: 14),
+                            icon: const Icon(Icons.remove_rounded, size: 15),
                             padding: EdgeInsets.zero,
                             constraints: const BoxConstraints(
                               minWidth: 28,
@@ -789,7 +838,7 @@ class _CartScreenState extends ConsumerState<CartScreen>
                                   ),
                           ),
                           IconButton(
-                            icon: const Icon(Icons.add_rounded, size: 14),
+                            icon: const Icon(Icons.add_rounded, size: 15),
                             padding: EdgeInsets.zero,
                             constraints: const BoxConstraints(
                               minWidth: 28,
@@ -815,7 +864,7 @@ class _CartScreenState extends ConsumerState<CartScreen>
 
   Widget _buildBottomCheckoutBar() {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: BoxDecoration(
         color: StorkTheme.surface,
         border: const Border(top: BorderSide(color: StorkTheme.borderSubtle)),
@@ -841,7 +890,7 @@ class _CartScreenState extends ConsumerState<CartScreen>
                     style: const TextStyle(
                       fontSize: 11,
                       fontWeight: FontWeight.w800,
-                      color: StorkTheme.textMuted,
+                      color: StorkTheme.primaryDark,
                     ),
                   ),
                   const SizedBox(height: 8),
@@ -995,7 +1044,7 @@ class _CartScreenState extends ConsumerState<CartScreen>
                                   fontWeight: FontWeight.w900,
                                   color: _savingsTotal > 0
                                       ? StorkTheme.price
-                                      : StorkTheme.textMain,
+                                      : StorkTheme.primaryDark,
                                 ),
                               ),
                             ),
@@ -1024,36 +1073,43 @@ class _CartScreenState extends ConsumerState<CartScreen>
                   ),
                 ),
                 const SizedBox(width: 12),
-                ElevatedButton(
-                  onPressed: _selectedCount == 0
-                      ? null
-                      : () {
-                          final selectedIds =
-                              _selectedItems.map((i) => i.id).toList();
-                          Navigator.push(
-                            context,
-                            StorkRoute.fade(
-                              CheckoutScreen(
-                                baseUrl: _domain,
-                                token: widget.token,
-                                mode: 'cart',
-                                cartIds: selectedIds,
-                              ),
-                            ),
-                          ).then((_) => _fetchCartItems());
-                        },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: StorkTheme.textMain,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 22, vertical: 13),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
+                Container(
+                  height: 48,
+                  decoration: BoxDecoration(
+                    gradient:
+                        _selectedCount > 0 ? StorkTheme.brandGradient : null,
+                    borderRadius: BorderRadius.circular(14),
                   ),
-                  child: Text(
-                    'Checkout ($_selectedCount)',
-                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  child: ElevatedButton(
+                    onPressed: _selectedCount == 0
+                        ? null
+                        : () {
+                            final selectedIds =
+                                _selectedItems.map((i) => i.id).toList();
+                            Navigator.push(
+                              context,
+                              StorkRoute.fade(
+                                CheckoutScreen(
+                                  baseUrl: _domain,
+                                  token: widget.token,
+                                  mode: 'cart',
+                                  cartIds: selectedIds,
+                                ),
+                              ),
+                            ).then((_) => _fetchCartItems());
+                          },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.transparent,
+                      shadowColor: Colors.transparent,
+                      padding: const EdgeInsets.symmetric(horizontal: 20),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                    ),
+                    child: Text(
+                      'Checkout ($_selectedCount)',
+                      style: const TextStyle(fontWeight: FontWeight.w800),
+                    ),
                   ),
                 ),
               ],

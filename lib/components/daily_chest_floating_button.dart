@@ -80,17 +80,17 @@ class _DailyChestFloatingButtonState
         );
       },
       child: Container(
-        width: 72,
+        width: 74,
         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 7),
         decoration: BoxDecoration(
-          gradient: LinearGradient(
-            colors: canOpen
-                ? const [StorkTheme.primaryDark, StorkTheme.primary]
-                : const [Color(0xFF292524), Color(0xFF44403C)],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
-          borderRadius: BorderRadius.circular(18),
+          gradient: canOpen
+              ? StorkTheme.brandGradient
+              : const LinearGradient(
+                  colors: [Color(0xFF292524), Color(0xFF44403C)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+          borderRadius: BorderRadius.circular(20),
           border: Border.all(
             color: canOpen
                 ? StorkTheme.brandLight
@@ -99,9 +99,9 @@ class _DailyChestFloatingButtonState
           ),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withValues(alpha: 0.22),
-              blurRadius: 12,
-              offset: const Offset(0, 4),
+              color: StorkTheme.primaryDark.withValues(alpha: 0.28),
+              blurRadius: 14,
+              offset: const Offset(0, 5),
             ),
           ],
         ),
@@ -123,7 +123,7 @@ class _DailyChestFloatingButtonState
             ),
             const SizedBox(height: 3),
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
               decoration: BoxDecoration(
                 color: canOpen
                     ? Colors.amber.shade400
@@ -228,8 +228,8 @@ class _DailyTreasureChestDialogState
         final d = body is Map ? (body['data'] ?? body) : null;
         if (d is Map) {
           final chest = d['chest'] is Map
-              ? Map<String, dynamic>.from(d['chest'] as Map)
-              : Map<String, dynamic>.from(d);
+              ? JsonMap.from(d['chest'] as Map)
+              : JsonMap.from(d);
           final int sec =
               int.tryParse(chest['cooldown_sec']?.toString() ?? '0') ?? 0;
           final bool open = chest['can_open'] == true || sec <= 0;
@@ -275,10 +275,8 @@ class _DailyTreasureChestDialogState
       if (!mounted) return;
       final body = json.decode(response.body);
       final JsonMap data = (body is Map && body['data'] is Map)
-          ? Map<String, dynamic>.from(body['data'] as Map)
-          : (body is Map
-              ? Map<String, dynamic>.from(body)
-              : <String, dynamic>{});
+          ? JsonMap.from(body['data'] as Map)
+          : (body is Map ? JsonMap.from(body) : <String, dynamic>{});
 
       if (response.statusCode == 200 &&
           (body['success'] == true || data['coins_won'] != null)) {
@@ -354,7 +352,7 @@ class _DailyTreasureChestDialogState
   Widget build(BuildContext context) {
     return Dialog(
       backgroundColor: StorkTheme.surface,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(26)),
       child: Padding(
         padding: const EdgeInsets.all(22),
         child: _isLoadingStatus
@@ -374,7 +372,7 @@ class _DailyTreasureChestDialogState
                         padding: const EdgeInsets.symmetric(
                             horizontal: 10, vertical: 4),
                         decoration: BoxDecoration(
-                          color: StorkTheme.primary.withValues(alpha: 0.12),
+                          gradient: StorkTheme.brandGradient,
                           borderRadius: BorderRadius.circular(14),
                         ),
                         child: Text(
@@ -384,7 +382,7 @@ class _DailyTreasureChestDialogState
                           style: const TextStyle(
                             fontSize: 10,
                             fontWeight: FontWeight.w900,
-                            color: StorkTheme.primary,
+                            color: Colors.white,
                           ),
                         ),
                       ),
@@ -395,7 +393,7 @@ class _DailyTreasureChestDialogState
                       ),
                     ],
                   ),
-                  const SizedBox(height: 10),
+                  const SizedBox(height: 12),
                   GestureDetector(
                     onTap: _onTapChest,
                     child: AnimatedBuilder(
@@ -411,9 +409,14 @@ class _DailyTreasureChestDialogState
                           child: child,
                         );
                       },
-                      child: SizedBox(
-                        width: 150,
-                        height: 150,
+                      child: Container(
+                        width: 156,
+                        height: 156,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: StorkTheme.brandLight.withValues(alpha: 0.25),
+                          shape: BoxShape.circle,
+                        ),
                         child: Image.asset(
                           _currentChestAsset(),
                           fit: BoxFit.contain,
@@ -426,10 +429,11 @@ class _DailyTreasureChestDialogState
                       ),
                     ),
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 14),
                   if (_rewardUnlocked) ...[
                     Text(
                       '+$_wonCoins Storkia Coins!',
+                      textAlign: TextAlign.center,
                       style: const TextStyle(
                         fontSize: 24,
                         fontWeight: FontWeight.w900,
@@ -439,6 +443,7 @@ class _DailyTreasureChestDialogState
                     const SizedBox(height: 4),
                     Text(
                       _wonStageLabel,
+                      textAlign: TextAlign.center,
                       style: const TextStyle(
                         fontSize: 14,
                         fontWeight: FontWeight.w800,
@@ -466,27 +471,32 @@ class _DailyTreasureChestDialogState
                         color: StorkTheme.primaryDark,
                       ),
                     ),
-                    const SizedBox(height: 6),
+                    const SizedBox(height: 8),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.center,
-                      children: List.generate(3, (idx) {
-                        final active = idx < _tapCount;
-                        return Container(
-                          margin: const EdgeInsets.symmetric(horizontal: 4),
-                          width: 28,
-                          height: 8,
-                          decoration: BoxDecoration(
-                            color: active
-                                ? StorkTheme.primary
-                                : StorkTheme.borderSubtle,
-                            borderRadius: BorderRadius.circular(6),
+                      children: [
+                        for (int idx = 0; idx < 3; idx++)
+                          AnimatedContainer(
+                            duration: const Duration(milliseconds: 200),
+                            margin: const EdgeInsets.symmetric(horizontal: 4),
+                            width: 30,
+                            height: 8,
+                            decoration: BoxDecoration(
+                              gradient: idx < _tapCount
+                                  ? StorkTheme.brandGradient
+                                  : null,
+                              color: idx < _tapCount
+                                  ? null
+                                  : StorkTheme.borderSubtle,
+                              borderRadius: BorderRadius.circular(6),
+                            ),
                           ),
-                        );
-                      }),
+                      ],
                     ),
                   ] else ...[
                     const Text(
                       'Daily Chest Cooling Down',
+                      textAlign: TextAlign.center,
                       style: TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.w800,
@@ -496,9 +506,10 @@ class _DailyTreasureChestDialogState
                     const SizedBox(height: 4),
                     Text(
                       'Next chest unlocks in ${_formatCooldown(_cooldownSec)}',
+                      textAlign: TextAlign.center,
                       style: const TextStyle(
                         fontSize: 13,
-                        fontWeight: FontWeight.w700,
+                        fontWeight: FontWeight.w800,
                         color: StorkTheme.primary,
                       ),
                     ),
@@ -519,14 +530,28 @@ class _DailyTreasureChestDialogState
                         const SizedBox(width: 10),
                       ],
                       Expanded(
-                        child: ElevatedButton(
-                          onPressed: (_canOpen && !_rewardUnlocked)
-                              ? _onTapChest
-                              : () => Navigator.pop(context),
-                          child: Text(
-                            (_canOpen && !_rewardUnlocked)
-                                ? 'Tap Chest ($_tapCount/3)'
-                                : 'Done',
+                        child: Container(
+                          height: 46,
+                          decoration: BoxDecoration(
+                            gradient: StorkTheme.brandGradient,
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: ElevatedButton(
+                            onPressed: (_canOpen && !_rewardUnlocked)
+                                ? _onTapChest
+                                : () => Navigator.pop(context),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.transparent,
+                              shadowColor: Colors.transparent,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                            ),
+                            child: Text(
+                              (_canOpen && !_rewardUnlocked)
+                                  ? 'Tap Chest ($_tapCount/3)'
+                                  : 'Done',
+                            ),
                           ),
                         ),
                       ),

@@ -99,10 +99,8 @@ class _AnnouncementsScreenState extends ConsumerState<AnnouncementsScreen>
         final List<JsonMap> parsed = _extractAnnouncementsList(
           body is Map ? (body['data'] ?? body) : body,
         );
-
         final unreadCount = parsed.where((a) => a['is_read'] != true).length;
         ref.read(unreadAnnouncementProvider.notifier).updateCount(unreadCount);
-
         setState(() {
           _announcements = parsed;
           _isLoading = false;
@@ -143,7 +141,9 @@ class _AnnouncementsScreenState extends ConsumerState<AnnouncementsScreen>
 
   @override
   Widget build(BuildContext context) {
-    final hasUnread = _announcements.any((a) => a['is_read'] != true);
+    final unreadCount =
+        _announcements.where((a) => a['is_read'] != true).length;
+    final hasUnread = unreadCount > 0;
 
     return Scaffold(
       backgroundColor: StorkTheme.surfaceSubtle,
@@ -151,13 +151,17 @@ class _AnnouncementsScreenState extends ConsumerState<AnnouncementsScreen>
         title: const Text('Platform Announcements'),
         actions: [
           if (hasUnread)
-            TextButton(
-              onPressed: _markAllAsRead,
-              child: const Text(
-                'Mark All Read',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w800,
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: TextButton.icon(
+                onPressed: _markAllAsRead,
+                icon: const Icon(Icons.done_all_rounded, size: 16),
+                label: const Text(
+                  'Mark All Read',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
               ),
             ),
@@ -172,34 +176,50 @@ class _AnnouncementsScreenState extends ConsumerState<AnnouncementsScreen>
               onRefresh: () => _fetchAnnouncements(),
               child: _announcements.isEmpty
                   ? ListView(
-                      children: const [
-                        SizedBox(height: 110),
+                      padding: const EdgeInsets.all(28),
+                      children: [
+                        const SizedBox(height: 90),
                         Center(
-                          child: Column(
-                            children: [
-                              Icon(
-                                Icons.campaign_outlined,
-                                size: 54,
-                                color: StorkTheme.textMuted,
-                              ),
-                              SizedBox(height: 10),
-                              Text(
-                                'No platform announcements yet',
-                                style: TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w800,
-                                  color: StorkTheme.textMain,
-                                ),
-                              ),
-                            ],
+                          child: Container(
+                            width: 76,
+                            height: 76,
+                            decoration: BoxDecoration(
+                              color: StorkTheme.primary.withValues(alpha: 0.1),
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(
+                              Icons.campaign_outlined,
+                              size: 38,
+                              color: StorkTheme.primary,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        const Text(
+                          'No Platform Announcements Yet',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w800,
+                            color: StorkTheme.primaryDark,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        const Text(
+                          'Official Storkia marketplace updates, system notices, and promo alerts will appear here.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            color: StorkTheme.textMuted,
+                            height: 1.4,
                           ),
                         ),
                       ],
                     )
                   : ListView.separated(
-                      padding: const EdgeInsets.all(14),
+                      padding: const EdgeInsets.all(16),
                       itemCount: _announcements.length,
-                      separatorBuilder: (_, __) => const SizedBox(height: 10),
+                      separatorBuilder: (_, __) => const SizedBox(height: 12),
                       itemBuilder: (context, index) {
                         final item = _announcements[index];
                         final int id =
@@ -217,55 +237,85 @@ class _AnnouncementsScreenState extends ConsumerState<AnnouncementsScreen>
                             (item['published_at'] ?? item['created_at'] ?? '')
                                 .toString();
 
-                        return GestureDetector(
+                        return InkWell(
                           onTap: () {
                             if (!isRead && id > 0) {
                               _markAsRead(id);
                             }
                           },
+                          borderRadius: BorderRadius.circular(20),
                           child: Container(
                             padding: const EdgeInsets.all(16),
                             decoration: BoxDecoration(
                               color: isRead
                                   ? StorkTheme.surface
                                   : StorkTheme.primary.withValues(alpha: 0.04),
-                              borderRadius: BorderRadius.circular(18),
+                              borderRadius: BorderRadius.circular(20),
                               border: Border.all(
                                 color: isRead
                                     ? StorkTheme.borderSubtle
                                     : StorkTheme.primary
-                                        .withValues(alpha: 0.35),
+                                        .withValues(alpha: 0.38),
+                                width: isRead ? 1 : 1.5,
                               ),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withValues(alpha: 0.025),
+                                  blurRadius: 10,
+                                  offset: const Offset(0, 4),
+                                ),
+                              ],
                             ),
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Row(
+                                Wrap(
+                                  spacing: 6,
+                                  runSpacing: 6,
+                                  crossAxisAlignment: WrapCrossAlignment.center,
                                   children: [
                                     if (isPinned)
                                       Container(
-                                        margin: const EdgeInsets.only(right: 6),
                                         padding: const EdgeInsets.symmetric(
-                                            horizontal: 7, vertical: 2),
+                                          horizontal: 8,
+                                          vertical: 3,
+                                        ),
                                         decoration: BoxDecoration(
-                                          color: StorkTheme.primaryDark,
+                                          gradient: const LinearGradient(
+                                            colors: [
+                                              StorkTheme.primaryDark,
+                                              StorkTheme.primary,
+                                            ],
+                                          ),
                                           borderRadius:
                                               BorderRadius.circular(8),
                                         ),
-                                        child: const Text(
-                                          'PINNED',
-                                          style: TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 9,
-                                            fontWeight: FontWeight.w800,
-                                          ),
+                                        child: const Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Icon(
+                                              Icons.push_pin_rounded,
+                                              size: 10,
+                                              color: Colors.white,
+                                            ),
+                                            SizedBox(width: 3),
+                                            Text(
+                                              'PINNED',
+                                              style: TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 9,
+                                                fontWeight: FontWeight.w900,
+                                              ),
+                                            ),
+                                          ],
                                         ),
                                       ),
                                     if (!isRead)
                                       Container(
-                                        margin: const EdgeInsets.only(right: 6),
                                         padding: const EdgeInsets.symmetric(
-                                            horizontal: 7, vertical: 2),
+                                          horizontal: 8,
+                                          vertical: 3,
+                                        ),
                                         decoration: BoxDecoration(
                                           color: StorkTheme.primary,
                                           borderRadius:
@@ -276,21 +326,22 @@ class _AnnouncementsScreenState extends ConsumerState<AnnouncementsScreen>
                                           style: TextStyle(
                                             color: Colors.white,
                                             fontSize: 9,
-                                            fontWeight: FontWeight.w800,
+                                            fontWeight: FontWeight.w900,
                                           ),
                                         ),
                                       ),
-                                    Expanded(
-                                      child: Text(
-                                        title,
-                                        style: const TextStyle(
-                                          fontSize: 14.5,
-                                          fontWeight: FontWeight.w800,
-                                          color: StorkTheme.primaryDark,
-                                        ),
-                                      ),
-                                    ),
                                   ],
+                                ),
+                                if (isPinned || !isRead)
+                                  const SizedBox(height: 8),
+                                Text(
+                                  title,
+                                  style: const TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w800,
+                                    color: StorkTheme.primaryDark,
+                                    height: 1.3,
+                                  ),
                                 ),
                                 const SizedBox(height: 6),
                                 Text(
@@ -298,17 +349,32 @@ class _AnnouncementsScreenState extends ConsumerState<AnnouncementsScreen>
                                   style: const TextStyle(
                                     fontSize: 13,
                                     color: StorkTheme.textMain,
-                                    height: 1.4,
+                                    height: 1.45,
                                   ),
                                 ),
                                 if (dateStr.isNotEmpty) ...[
-                                  const SizedBox(height: 8),
-                                  Text(
-                                    dateStr,
-                                    style: const TextStyle(
-                                      fontSize: 11,
-                                      color: StorkTheme.textMuted,
-                                    ),
+                                  const SizedBox(height: 10),
+                                  Row(
+                                    children: [
+                                      const Icon(
+                                        Icons.schedule_rounded,
+                                        size: 13,
+                                        color: StorkTheme.textMuted,
+                                      ),
+                                      const SizedBox(width: 4),
+                                      Expanded(
+                                        child: Text(
+                                          dateStr,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w600,
+                                            color: StorkTheme.textMuted,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
                                   ),
                                 ],
                               ],

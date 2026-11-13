@@ -9,6 +9,7 @@ import '../models/product_model.dart';
 import 'product_show.dart';
 
 typedef JsonMap = Map<String, dynamic>;
+typedef JsonList = List<JsonMap>;
 
 class SuperDealsScreen extends StatefulWidget {
   final String baseUrl;
@@ -27,7 +28,7 @@ class SuperDealsScreen extends StatefulWidget {
 class _SuperDealsScreenState extends State<SuperDealsScreen>
     with WidgetsBindingObserver {
   bool _isLoading = true;
-  List<JsonMap> _deals = [];
+  JsonList _deals = [];
   String _selectedFilter = 'all';
   Timer? _autoSyncTimer;
 
@@ -67,15 +68,15 @@ class _SuperDealsScreenState extends State<SuperDealsScreen>
     return '$intPart.${parts[1]}';
   }
 
-  List<JsonMap> _extractDealsList(dynamic raw) {
+  JsonList _extractDealsList(dynamic raw) {
     if (raw is List) {
       return [
         for (final item in raw)
-          if (item is Map) Map<String, dynamic>.from(item),
+          if (item is Map) JsonMap.from(item),
       ];
     }
     if (raw is Map) {
-      final List<JsonMap> combined = [];
+      final JsonList combined = [];
       for (final key in [
         'super_deals',
         'deals',
@@ -111,7 +112,7 @@ class _SuperDealsScreenState extends State<SuperDealsScreen>
           .timeout(ApiConfig.requestTimeout);
 
       if (!mounted) return;
-      List<JsonMap> parsed = [];
+      JsonList parsed = [];
       if (response.statusCode == 200) {
         final body = json.decode(response.body);
         parsed = _extractDealsList(body is Map ? (body['data'] ?? body) : body);
@@ -125,7 +126,7 @@ class _SuperDealsScreenState extends State<SuperDealsScreen>
         if (homeRes.statusCode == 200) {
           final homeBody = json.decode(homeRes.body);
           if (homeBody is Map && homeBody['data'] is Map) {
-            final homeData = Map<String, dynamic>.from(homeBody['data'] as Map);
+            final homeData = JsonMap.from(homeBody['data'] as Map);
             parsed = _extractDealsList(homeData['super_deals']);
           }
         }
@@ -144,7 +145,7 @@ class _SuperDealsScreenState extends State<SuperDealsScreen>
     }
   }
 
-  List<JsonMap> get _filteredDeals {
+  JsonList get _filteredDeals {
     if (_selectedFilter == 'all') return _deals;
     return _deals.where((d) {
       final type = (d['deal_type'] ?? 'super_deal').toString().toLowerCase();
@@ -157,6 +158,7 @@ class _SuperDealsScreenState extends State<SuperDealsScreen>
     final visible = _filteredDeals;
     final width = MediaQuery.sizeOf(context).width;
     final crossAxisCount = width >= 700 ? 3 : 2;
+    final aspectRatio = width < 350 ? 0.59 : 0.64;
 
     return Scaffold(
       backgroundColor: StorkTheme.surfaceSubtle,
@@ -169,30 +171,37 @@ class _SuperDealsScreenState extends State<SuperDealsScreen>
             width: double.infinity,
             padding: const EdgeInsets.all(16),
             decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                colors: [StorkTheme.primaryDark, StorkTheme.primary],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
+              gradient: StorkTheme.brandGradient,
+              borderRadius: BorderRadius.vertical(
+                bottom: Radius.circular(24),
               ),
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
-                  '⚡ LIMITED-SLOT SUPER DEALS',
-                  style: TextStyle(
-                    color: StorkTheme.brandLight,
-                    fontSize: 10.5,
-                    fontWeight: FontWeight.w900,
-                    letterSpacing: 0.6,
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 3.5),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.18),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: const Text(
+                    '⚡ LIMITED-SLOT SUPER DEALS',
+                    style: TextStyle(
+                      color: StorkTheme.brandLight,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 0.6,
+                    ),
                   ),
                 ),
-                const SizedBox(height: 4),
+                const SizedBox(height: 6),
                 const Text(
                   'Variant-Aware Flash Slots & Store Sales',
                   style: TextStyle(
                     color: Colors.white,
-                    fontSize: 17,
+                    fontSize: 17.5,
                     fontWeight: FontWeight.w900,
                   ),
                 ),
@@ -230,34 +239,42 @@ class _SuperDealsScreenState extends State<SuperDealsScreen>
                     onRefresh: () => _fetchDeals(),
                     child: visible.isEmpty
                         ? ListView(
-                            children: const [
-                              SizedBox(height: 100),
+                            padding: const EdgeInsets.all(28),
+                            children: [
+                              const SizedBox(height: 80),
                               Center(
-                                child: Column(
-                                  children: [
-                                    Icon(
-                                      Icons.bolt_rounded,
-                                      size: 52,
-                                      color: StorkTheme.textMuted,
-                                    ),
-                                    SizedBox(height: 10),
-                                    Text(
-                                      'No active Super Deals right now',
-                                      style: TextStyle(
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.w800,
-                                        color: StorkTheme.textMain,
-                                      ),
-                                    ),
-                                    SizedBox(height: 4),
-                                    Text(
-                                      'Check back soon for new time-slot promotions!',
-                                      style: TextStyle(
-                                        fontSize: 12.5,
-                                        color: StorkTheme.textMuted,
-                                      ),
-                                    ),
-                                  ],
+                                child: Container(
+                                  width: 74,
+                                  height: 74,
+                                  decoration: BoxDecoration(
+                                    color: StorkTheme.primary
+                                        .withValues(alpha: 0.1),
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: const Icon(
+                                    Icons.bolt_rounded,
+                                    size: 38,
+                                    color: StorkTheme.primary,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 14),
+                              const Text(
+                                'No Active Super Deals Right Now',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  fontSize: 16.5,
+                                  fontWeight: FontWeight.w800,
+                                  color: StorkTheme.primaryDark,
+                                ),
+                              ),
+                              const SizedBox(height: 6),
+                              const Text(
+                                'Check back soon for new time-slot flash promotions!',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  fontSize: 12.5,
+                                  color: StorkTheme.textMuted,
                                 ),
                               ),
                             ],
@@ -267,7 +284,7 @@ class _SuperDealsScreenState extends State<SuperDealsScreen>
                             gridDelegate:
                                 SliverGridDelegateWithFixedCrossAxisCount(
                               crossAxisCount: crossAxisCount,
-                              childAspectRatio: 0.64,
+                              childAspectRatio: aspectRatio,
                               crossAxisSpacing: 12,
                               mainAxisSpacing: 12,
                             ),
@@ -288,7 +305,7 @@ class _SuperDealsScreenState extends State<SuperDealsScreen>
     return GestureDetector(
       onTap: () => setState(() => _selectedFilter = key),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 6.5),
         decoration: BoxDecoration(
           color: active ? Colors.white : Colors.white.withValues(alpha: 0.16),
           borderRadius: BorderRadius.circular(18),
@@ -306,9 +323,8 @@ class _SuperDealsScreenState extends State<SuperDealsScreen>
   }
 
   Widget _buildDealCard(JsonMap entry) {
-    final prodMap = entry['product'] is Map
-        ? Map<String, dynamic>.from(entry['product'] as Map)
-        : entry;
+    final prodMap =
+        entry['product'] is Map ? JsonMap.from(entry['product'] as Map) : entry;
     final product = Product.fromJson(prodMap);
 
     final double dealPrice = double.tryParse((entry['deal_price'] ??
@@ -359,10 +375,11 @@ class _SuperDealsScreenState extends State<SuperDealsScreen>
       child: Container(
         decoration: BoxDecoration(
           color: StorkTheme.surface,
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(18),
           border: Border.all(
             color: StorkTheme.primary.withValues(alpha: 0.35),
           ),
+          boxShadow: StorkTheme.softCardShadow,
         ),
         clipBehavior: Clip.antiAlias,
         child: Column(
@@ -389,8 +406,10 @@ class _SuperDealsScreenState extends State<SuperDealsScreen>
                         padding: const EdgeInsets.symmetric(
                             horizontal: 7, vertical: 3),
                         decoration: BoxDecoration(
-                          color: StorkTheme.danger,
-                          borderRadius: BorderRadius.circular(6),
+                          gradient: const LinearGradient(
+                            colors: [StorkTheme.danger, StorkTheme.primary],
+                          ),
+                          borderRadius: BorderRadius.circular(8),
                         ),
                         child: Text(
                           '⚡ -${pct.toStringAsFixed(0)}%',
@@ -417,7 +436,7 @@ class _SuperDealsScreenState extends State<SuperDealsScreen>
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                       fontSize: 12.5,
-                      fontWeight: FontWeight.w700,
+                      fontWeight: FontWeight.w800,
                       color: StorkTheme.textMain,
                     ),
                   ),
@@ -469,7 +488,7 @@ class _SuperDealsScreenState extends State<SuperDealsScreen>
                     borderRadius: BorderRadius.circular(6),
                     child: LinearProgressIndicator(
                       value: ratio,
-                      minHeight: 10,
+                      minHeight: 9,
                       backgroundColor:
                           StorkTheme.primary.withValues(alpha: 0.14),
                       valueColor: const AlwaysStoppedAnimation<Color>(
