@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../config/api_config.dart';
 import '../config/app_routes.dart';
@@ -43,6 +44,7 @@ class ProductCard extends ConsumerWidget {
 
     return GestureDetector(
       onTap: () {
+        HapticFeedback.selectionClick();
         Navigator.push(
           context,
           StorkRoute.fade(
@@ -152,6 +154,7 @@ class ProductCard extends ConsumerWidget {
                         clipBehavior: Clip.hardEdge,
                         child: InkWell(
                           onTap: () {
+                            HapticFeedback.lightImpact();
                             ref
                                 .read(wishlistProvider.notifier)
                                 .toggleWishlist(baseUrl, token, product);
@@ -175,7 +178,7 @@ class ProductCard extends ConsumerWidget {
               ),
             ),
             Padding(
-              padding: const EdgeInsets.fromLTRB(10, 8, 10, 9),
+              padding: const EdgeInsets.fromLTRB(10, 7, 10, 8),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
@@ -211,28 +214,31 @@ class ProductCard extends ConsumerWidget {
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
-                      fontSize: 12.5,
+                      fontSize: 12,
                       fontWeight: FontWeight.w800,
                       color: StorkTheme.textMain,
                       height: 1.2,
                     ),
                   ),
-                  const SizedBox(height: 5),
+                  const SizedBox(height: 4),
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.baseline,
                     textBaseline: TextBaseline.alphabetic,
                     children: [
                       Flexible(
-                        child: Text(
-                          '₱${_formatMoney(product.discountedPrice)}',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w900,
-                            color: product.discount > 0
-                                ? StorkTheme.price
-                                : StorkTheme.primary,
+                        child: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            '\u20B1${_formatMoney(product.discountedPrice)}',
+                            maxLines: 1,
+                            style: TextStyle(
+                              fontSize: 13.5,
+                              fontWeight: FontWeight.w900,
+                              color: product.discount > 0
+                                  ? StorkTheme.price
+                                  : StorkTheme.primary,
+                            ),
                           ),
                         ),
                       ),
@@ -240,7 +246,7 @@ class ProductCard extends ConsumerWidget {
                         const SizedBox(width: 4),
                         Flexible(
                           child: Text(
-                            '₱${_formatMoney(product.price)}',
+                            '\u20B1${_formatMoney(product.price)}',
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
@@ -253,20 +259,20 @@ class ProductCard extends ConsumerWidget {
                       ],
                     ],
                   ),
-                  const SizedBox(height: 4),
+                  const SizedBox(height: 3),
                   Row(
                     children: [
                       if (product.avgRating > 0) ...[
                         const Icon(
                           Icons.star_rounded,
-                          size: 12.5,
+                          size: 12,
                           color: Colors.amber,
                         ),
                         const SizedBox(width: 2),
                         Text(
                           product.avgRating.toStringAsFixed(1),
                           style: const TextStyle(
-                            fontSize: 10.5,
+                            fontSize: 10,
                             fontWeight: FontWeight.w800,
                             color: StorkTheme.textMain,
                           ),

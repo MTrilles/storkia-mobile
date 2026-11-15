@@ -1,12 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:http/http.dart' as http;
 import '../config/api_config.dart';
 import '../config/app_routes.dart';
 import '../config/app_theme.dart';
 import '../providers/global_counters_provider.dart';
+import '../services/api_service.dart';
+import '../services/websocket_service.dart';
 import 'cart_screen.dart';
 import 'leave_review_screen.dart';
 import 'order_details_screen.dart';
@@ -39,7 +41,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
   final TextEditingController _searchController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   Timer? _debounceTimer;
-  Timer? _autoSyncTimer;
+  Timer? _wsDebounceTimer;
 
   static const List<StringMap> _tabs = [
     {'key': 'all', 'label': 'All'},
@@ -82,17 +84,35 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
     _scrollController.addListener(_onScroll);
     _fetchOrders(silent: false);
 
-    _autoSyncTimer = Timer.periodic(const Duration(seconds: 6), (_) {
-      if (!_isLoading && !_isFetchingMore) {
-        _fetchOrders(isRefresh: true, silent: true);
-      }
-    });
+    WebSocketService.addListener(_onRealtimeEvent);
+  }
+
+  void _onRealtimeEvent(BuyerRealtimeEvent event) {
+    if (!mounted) return;
+    if (event.scope == 'order' ||
+        event.scope == 'shipment' ||
+        event.scope == 'delivery' ||
+        event.scope == 'pickup' ||
+        event.scope == 'return' ||
+        event.scope == 'return_shipment' ||
+        event.scope == 'wallet' ||
+        event.scope == 'notification' ||
+        event.scope == 'general') {
+      _wsDebounceTimer?.cancel();
+      _wsDebounceTimer = Timer(const Duration(milliseconds: 260), () {
+        if (mounted && !_isLoading && !_isFetchingMore) {
+          _fetchOrders(isRefresh: true, silent: true);
+          syncAllBuyerCounters(ref, widget.token);
+        }
+      });
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _autoSyncTimer?.cancel();
+    _wsDebounceTimer?.cancel();
+    WebSocketService.removeListener(_onRealtimeEvent);
     _tabController.removeListener(_onTabChanged);
     _tabController.dispose();
     _searchController.dispose();
@@ -106,6 +126,22 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
     if (state == AppLifecycleState.resumed) {
       _fetchOrders(isRefresh: true, silent: true);
     }
+  }
+
+  Future<void> _copyReference(String text, String label) async {
+    final cleaned = text.trim();
+    if (cleaned.isEmpty) return;
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    await Clipboard.setData(ClipboardData(text: cleaned));
+    HapticFeedback.lightImpact();
+    messenger?.clearSnackBars();
+    messenger?.showSnackBar(
+      SnackBar(
+        content: Text('Copied $label: $cleaned'),
+        backgroundColor: StorkTheme.primaryDark,
+        duration: const Duration(seconds: 2),
+      ),
+    );
   }
 
   List<dynamic> _extractList(dynamic value) {
@@ -199,6 +235,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
     final selectedKey = _tabs[_tabController.index]['key']!;
     if (selectedKey == _activeTabKey) return;
 
+    HapticFeedback.selectionClick();
     final cachedForTab = _ordersCacheByTab[selectedKey];
     final allCached = _ordersCacheByTab['all'];
 
@@ -262,24 +299,23 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
         },
       );
 
-      final response = await http.get(
-        uri,
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .get(
+            uri,
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (!mounted || requestedTab != _activeTabKey) return;
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         if (data is Map && data['success'] == true && data['data'] is Map) {
-          final paginatedData = Map<String, dynamic>.from(data['data'] as Map);
+          final paginatedData = JsonMap.from(data['data'] as Map);
           final List<dynamic> rawList = _extractList(paginatedData['data']);
           final JsonList parsedOrders = [
             for (final e in rawList)
-              if (e is Map) Map<String, dynamic>.from(e),
+              if (e is Map) JsonMap.from(e),
           ];
 
           final StringIntMap parsedCounts = {};
@@ -371,22 +407,23 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
       ),
     );
 
-    if (confirm != true) return;
+    if (confirm != true || !mounted) return;
+    HapticFeedback.lightImpact();
 
     try {
-      final response = await http.post(
-        Uri.parse('$_domain/api/v1/orders/$orderId/confirm-receipt'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .post(
+            Uri.parse('$_domain/api/v1/orders/$orderId/confirm-receipt'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (!mounted) return;
       final data = json.decode(response.body);
       if (response.statusCode == 200 &&
           data is Map &&
           data['success'] == true) {
+        HapticFeedback.mediumImpact();
         syncAllBuyerCounters(ref, widget.token);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -415,20 +452,21 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
   }
 
   Future<void> _buyAgain(int orderId) async {
+    HapticFeedback.lightImpact();
     try {
-      final response = await http.post(
-        Uri.parse('$_domain/api/v1/orders/$orderId/buy-again'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .post(
+            Uri.parse('$_domain/api/v1/orders/$orderId/buy-again'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (!mounted) return;
       final data = json.decode(response.body);
       if (response.statusCode == 200 &&
           data is Map &&
           data['success'] == true) {
+        HapticFeedback.mediumImpact();
         ref.read(cartCountProvider.notifier).fetchCartCount(widget.token);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -467,7 +505,11 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
     return Scaffold(
       backgroundColor: StorkTheme.surfaceSubtle,
       appBar: AppBar(
-        title: const Text('My Orders'),
+        title: const FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerLeft,
+          child: Text('My Orders'),
+        ),
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(106),
           child: Column(
@@ -628,12 +670,14 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
 
   Widget _buildOrderCard(JsonMap sellerOrder) {
     final seller = sellerOrder['seller_profile'] is Map
-        ? Map<String, dynamic>.from(sellerOrder['seller_profile'] as Map)
+        ? JsonMap.from(sellerOrder['seller_profile'] as Map)
         : <String, dynamic>{};
     final List<dynamic> items = _extractList(sellerOrder['items']);
     final String status = sellerOrder['status']?.toString() ?? 'pending';
     final String statusLabel = sellerOrder['status_label']?.toString() ??
         status.replaceAll('_', ' ').toUpperCase();
+    final String sellerOrderNo =
+        sellerOrder['seller_order_number']?.toString() ?? '';
     final String payMethod =
         sellerOrder['effective_payment_method']?.toString() ??
             (sellerOrder['payment'] is Map
@@ -648,13 +692,15 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
     final bool hasUnresolvedDispute =
         sellerOrder['has_unresolved_dispute'] == true;
     final JsonMap? shipment = sellerOrder['shipment'] is Map
-        ? Map<String, dynamic>.from(sellerOrder['shipment'] as Map)
+        ? JsonMap.from(sellerOrder['shipment'] as Map)
         : null;
+    final String trackingNo =
+        shipment?['tracking_number']?.toString().trim() ?? '';
     final JsonMap? extra = sellerOrder['extra'] is Map
-        ? Map<String, dynamic>.from(sellerOrder['extra'] as Map)
+        ? JsonMap.from(sellerOrder['extra'] as Map)
         : null;
     final JsonMap? serviceRating = sellerOrder['service_rating'] is Map
-        ? Map<String, dynamic>.from(sellerOrder['service_rating'] as Map)
+        ? JsonMap.from(sellerOrder['service_rating'] as Map)
         : null;
     final int coinsUsed =
         int.tryParse(extra?['coins_used']?.toString() ?? '0') ?? 0;
@@ -667,6 +713,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
 
     return GestureDetector(
       onTap: () {
+        HapticFeedback.selectionClick();
         Navigator.push(
           context,
           StorkRoute.fade(
@@ -693,71 +740,88 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Container(
+              width: double.infinity,
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               color: StorkTheme.surfaceSubtle.withValues(alpha: 0.7),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              child: Wrap(
+                alignment: WrapAlignment.spaceBetween,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                spacing: 8,
+                runSpacing: 6,
                 children: [
-                  Expanded(
-                    child: Wrap(
-                      crossAxisAlignment: WrapCrossAlignment.center,
-                      spacing: 6,
-                      runSpacing: 4,
-                      children: [
-                        const Icon(
-                          Icons.storefront_rounded,
-                          size: 16,
+                  Wrap(
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    spacing: 6,
+                    runSpacing: 4,
+                    children: [
+                      const Icon(
+                        Icons.storefront_rounded,
+                        size: 16,
+                        color: StorkTheme.primaryDark,
+                      ),
+                      Text(
+                        seller['business_name']?.toString() ?? 'Seller Store',
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w800,
+                          fontSize: 13.5,
                           color: StorkTheme.primaryDark,
                         ),
-                        Text(
-                          seller['business_name']?.toString() ?? 'Seller Store',
-                          style: const TextStyle(
+                      ),
+                      if (sellerOrderNo.isNotEmpty)
+                        GestureDetector(
+                          onTap: () => _copyReference(sellerOrderNo, 'Order #'),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color:
+                                  StorkTheme.brandLight.withValues(alpha: 0.5),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  '#$sellerOrderNo',
+                                  style: const TextStyle(
+                                    fontSize: 10.5,
+                                    fontWeight: FontWeight.w800,
+                                    color: StorkTheme.primaryDark,
+                                  ),
+                                ),
+                                const SizedBox(width: 3),
+                                const Icon(
+                                  Icons.copy_rounded,
+                                  size: 10,
+                                  color: StorkTheme.primaryDark,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: payMethod == 'WALLET'
+                              ? StorkTheme.primaryDark.withValues(alpha: 0.1)
+                              : StorkTheme.surface,
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(color: StorkTheme.borderSubtle),
+                        ),
+                        child: Text(
+                          payMethod == 'WALLET' ? 'E-WALLET' : payMethod,
+                          style: TextStyle(
+                            fontSize: 9.5,
                             fontWeight: FontWeight.w800,
-                            fontSize: 13.5,
-                            color: StorkTheme.primaryDark,
-                          ),
-                        ),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 6, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: StorkTheme.brandLight.withValues(alpha: 0.5),
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          child: Text(
-                            '#${sellerOrder['seller_order_number'] ?? ''}',
-                            style: const TextStyle(
-                              fontSize: 10.5,
-                              fontWeight: FontWeight.w800,
-                              color: StorkTheme.primaryDark,
-                            ),
-                          ),
-                        ),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 6, vertical: 2),
-                          decoration: BoxDecoration(
                             color: payMethod == 'WALLET'
-                                ? StorkTheme.primaryDark.withValues(alpha: 0.1)
-                                : StorkTheme.surface,
-                            borderRadius: BorderRadius.circular(6),
-                            border: Border.all(color: StorkTheme.borderSubtle),
-                          ),
-                          child: Text(
-                            payMethod == 'WALLET' ? 'E-WALLET' : payMethod,
-                            style: TextStyle(
-                              fontSize: 9.5,
-                              fontWeight: FontWeight.w800,
-                              color: payMethod == 'WALLET'
-                                  ? StorkTheme.primaryDark
-                                  : StorkTheme.textMain,
-                            ),
+                                ? StorkTheme.primaryDark
+                                : StorkTheme.textMain,
                           ),
                         ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
-                  const SizedBox(width: 8),
                   _buildStatusBadge(status, statusLabel, isRated),
                 ],
               ),
@@ -853,7 +917,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
                               ),
                             const SizedBox(height: 2),
                             Text(
-                              'Qty: ${rawItem['quantity']} • ₱${_formatMoney(rawItem['discounted_unit_price'])}',
+                              'Qty: ${rawItem['quantity']} \u2022 \u20B1${_formatMoney(rawItem['discounted_unit_price'])}',
                               style: const TextStyle(
                                 fontSize: 11.5,
                                 color: StorkTheme.textMuted,
@@ -863,12 +927,15 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
                         ),
                       ),
                       const SizedBox(width: 8),
-                      Text(
-                        '₱${_formatMoney(rawItem['line_total'])}',
-                        style: const TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w800,
-                          color: StorkTheme.textMain,
+                      FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Text(
+                          '\u20B1${_formatMoney(rawItem['line_total'])}',
+                          style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w800,
+                            color: StorkTheme.textMain,
+                          ),
                         ),
                       ),
                     ],
@@ -876,29 +943,28 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
                 ),
             const Divider(height: 1),
             Container(
+              width: double.infinity,
               padding: const EdgeInsets.all(14),
               color: StorkTheme.surfaceSubtle.withValues(alpha: 0.35),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  Wrap(
+                    alignment: WrapAlignment.spaceBetween,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    spacing: 8,
+                    runSpacing: 4,
                     children: [
-                      Flexible(
-                        child: Text(
-                          '${payMethod == 'WALLET' ? 'E-Wallet' : payMethod} ($paymentStatus)',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontSize: 11.5,
-                            fontWeight: FontWeight.w700,
-                            color: StorkTheme.textMuted,
-                          ),
+                      Text(
+                        '${payMethod == 'WALLET' ? 'E-Wallet' : payMethod} ($paymentStatus)',
+                        style: const TextStyle(
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w700,
+                          color: StorkTheme.textMuted,
                         ),
                       ),
-                      const SizedBox(width: 8),
                       Text(
-                        'Total: ₱${_formatMoney(sellerOrder['total_amount'])}',
+                        'Total: \u20B1${_formatMoney(sellerOrder['total_amount'])}',
                         style: const TextStyle(
                           fontSize: 14.5,
                           fontWeight: FontWeight.w900,
@@ -915,7 +981,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
                       children: [
                         if (coinsUsed > 0)
                           Text(
-                            'Redeemed $coinsUsed Coins (-₱${_formatMoney(coinsDiscount)})',
+                            'Redeemed $coinsUsed Coins (-\u20B1${_formatMoney(coinsDiscount)})',
                             style: const TextStyle(
                               fontSize: 11,
                               fontWeight: FontWeight.w800,
@@ -934,22 +1000,43 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
                       ],
                     ),
                   ],
-                  if (shipment != null &&
-                      shipment['tracking_number'] != null) ...[
+                  if (trackingNo.isNotEmpty) ...[
                     const SizedBox(height: 4),
-                    Text(
-                      'Tracking #: ${shipment['tracking_number']}',
-                      style: const TextStyle(
-                        fontSize: 11.5,
-                        fontWeight: FontWeight.w700,
-                        color: StorkTheme.primaryDark,
+                    InkWell(
+                      onTap: () => _copyReference(trackingNo, 'Tracking #'),
+                      borderRadius: BorderRadius.circular(6),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 2),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Flexible(
+                              child: Text(
+                                'Tracking #: $trackingNo',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontSize: 11.5,
+                                  fontWeight: FontWeight.w700,
+                                  color: StorkTheme.primaryDark,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            const Icon(
+                              Icons.copy_rounded,
+                              size: 11,
+                              color: StorkTheme.primary,
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ],
                   if (serviceRating != null) ...[
                     const SizedBox(height: 4),
                     Text(
-                      'Your Rating: ${serviceRating['overall_average_rating'] ?? '5.0'} / 5.0 ★',
+                      'Your Rating: ${serviceRating['overall_average_rating'] ?? '5.0'} / 5.0 \u2605',
                       style: const TextStyle(
                         fontSize: 11.5,
                         fontWeight: FontWeight.w800,
@@ -980,6 +1067,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
                       else if (status == 'completed' && !isRated)
                         ElevatedButton.icon(
                           onPressed: () {
+                            HapticFeedback.selectionClick();
                             Navigator.push(
                               context,
                               StorkRoute.fade(
@@ -997,6 +1085,8 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
                           icon: const Icon(Icons.star_rounded, size: 16),
                           label: const Text(
                             'Rate (+Up to 10 Coins)',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                             style: TextStyle(fontSize: 12),
                           ),
                           style: ElevatedButton.styleFrom(
@@ -1022,6 +1112,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
                         ),
                       OutlinedButton(
                         onPressed: () {
+                          HapticFeedback.selectionClick();
                           Navigator.push(
                             context,
                             StorkRoute.fade(
@@ -1093,6 +1184,8 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
       ),
       child: Text(
         label,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
         style: TextStyle(
           color: textColor,
           fontSize: 10,

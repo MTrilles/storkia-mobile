@@ -1,11 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 import '../config/api_config.dart';
 import '../config/app_routes.dart';
 import '../config/app_theme.dart';
 import '../models/seller_profile_model.dart';
+import '../services/api_service.dart';
+import '../services/websocket_service.dart';
 import 'seller_store_screen.dart';
 import 'sellers_directory_screen.dart';
 
@@ -29,7 +30,7 @@ class _FollowingStoresScreenState extends State<FollowingStoresScreen>
     with WidgetsBindingObserver {
   bool _isLoading = true;
   List<JsonMap> _follows = [];
-  Timer? _autoSyncTimer;
+  Timer? _wsDebounceTimer;
 
   String get _domain => ApiConfig.resolveBaseDomain(widget.baseUrl);
 
@@ -38,15 +39,28 @@ class _FollowingStoresScreenState extends State<FollowingStoresScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _fetchFollowing();
-    _autoSyncTimer = Timer.periodic(const Duration(seconds: 8), (_) {
-      _fetchFollowing(silent: true);
-    });
+    WebSocketService.addListener(_onRealtimeEvent);
+  }
+
+  void _onRealtimeEvent(BuyerRealtimeEvent event) {
+    if (!mounted) return;
+    if (event.scope == 'catalog' ||
+        event.scope == 'marketplace' ||
+        event.scope == 'voucher') {
+      _wsDebounceTimer?.cancel();
+      _wsDebounceTimer = Timer(const Duration(milliseconds: 280), () {
+        if (mounted) {
+          _fetchFollowing(silent: true);
+        }
+      });
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _autoSyncTimer?.cancel();
+    _wsDebounceTimer?.cancel();
+    WebSocketService.removeListener(_onRealtimeEvent);
     super.dispose();
   }
 
@@ -57,18 +71,57 @@ class _FollowingStoresScreenState extends State<FollowingStoresScreen>
     }
   }
 
+  void _showPopupToast(String message, {bool isError = false}) {
+    if (!mounted || message.trim().isEmpty) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.clearSnackBars();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            Icon(
+              isError
+                  ? Icons.error_outline_rounded
+                  : Icons.check_circle_outline_rounded,
+              color: Colors.white,
+              size: 19,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                message.trim(),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                  height: 1.3,
+                ),
+              ),
+            ),
+          ],
+        ),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 3),
+        margin: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+        backgroundColor: isError ? StorkTheme.danger : StorkTheme.success,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+        ),
+      ),
+    );
+  }
+
   Future<void> _fetchFollowing({bool silent = false}) async {
     if (!silent && _follows.isEmpty) {
       setState(() => _isLoading = true);
     }
     try {
-      final response = await http.get(
-        Uri.parse('$_domain/api/v1/following'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .get(
+            Uri.parse('$_domain/api/v1/following'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (!mounted) return;
       if (response.statusCode == 200) {
@@ -108,14 +161,14 @@ class _FollowingStoresScreenState extends State<FollowingStoresScreen>
       }
     });
     try {
-      await http.post(
-        Uri.parse('$_domain/api/v1/sellers/$sellerId/follow'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      await ApiService.httpClient
+          .post(
+            Uri.parse('$_domain/api/v1/sellers/$sellerId/follow'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
       if (mounted) {
+        _showPopupToast('Unfollowed store.', isError: false);
         _fetchFollowing(silent: true);
       }
     } catch (_) {

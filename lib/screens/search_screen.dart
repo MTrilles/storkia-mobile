@@ -1,13 +1,15 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import 'package:flutter/services.dart';
 import '../components/product_card.dart';
 import '../config/api_config.dart';
 import '../config/app_routes.dart';
 import '../config/app_theme.dart';
 import '../models/product_model.dart';
 import '../models/seller_profile_model.dart';
+import '../services/api_service.dart';
+import '../services/websocket_service.dart';
 import 'seller_store_screen.dart';
 
 typedef JsonMap = Map<String, dynamic>;
@@ -34,6 +36,7 @@ class _SearchScreenState extends State<SearchScreen> {
   late TextEditingController _searchController;
   final ScrollController _scrollController = ScrollController();
   Timer? _debounceTimer;
+  Timer? _wsDebounceTimer;
   int _searchRequestSeq = 0;
 
   bool _isInitialLoading = true;
@@ -73,11 +76,26 @@ class _SearchScreenState extends State<SearchScreen> {
     _searchController = TextEditingController(text: widget.initialQuery);
     _scrollController.addListener(_onScroll);
     _performSearch(resetPage: true, initialLoad: true);
+    WebSocketService.addListener(_onRealtimeEvent);
+  }
+
+  void _onRealtimeEvent(BuyerRealtimeEvent event) {
+    if (!mounted) return;
+    if (event.scope == 'catalog' || event.scope == 'marketplace') {
+      _wsDebounceTimer?.cancel();
+      _wsDebounceTimer = Timer(const Duration(milliseconds: 300), () {
+        if (mounted && !_isSyncing && !_isFetchingMore) {
+          _performSearch(resetPage: true);
+        }
+      });
+    }
   }
 
   @override
   void dispose() {
     _debounceTimer?.cancel();
+    _wsDebounceTimer?.cancel();
+    WebSocketService.removeListener(_onRealtimeEvent);
     _searchController.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -112,13 +130,12 @@ class _SearchScreenState extends State<SearchScreen> {
       final uri = Uri.parse('$_domain/api/v1/search/suggestions').replace(
         queryParameters: {'q': query},
       );
-      final response = await http.get(
-        uri,
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(const Duration(seconds: 6));
+      final response = await ApiService.httpClient
+          .get(
+            uri,
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(const Duration(seconds: 6));
 
       if (!mounted || response.statusCode != 200) return;
       final body = json.decode(response.body);
@@ -193,13 +210,12 @@ class _SearchScreenState extends State<SearchScreen> {
 
       final uri =
           Uri.parse('$_domain/api/v1/search').replace(queryParameters: params);
-      final response = await http.get(
-        uri,
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .get(
+            uri,
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (!mounted || reqId != _searchRequestSeq) return;
 
@@ -298,7 +314,7 @@ class _SearchScreenState extends State<SearchScreen> {
   Widget build(BuildContext context) {
     final width = MediaQuery.sizeOf(context).width;
     final crossAxisCount = width >= 700 ? 3 : 2;
-    final aspectRatio = width < 350 ? 0.63 : 0.68;
+    final aspectRatio = width < 340 ? 0.56 : (width < 380 ? 0.61 : 0.66);
 
     return Scaffold(
       backgroundColor: StorkTheme.surfaceSubtle,
@@ -338,15 +354,9 @@ class _SearchScreenState extends State<SearchScreen> {
           ),
         ),
         bottom: PreferredSize(
-          preferredSize: Size.fromHeight(_isSyncing ? 92 : 90),
+          preferredSize: const Size.fromHeight(88),
           child: Column(
             children: [
-              if (_isSyncing)
-                const LinearProgressIndicator(
-                  minHeight: 2,
-                  color: StorkTheme.primary,
-                  backgroundColor: Colors.transparent,
-                ),
               SizedBox(
                 height: 42,
                 child: ListView.separated(
@@ -361,6 +371,7 @@ class _SearchScreenState extends State<SearchScreen> {
                     return GestureDetector(
                       onTap: () {
                         if (_selectedCategory == cat) return;
+                        HapticFeedback.selectionClick();
                         setState(() => _selectedCategory = cat);
                         _performSearch(resetPage: true);
                       },
@@ -392,7 +403,7 @@ class _SearchScreenState extends State<SearchScreen> {
               ),
               Container(
                 height: 44,
-                padding: const EdgeInsets.symmetric(horizontal: 14),
+                padding: const EdgeInsets.symmetric(horizontal: 10),
                 decoration: const BoxDecoration(
                   color: StorkTheme.surface,
                   border: Border(
@@ -408,8 +419,10 @@ class _SearchScreenState extends State<SearchScreen> {
                     _buildSortTab(
                       _sortBy == 'price_asc' ? 'price_desc' : 'price_asc',
                       _sortBy == 'price_asc'
-                          ? 'Price ↑'
-                          : (_sortBy == 'price_desc' ? 'Price ↓' : 'Price'),
+                          ? 'Price \u2191'
+                          : (_sortBy == 'price_desc'
+                              ? 'Price \u2193'
+                              : 'Price'),
                       isPriceToggle: true,
                     ),
                   ],
@@ -455,6 +468,7 @@ class _SearchScreenState extends State<SearchScreen> {
                                 ),
                               ),
                               onPressed: () {
+                                HapticFeedback.selectionClick();
                                 _searchController.text = sug;
                                 setState(() => _suggestions = []);
                                 _performSearch(resetPage: true);
@@ -482,7 +496,7 @@ class _SearchScreenState extends State<SearchScreen> {
                           ),
                         ),
                         SizedBox(
-                          height: 80,
+                          height: 84,
                           child: ListView.separated(
                             scrollDirection: Axis.horizontal,
                             padding: const EdgeInsets.symmetric(horizontal: 14),
@@ -547,6 +561,7 @@ class _SearchScreenState extends State<SearchScreen> {
                                               CrossAxisAlignment.start,
                                           mainAxisAlignment:
                                               MainAxisAlignment.center,
+                                          mainAxisSize: MainAxisSize.min,
                                           children: [
                                             Text(
                                               seller.businessName,
@@ -683,6 +698,7 @@ class _SearchScreenState extends State<SearchScreen> {
     return Expanded(
       child: InkWell(
         onTap: () {
+          HapticFeedback.selectionClick();
           setState(() {
             _sortBy = key;
             _applyClientSort();
@@ -690,6 +706,7 @@ class _SearchScreenState extends State<SearchScreen> {
           _performSearch(resetPage: true);
         },
         child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 4),
           alignment: Alignment.center,
           decoration: BoxDecoration(
             border: Border(
@@ -699,14 +716,16 @@ class _SearchScreenState extends State<SearchScreen> {
               ),
             ),
           ),
-          child: Text(
-            label,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontSize: 12,
-              fontWeight: active ? FontWeight.w900 : FontWeight.w600,
-              color: active ? StorkTheme.primary : StorkTheme.textMuted,
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Text(
+              label,
+              maxLines: 1,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: active ? FontWeight.w900 : FontWeight.w600,
+                color: active ? StorkTheme.primary : StorkTheme.textMuted,
+              ),
             ),
           ),
         ),

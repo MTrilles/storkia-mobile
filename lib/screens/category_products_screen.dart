@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import '../components/product_card.dart';
 import '../config/api_config.dart';
@@ -99,7 +100,6 @@ class _CategoryProductsScreenState extends State<CategoryProductsScreen> {
           final payload = Map<String, dynamic>.from(data['data'] as Map);
           final dynamic rawProductsBlock =
               payload['products'] ?? payload['data'];
-
           List<dynamic> newProductsJson = [];
           int current = page;
           int lastPage = page;
@@ -167,7 +167,6 @@ class _CategoryProductsScreenState extends State<CategoryProductsScreen> {
                 }
               }
             }
-
             _currentPage = current;
             _hasMore = _currentPage < lastPage;
             _applySorting();
@@ -218,6 +217,7 @@ class _CategoryProductsScreenState extends State<CategoryProductsScreen> {
 
   void _onSubcategorySelected(String subcategory) {
     if (_selectedSubcategory == subcategory) return;
+    HapticFeedback.selectionClick();
     setState(() {
       _selectedSubcategory = subcategory;
       if (subcategory == 'All') {
@@ -240,17 +240,23 @@ class _CategoryProductsScreenState extends State<CategoryProductsScreen> {
   Widget build(BuildContext context) {
     final screenWidth = MediaQuery.sizeOf(context).width;
     final crossAxisCount = screenWidth >= 700 ? 3 : 2;
-    final childAspectRatio = screenWidth < 350 ? 0.63 : 0.68;
+    final childAspectRatio =
+        screenWidth < 340 ? 0.56 : (screenWidth < 380 ? 0.61 : 0.66);
 
     return Scaffold(
       backgroundColor: StorkTheme.surfaceSubtle,
       appBar: AppBar(
-        title: Text(_categoryName.isEmpty ? 'Category' : _categoryName),
+        title: FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerLeft,
+          child: Text(_categoryName.isEmpty ? 'Category' : _categoryName),
+        ),
         actions: [
           PopupMenuButton<String>(
             icon: const Icon(Icons.tune_rounded),
             tooltip: 'Sort Products',
             onSelected: (val) {
+              HapticFeedback.selectionClick();
               setState(() {
                 _sortBy = val;
                 _applySorting();
@@ -291,7 +297,7 @@ class _CategoryProductsScreenState extends State<CategoryProductsScreen> {
                     onTap: () => _onSubcategorySelected(filter),
                     child: AnimatedContainer(
                       duration: const Duration(milliseconds: 180),
-                      padding: const EdgeInsets.symmetric(horizontal: 15),
+                      padding: const EdgeInsets.symmetric(horizontal: 14),
                       alignment: Alignment.center,
                       decoration: BoxDecoration(
                         gradient: isSelected ? StorkTheme.brandGradient : null,
@@ -310,7 +316,7 @@ class _CategoryProductsScreenState extends State<CategoryProductsScreen> {
                               isSelected ? Colors.white : StorkTheme.textMain,
                           fontWeight:
                               isSelected ? FontWeight.w800 : FontWeight.w600,
-                          fontSize: 12.5,
+                          fontSize: 12,
                         ),
                       ),
                     ),

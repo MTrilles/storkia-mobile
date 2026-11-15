@@ -1,13 +1,15 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:http/http.dart' as http;
 import '../config/api_config.dart';
 import '../config/app_routes.dart';
 import '../config/app_theme.dart';
 import '../models/product_model.dart';
 import '../providers/global_counters_provider.dart';
+import '../services/api_service.dart';
+import '../services/websocket_service.dart';
 import 'cart_screen.dart';
 import 'product_show.dart';
 
@@ -32,7 +34,6 @@ class _BundleDealsScreenState extends ConsumerState<BundleDealsScreen>
   bool _isLoading = true;
   int? _addingBundleId;
   List<JsonMap> _bundles = [];
-  Timer? _autoSyncTimer;
 
   String get _domain => ApiConfig.resolveBaseDomain(widget.baseUrl);
 
@@ -41,15 +42,22 @@ class _BundleDealsScreenState extends ConsumerState<BundleDealsScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _fetchBundles();
-    _autoSyncTimer = Timer.periodic(const Duration(seconds: 6), (_) {
+    WebSocketService.addListener(_onRealtimeEvent);
+  }
+
+  void _onRealtimeEvent(BuyerRealtimeEvent event) {
+    if (!mounted) return;
+    if (event.scope == 'marketplace' ||
+        event.scope == 'catalog' ||
+        event.scope == 'general') {
       _fetchBundles(silent: true);
-    });
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _autoSyncTimer?.cancel();
+    WebSocketService.removeListener(_onRealtimeEvent);
     super.dispose();
   }
 
@@ -74,7 +82,7 @@ class _BundleDealsScreenState extends ConsumerState<BundleDealsScreen>
     if (raw is List) {
       return [
         for (final item in raw)
-          if (item is Map) Map<String, dynamic>.from(item),
+          if (item is Map) JsonMap.from(item),
       ];
     }
     if (raw is Map) {
@@ -105,13 +113,12 @@ class _BundleDealsScreenState extends ConsumerState<BundleDealsScreen>
       setState(() => _isLoading = true);
     }
     try {
-      final response = await http.get(
-        Uri.parse('$_domain/api/v1/bundles'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .get(
+            Uri.parse('$_domain/api/v1/bundles'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (!mounted) return;
       if (response.statusCode == 200) {
@@ -125,6 +132,7 @@ class _BundleDealsScreenState extends ConsumerState<BundleDealsScreen>
         return;
       }
     } catch (_) {}
+
     if (mounted && !silent) {
       setState(() => _isLoading = false);
     }
@@ -134,22 +142,23 @@ class _BundleDealsScreenState extends ConsumerState<BundleDealsScreen>
     final int bundleId = int.tryParse(bundle['id']?.toString() ?? '0') ?? 0;
     if (bundleId <= 0 || _addingBundleId != null) return;
 
+    HapticFeedback.lightImpact();
     setState(() => _addingBundleId = bundleId);
     try {
-      final response = await http.post(
-        Uri.parse('$_domain/api/v1/bundles/$bundleId/add'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-          'Content-Type': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .post(
+            Uri.parse('$_domain/api/v1/bundles/$bundleId/add'),
+            headers: ApiService.buildHeaders(widget.token, isJson: true),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (!mounted) return;
       final data = json.decode(response.body);
+
       if ((response.statusCode == 200 || response.statusCode == 201) &&
           data is Map &&
           data['success'] == true) {
+        HapticFeedback.mediumImpact();
         ref.read(cartCountProvider.notifier).fetchCartCount(widget.token);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -202,7 +211,11 @@ class _BundleDealsScreenState extends ConsumerState<BundleDealsScreen>
     return Scaffold(
       backgroundColor: StorkTheme.surfaceSubtle,
       appBar: AppBar(
-        title: const Text('Bundle Deals & Free Gifts'),
+        title: const FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerLeft,
+          child: Text('Bundle Deals & Free Gifts'),
+        ),
       ),
       body: _isLoading
           ? const Center(
@@ -276,9 +289,9 @@ class _BundleDealsScreenState extends ConsumerState<BundleDealsScreen>
         double.tryParse(bundle['discount_percentage']?.toString() ?? '0') ??
             0.0;
     final sellerMap = bundle['seller_profile'] is Map
-        ? Map<String, dynamic>.from(bundle['seller_profile'] as Map)
+        ? JsonMap.from(bundle['seller_profile'] as Map)
         : (bundle['seller'] is Map
-            ? Map<String, dynamic>.from(bundle['seller'] as Map)
+            ? JsonMap.from(bundle['seller'] as Map)
             : <String, dynamic>{});
     final String storeName =
         sellerMap['business_name']?.toString() ?? 'Verified Store';
@@ -291,9 +304,9 @@ class _BundleDealsScreenState extends ConsumerState<BundleDealsScreen>
     ];
 
     final JsonMap? freeGiftMap = bundle['free_gift_product'] is Map
-        ? Map<String, dynamic>.from(bundle['free_gift_product'] as Map)
+        ? JsonMap.from(bundle['free_gift_product'] as Map)
         : (bundle['free_gift'] is Map
-            ? Map<String, dynamic>.from(bundle['free_gift'] as Map)
+            ? JsonMap.from(bundle['free_gift'] as Map)
             : null);
     final String giftVar = [
       bundle['free_gift_variant_name'],
@@ -334,7 +347,7 @@ class _BundleDealsScreenState extends ConsumerState<BundleDealsScreen>
                 child: Text(
                   bundleType == 'percentage_off'
                       ? 'BUY $reqQty GET ${discPct.toStringAsFixed(0)}% OFF'
-                      : 'BUY $reqQty GET FREE GIFT (₱0.00)',
+                      : 'BUY $reqQty GET FREE GIFT (\u20B10.00)',
                   style: const TextStyle(
                     fontSize: 10,
                     fontWeight: FontWeight.w900,
@@ -397,7 +410,7 @@ class _BundleDealsScreenState extends ConsumerState<BundleDealsScreen>
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      'Free Gift: ${freeGiftMap['name'] ?? 'Bonus Item'}${giftVar.isNotEmpty ? ' ($giftVar)' : ''} • ₱0.00',
+                      'Free Gift: ${freeGiftMap['name'] ?? 'Bonus Item'}${giftVar.isNotEmpty ? ' ($giftVar)' : ''} \u2014 \u20B10.00',
                       style: const TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.w800,
@@ -412,7 +425,7 @@ class _BundleDealsScreenState extends ConsumerState<BundleDealsScreen>
           if (products.isNotEmpty) ...[
             const SizedBox(height: 12),
             SizedBox(
-              height: 108,
+              height: 114,
               child: ListView.separated(
                 scrollDirection: Axis.horizontal,
                 itemCount: products.length,
@@ -422,6 +435,7 @@ class _BundleDealsScreenState extends ConsumerState<BundleDealsScreen>
                   final imgUrl = prod.pictures.isNotEmpty
                       ? ApiConfig.storageUrl(prod.pictures.first, _domain)
                       : '';
+
                   return GestureDetector(
                     onTap: () {
                       Navigator.push(
@@ -436,7 +450,7 @@ class _BundleDealsScreenState extends ConsumerState<BundleDealsScreen>
                       );
                     },
                     child: Container(
-                      width: 200,
+                      width: 204,
                       padding: const EdgeInsets.all(8),
                       decoration: BoxDecoration(
                         color: StorkTheme.surfaceSubtle,
@@ -464,20 +478,23 @@ class _BundleDealsScreenState extends ConsumerState<BundleDealsScreen>
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               mainAxisAlignment: MainAxisAlignment.center,
+                              mainAxisSize: MainAxisSize.min,
                               children: [
-                                Text(
-                                  prod.name,
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                    fontSize: 11.5,
-                                    fontWeight: FontWeight.w700,
-                                    color: StorkTheme.textMain,
+                                Flexible(
+                                  child: Text(
+                                    prod.name,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      fontSize: 11.5,
+                                      fontWeight: FontWeight.w700,
+                                      color: StorkTheme.textMain,
+                                    ),
                                   ),
                                 ),
                                 const SizedBox(height: 4),
                                 Text(
-                                  '₱${_formatMoney(prod.discountedPrice)}',
+                                  '\u20B1${_formatMoney(prod.discountedPrice)}',
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: const TextStyle(
@@ -519,6 +536,8 @@ class _BundleDealsScreenState extends ConsumerState<BundleDealsScreen>
                 _addingBundleId == bundleId
                     ? 'Adding Bundle...'
                     : 'Add Bundle to Cart (Min $reqQty Items)',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
             ),
           ),

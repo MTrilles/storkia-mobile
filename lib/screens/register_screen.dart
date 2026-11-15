@@ -99,12 +99,14 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
       return;
     }
 
+    HapticFeedback.lightImpact();
     setState(() => _isLoading = true);
     final res = await ApiService.sendOtp(email);
     if (!mounted) return;
     setState(() => _isLoading = false);
 
     if (res['success'] == true) {
+      HapticFeedback.mediumImpact();
       setState(() => _codeSent = true);
       _startResendTimer(res['cooldown'] ?? 60);
     } else {
@@ -126,12 +128,14 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
       return;
     }
 
+    HapticFeedback.lightImpact();
     setState(() => _isLoading = true);
     final res = await ApiService.verifyOtp(email, code);
     if (!mounted) return;
     setState(() => _isLoading = false);
 
     if (res['success'] == true) {
+      HapticFeedback.mediumImpact();
       setState(() {
         _verificationToken = res['verification_token']?.toString();
         _currentStep = 2;
@@ -144,6 +148,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
   void _goToPasswordStep() {
     FocusScope.of(context).unfocus();
     if (_formKeyStep2.currentState!.validate()) {
+      HapticFeedback.selectionClick();
       setState(() => _currentStep = 3);
     }
   }
@@ -161,6 +166,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
       return;
     }
 
+    HapticFeedback.lightImpact();
     setState(() => _isLoading = true);
     final res = await ApiService.register(
       firstName: _firstNameController.text.trim(),
@@ -180,6 +186,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
     setState(() => _isLoading = false);
 
     if (res['success'] == true) {
+      HapticFeedback.mediumImpact();
       final user = UserModel.fromJson(res['data']['user']);
       final token = res['data']['access_token'].toString();
 
@@ -206,7 +213,8 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
       firstDate: DateTime(1925),
       lastDate: eighteenYearsAgo,
     );
-    if (picked != null) {
+    if (picked != null && mounted) {
+      HapticFeedback.selectionClick();
       setState(() {
         _birthdayController.text =
             "${picked.year}-${picked.month.toString().padLeft(2, '0')}-${picked.day.toString().padLeft(2, '0')}";
@@ -224,6 +232,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
 
   void _showError(String message) {
     if (!mounted) return;
+    HapticFeedback.heavyImpact();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
@@ -234,6 +243,8 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final isCompactWidth = MediaQuery.sizeOf(context).width < 350;
+
     return Scaffold(
       backgroundColor: StorkTheme.surface,
       body: Column(
@@ -249,7 +260,12 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
             child: SafeArea(
               bottom: false,
               child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 20),
+                padding: EdgeInsets.fromLTRB(
+                  isCompactWidth ? 12 : 16,
+                  8,
+                  isCompactWidth ? 12 : 16,
+                  20,
+                ),
                 child: Column(
                   children: [
                     Row(
@@ -262,12 +278,16 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                           ),
                         ),
                         const Expanded(
-                          child: Text(
-                            'Create Buyer Account',
-                            style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.w800,
-                              color: Colors.white,
+                          child: FittedBox(
+                            fit: BoxFit.scaleDown,
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              'Create Buyer Account',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w800,
+                                color: Colors.white,
+                              ),
                             ),
                           ),
                         ),
@@ -286,8 +306,8 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
               child: LayoutBuilder(
                 builder: (context, constraints) {
                   return SingleChildScrollView(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 24,
+                    padding: EdgeInsets.symmetric(
+                      horizontal: isCompactWidth ? 16 : 24,
                       vertical: 22,
                     ),
                     child: ConstrainedBox(
@@ -312,7 +332,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                                             ? 'Personal Information'
                                             : 'Create a Secure Password',
                                     style: const TextStyle(
-                                      fontSize: 22,
+                                      fontSize: 21,
                                       fontWeight: FontWeight.w900,
                                       color: StorkTheme.primaryDark,
                                       letterSpacing: -0.3,
@@ -387,9 +407,9 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
           runSpacing: 2,
           children: [
             link('Terms & Conditions', 0),
-            const Text('•', style: TextStyle(color: StorkTheme.textMuted)),
+            const Text('\u2022', style: TextStyle(color: StorkTheme.textMuted)),
             link('Privacy Policy', 1),
-            const Text('•', style: TextStyle(color: StorkTheme.textMuted)),
+            const Text('\u2022', style: TextStyle(color: StorkTheme.textMuted)),
             link('Cookie Policy', 2),
           ],
         ),
@@ -435,18 +455,20 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                         ),
                 ),
                 const SizedBox(height: 5),
-                Text(
-                  labels[step - 1],
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: _currentStep == step
-                        ? FontWeight.w800
-                        : FontWeight.w600,
-                    color: _currentStep == step
-                        ? Colors.white
-                        : Colors.white.withValues(alpha: 0.78),
+                FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Text(
+                    labels[step - 1],
+                    maxLines: 1,
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: _currentStep == step
+                          ? FontWeight.w800
+                          : FontWeight.w600,
+                      color: _currentStep == step
+                          ? Colors.white
+                          : Colors.white.withValues(alpha: 0.78),
+                    ),
                   ),
                 ),
               ],
@@ -468,6 +490,8 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
   }
 
   Widget _buildStep1() {
+    final isNarrow = MediaQuery.sizeOf(context).width < 350;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -542,9 +566,9 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                 ],
                 maxLength: 6,
                 textAlign: TextAlign.center,
-                style: const TextStyle(
-                  fontSize: 22,
-                  letterSpacing: 12,
+                style: TextStyle(
+                  fontSize: isNarrow ? 19 : 22,
+                  letterSpacing: isNarrow ? 7 : 12,
                   fontWeight: FontWeight.w800,
                 ),
                 decoration: const InputDecoration(
@@ -610,42 +634,54 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                flex: 3,
-                child: TextFormField(
-                  controller: _firstNameController,
-                  textCapitalization: TextCapitalization.words,
-                  decoration: const InputDecoration(
-                    labelText: 'First Name *',
-                    fillColor: StorkTheme.surfaceSubtle,
-                  ),
-                  validator: (v) {
-                    if (v == null || v.trim().isEmpty) return 'Required';
-                    if (!RegExp(r'^[A-Za-z\s]+$').hasMatch(v.trim())) {
-                      return 'Letters only';
-                    }
-                    return null;
-                  },
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final firstField = TextFormField(
+                controller: _firstNameController,
+                textCapitalization: TextCapitalization.words,
+                decoration: const InputDecoration(
+                  labelText: 'First Name *',
+                  fillColor: StorkTheme.surfaceSubtle,
                 ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                flex: 1,
-                child: TextFormField(
-                  controller: _middleInitialController,
-                  textCapitalization: TextCapitalization.characters,
-                  maxLength: 1,
-                  decoration: const InputDecoration(
-                    labelText: 'M.I.',
-                    counterText: '',
-                    fillColor: StorkTheme.surfaceSubtle,
-                  ),
+                validator: (v) {
+                  if (v == null || v.trim().isEmpty) return 'Required';
+                  if (!RegExp(r'^[A-Za-z\s]+$').hasMatch(v.trim())) {
+                    return 'Letters only';
+                  }
+                  return null;
+                },
+              );
+              final miField = TextFormField(
+                controller: _middleInitialController,
+                textCapitalization: TextCapitalization.characters,
+                maxLength: 1,
+                decoration: const InputDecoration(
+                  labelText: 'M.I.',
+                  counterText: '',
+                  fillColor: StorkTheme.surfaceSubtle,
                 ),
-              ),
-            ],
+              );
+
+              if (constraints.maxWidth < 290) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    firstField,
+                    const SizedBox(height: 12),
+                    miField,
+                  ],
+                );
+              }
+
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(flex: 3, child: firstField),
+                  const SizedBox(width: 10),
+                  Expanded(flex: 1, child: miField),
+                ],
+              );
+            },
           ),
           const SizedBox(height: 14),
           TextFormField(
@@ -677,7 +713,10 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
             children: [
               Expanded(
                 child: InkWell(
-                  onTap: () => setState(() => _selectedSex = 'male'),
+                  onTap: () {
+                    HapticFeedback.selectionClick();
+                    setState(() => _selectedSex = 'male');
+                  },
                   borderRadius: BorderRadius.circular(14),
                   child: Container(
                     padding: const EdgeInsets.symmetric(vertical: 12),
@@ -709,7 +748,10 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
               const SizedBox(width: 10),
               Expanded(
                 child: InkWell(
-                  onTap: () => setState(() => _selectedSex = 'female'),
+                  onTap: () {
+                    HapticFeedback.selectionClick();
+                    setState(() => _selectedSex = 'female');
+                  },
                   borderRadius: BorderRadius.circular(14),
                   child: Container(
                     padding: const EdgeInsets.symmetric(vertical: 12),
@@ -847,8 +889,10 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                   child: Checkbox(
                     value: _agreedToPolicies,
                     activeColor: StorkTheme.primary,
-                    onChanged: (val) =>
-                        setState(() => _agreedToPolicies = val ?? false),
+                    onChanged: (val) {
+                      HapticFeedback.selectionClick();
+                      setState(() => _agreedToPolicies = val ?? false);
+                    },
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -892,32 +936,55 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
             ),
           ),
           const SizedBox(height: 22),
-          Row(
-            children: [
-              OutlinedButton(
-                onPressed: () => setState(() => _currentStep = 2),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final backBtn = OutlinedButton(
+                onPressed: () {
+                  HapticFeedback.selectionClick();
+                  setState(() => _currentStep = 2);
+                },
                 child: const Text('Back'),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: SizedBox(
-                  height: 50,
-                  child: ElevatedButton(
-                    onPressed: _isLoading ? null : _handleRegister,
-                    child: _isLoading
-                        ? const SizedBox(
-                            height: 20,
-                            width: 20,
-                            child: CircularProgressIndicator(
-                              color: Colors.white,
-                              strokeWidth: 2,
-                            ),
-                          )
-                        : const Text('Complete Registration'),
-                  ),
+              );
+              final submitBtn = SizedBox(
+                height: 50,
+                child: ElevatedButton(
+                  onPressed: _isLoading ? null : _handleRegister,
+                  child: _isLoading
+                      ? const SizedBox(
+                          height: 20,
+                          width: 20,
+                          child: CircularProgressIndicator(
+                            color: Colors.white,
+                            strokeWidth: 2,
+                          ),
+                        )
+                      : const Text(
+                          'Complete Registration',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
                 ),
-              ),
-            ],
+              );
+
+              if (constraints.maxWidth < 310) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    submitBtn,
+                    const SizedBox(height: 8),
+                    backBtn,
+                  ],
+                );
+              }
+
+              return Row(
+                children: [
+                  backBtn,
+                  const SizedBox(width: 12),
+                  Expanded(child: submitBtn),
+                ],
+              );
+            },
           ),
         ],
       ),

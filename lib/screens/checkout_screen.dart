@@ -3,12 +3,13 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:http/http.dart' as http;
 import '../config/api_config.dart';
 import '../config/app_routes.dart';
 import '../config/app_theme.dart';
 import '../models/address_model.dart';
 import '../providers/global_counters_provider.dart';
+import '../services/api_service.dart';
+import '../services/websocket_service.dart';
 import 'address_selection_screen.dart';
 import 'checkout_success_screen.dart';
 import 'points_rewards_screen.dart';
@@ -44,30 +45,30 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
   bool _isSyncingPreview = false;
   bool _isSubmitting = false;
   int _previewRequestSeq = 0;
-  Timer? _autoSyncTimer;
+  Timer? _wsDebounceTimer;
   String? _lastErrorMessage;
+  String _lastShownNoticeSignature = '';
 
   JsonMap? _checkoutData;
   Address? _selectedAddress;
   bool _isAddressServiceable = true;
   String? _idempotencyKey;
   String? _priceSignature;
-  double _buyerWalletBalance = 0.0;
 
+  double _buyerWalletBalance = 0.0;
   int _buyerCoinsBalance = 0;
   int _maxRedeemableCoins = 0;
   int _minRedeemableCoins = 10;
   bool _useStorkiaCoins = false;
   int _coinsToUse = 0;
-  String? _coinsValidationMessage;
   final TextEditingController _coinsInputController = TextEditingController();
 
   final IntStringMap _paymentMethods = {};
   final IntControllerMap _noteControllers = {};
   final IntControllerMap _storeVoucherControllers = {};
   final IntStringMap _appliedStoreVouchers = {};
-  final Set<String> _touchedSlots = <String>{};
 
+  final Set<String> _touchedSlots = <String>{};
   final IntStringMap _recommendedStoreVouchers = {};
   String _recommendedPlatformVoucher = '';
   String _recommendedShippingVoucher = '';
@@ -76,10 +77,10 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
       TextEditingController();
   final TextEditingController _shippingVoucherController =
       TextEditingController();
+
   String _appliedPlatformVoucherCode = '';
   String _appliedShippingVoucherCode = '';
 
-  List<String> _voucherNotices = [];
   List<JsonMap> _availableVouchers = [];
 
   String get _domain => ApiConfig.resolveBaseDomain(widget.baseUrl);
@@ -89,17 +90,30 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _fetchPreview(silent: false);
-    _autoSyncTimer = Timer.periodic(const Duration(seconds: 10), (_) {
-      if (!_isSubmitting && !_isLoading && !_isSyncingPreview) {
-        _fetchPreview(silent: true);
-      }
-    });
+    WebSocketService.addListener(_onRealtimeEvent);
+  }
+
+  void _onRealtimeEvent(BuyerRealtimeEvent event) {
+    if (!mounted) return;
+    if (event.scope == 'cart' ||
+        event.scope == 'wallet' ||
+        event.scope == 'catalog' ||
+        event.scope == 'marketplace' ||
+        event.scope == 'order') {
+      _wsDebounceTimer?.cancel();
+      _wsDebounceTimer = Timer(const Duration(milliseconds: 300), () {
+        if (mounted && !_isSubmitting && !_isLoading && !_isSyncingPreview) {
+          _fetchPreview(silent: true);
+        }
+      });
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _autoSyncTimer?.cancel();
+    _wsDebounceTimer?.cancel();
+    WebSocketService.removeListener(_onRealtimeEvent);
     for (final ctrl in _noteControllers.values) {
       ctrl.dispose();
     }
@@ -117,6 +131,66 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
     if (state == AppLifecycleState.resumed && !_isSubmitting) {
       _fetchPreview(silent: true);
     }
+  }
+
+  Future<void> _copyTextWithToast(String text, String label) async {
+    final cleaned = text.trim();
+    if (cleaned.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: cleaned));
+    HapticFeedback.lightImpact();
+    if (!mounted) return;
+    _showPopupNotification(
+      'Copied $label: $cleaned',
+      isError: false,
+    );
+  }
+
+  void _showPopupNotification(
+    String message, {
+    bool isError = true,
+    bool isWarning = false,
+  }) {
+    if (!mounted || message.trim().isEmpty) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.clearSnackBars();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            Icon(
+              isError
+                  ? Icons.error_outline_rounded
+                  : (isWarning
+                      ? Icons.info_outline_rounded
+                      : Icons.check_circle_outline_rounded),
+              color: Colors.white,
+              size: 19,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                message.trim(),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                  height: 1.3,
+                ),
+              ),
+            ),
+          ],
+        ),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 3),
+        margin: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+        backgroundColor: isError
+            ? StorkTheme.danger
+            : (isWarning ? const Color(0xFFB45309) : StorkTheme.success),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+        ),
+      ),
+    );
   }
 
   String _formatMoney(dynamic raw) {
@@ -178,20 +252,15 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
     return null;
   }
 
-  void _applyOptimisticLocalCalculation() {
-    if (_checkoutData == null) return;
-
+  double _resolveNetAfterStoreDiscounts() {
+    if (_checkoutData == null) return 0.0;
     final List<dynamic> rawPackages =
         _extractList(_checkoutData!['seller_packages']);
     final double overallSub = double.tryParse(
             _checkoutData!['overall_subtotal']?.toString() ?? '0') ??
         0.0;
-    final double overallShip = double.tryParse(
-            _checkoutData!['overall_shipping']?.toString() ?? '0') ??
-        0.0;
 
     double totalStoreAndBundleDisc = 0.0;
-
     for (final rawPkg in rawPackages) {
       if (rawPkg is! Map) continue;
       final sellerMap = rawPkg['seller_profile'] is Map
@@ -202,13 +271,44 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
           double.tryParse(rawPkg['subtotal']?.toString() ?? '0') ?? 0.0;
       final double bundleDisc =
           double.tryParse(rawPkg['bundle_discount']?.toString() ?? '0') ?? 0.0;
-
       final String storeCode = _appliedStoreVouchers[spId] ?? '';
       final storeVoucher =
           _findAvailableVoucher(storeCode, scope: 'store', sellerId: spId);
       final double storeDisc = _computeVoucherDiscount(
           storeVoucher, (pkgSub - bundleDisc).clamp(0.0, double.infinity));
+      totalStoreAndBundleDisc += (bundleDisc + storeDisc);
+    }
 
+    return (overallSub - totalStoreAndBundleDisc).clamp(0.0, double.infinity);
+  }
+
+  void _applyOptimisticLocalCalculation() {
+    if (_checkoutData == null) return;
+    final List<dynamic> rawPackages =
+        _extractList(_checkoutData!['seller_packages']);
+    final double overallSub = double.tryParse(
+            _checkoutData!['overall_subtotal']?.toString() ?? '0') ??
+        0.0;
+    final double overallShip = double.tryParse(
+            _checkoutData!['overall_shipping']?.toString() ?? '0') ??
+        0.0;
+
+    double totalStoreAndBundleDisc = 0.0;
+    for (final rawPkg in rawPackages) {
+      if (rawPkg is! Map) continue;
+      final sellerMap = rawPkg['seller_profile'] is Map
+          ? JsonMap.from(rawPkg['seller_profile'] as Map)
+          : <String, dynamic>{};
+      final int spId = int.tryParse(sellerMap['id']?.toString() ?? '0') ?? 0;
+      final double pkgSub =
+          double.tryParse(rawPkg['subtotal']?.toString() ?? '0') ?? 0.0;
+      final double bundleDisc =
+          double.tryParse(rawPkg['bundle_discount']?.toString() ?? '0') ?? 0.0;
+      final String storeCode = _appliedStoreVouchers[spId] ?? '';
+      final storeVoucher =
+          _findAvailableVoucher(storeCode, scope: 'store', sellerId: spId);
+      final double storeDisc = _computeVoucherDiscount(
+          storeVoucher, (pkgSub - bundleDisc).clamp(0.0, double.infinity));
       totalStoreAndBundleDisc += (bundleDisc + storeDisc);
     }
 
@@ -247,13 +347,12 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
 
   Future<Address?> _resolveDefaultAddressSilently() async {
     try {
-      final response = await http.get(
-        Uri.parse('$_domain/api/v1/addresses'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(const Duration(seconds: 6));
+      final response = await ApiService.httpClient
+          .get(
+            Uri.parse('$_domain/api/v1/addresses'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(const Duration(seconds: 6));
 
       if (response.statusCode == 200) {
         final body = json.decode(response.body);
@@ -282,7 +381,6 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
   Future<void> _fetchPreview({int? addressId, bool silent = true}) async {
     final int reqId = ++_previewRequestSeq;
     final bool showFullLoader = !silent && _checkoutData == null;
-
     if (showFullLoader) {
       setState(() {
         _isLoading = true;
@@ -307,6 +405,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
         'use_storkia_coins': _useStorkiaCoins,
         'touched_slots': _touchedSlots.toList(),
       };
+
       if (_useStorkiaCoins && _coinsToUse > 0) {
         payload['coins_to_use'] = _coinsToUse;
       }
@@ -332,6 +431,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
         payload['store_vouchers'] = storeCodes;
         payload['store_voucher_codes'] = storeCodes;
       }
+
       if (_appliedPlatformVoucherCode.trim().isNotEmpty) {
         payload['platform_voucher_code'] =
             _appliedPlatformVoucherCode.trim().toUpperCase();
@@ -341,21 +441,16 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
             _appliedShippingVoucherCode.trim().toUpperCase();
       }
 
-      final response = await http
+      final response = await ApiService.httpClient
           .post(
             Uri.parse('$_domain/api/v1/checkout/preview'),
-            headers: {
-              'Authorization': 'Bearer ${widget.token}',
-              'Accept': 'application/json',
-              'Content-Type': 'application/json',
-            },
+            headers: ApiService.buildHeaders(widget.token, isJson: true),
             body: json.encode(payload),
           )
           .timeout(ApiConfig.requestTimeout);
 
       if (!mounted || reqId != _previewRequestSeq) return;
       final body = json.decode(response.body);
-
       final JsonMap? resolvedDataMap = (body is Map && body['data'] is Map)
           ? JsonMap.from(body['data'] as Map)
           : (body is Map && body['seller_packages'] is List
@@ -368,6 +463,11 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
         final List<dynamic> rawAvailableVouchers =
             _extractList(data['available_vouchers']);
         final List<dynamic> rawNotices = _extractList(data['voucher_notices']);
+        final List<String> parsedNotices = [
+          for (final e in rawNotices)
+            if (e != null && e.toString().trim().isNotEmpty)
+              e.toString().trim(),
+        ];
 
         setState(() {
           _checkoutData = data;
@@ -426,7 +526,6 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
             for (final v in rawAvailableVouchers)
               if (v is Map) JsonMap.from(v),
           ];
-          _voucherNotices = [for (final e in rawNotices) e.toString()];
 
           final appliedPlat = data['applied_platform_voucher'];
           _appliedPlatformVoucherCode =
@@ -466,17 +565,35 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
           _isLoading = false;
           _isSyncingPreview = false;
         });
-      } else if (!silent) {
+
+        if (parsedNotices.isNotEmpty) {
+          final joinedNotices = parsedNotices.join(' ');
+          if (joinedNotices != _lastShownNoticeSignature) {
+            _lastShownNoticeSignature = joinedNotices;
+            _showPopupNotification(
+              parsedNotices.first,
+              isError: false,
+              isWarning: true,
+            );
+          }
+        } else {
+          _lastShownNoticeSignature = '';
+        }
+      } else {
         final msg = body is Map
             ? (body['message']?.toString() ??
                 'Failed to load checkout preview.')
             : 'Failed to load checkout preview.';
-        _lastErrorMessage = msg;
+        if (_checkoutData == null) {
+          _lastErrorMessage = msg;
+        }
         _showError(msg);
       }
     } catch (_) {
       if (!silent) {
-        _lastErrorMessage = 'Network error occurred while loading checkout.';
+        if (_checkoutData == null) {
+          _lastErrorMessage = 'Network error occurred while loading checkout.';
+        }
         _showError('Network error occurred while loading checkout.');
       }
     } finally {
@@ -523,10 +640,11 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
     if (!_hasSufficientWalletBalance) {
       final shortfall = _totalWalletRequired - _buyerWalletBalance;
       _showError(
-          'Insufficient Storkia E-Wallet balance. Please top up ₱${_formatMoney(shortfall)} or choose Cash on Delivery (COD).');
+          'Insufficient Storkia E-Wallet balance. Please top up \u20B1${_formatMoney(shortfall)} or choose Cash on Delivery (COD).');
       return;
     }
 
+    HapticFeedback.mediumImpact();
     setState(() => _isSubmitting = true);
 
     try {
@@ -572,14 +690,10 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
         bodyPayload.addAll(widget.buyNowData!);
       }
 
-      final response = await http
+      final response = await ApiService.httpClient
           .post(
             Uri.parse('$_domain/api/v1/checkout/store'),
-            headers: {
-              'Authorization': 'Bearer ${widget.token}',
-              'Accept': 'application/json',
-              'Content-Type': 'application/json',
-            },
+            headers: ApiService.buildHeaders(widget.token, isJson: true),
             body: json.encode(bodyPayload),
           )
           .timeout(ApiConfig.requestTimeout);
@@ -590,6 +704,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
       if ((response.statusCode == 200 || response.statusCode == 201) &&
           data is Map &&
           data['success'] == true) {
+        HapticFeedback.mediumImpact();
         syncAllBuyerCounters(ref, widget.token);
         final orderPayload = data['data'] is Map
             ? JsonMap.from(data['data'] as Map)
@@ -637,17 +752,13 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
 
   void _showError(String message) {
     if (!mounted) return;
+    HapticFeedback.heavyImpact();
     setState(() {
       _isLoading = false;
       _isSyncingPreview = false;
       _isSubmitting = false;
     });
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: StorkTheme.danger,
-      ),
-    );
+    _showPopupNotification(message, isError: true);
   }
 
   Future<void> _navigateAndSelectAddress() async {
@@ -661,6 +772,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
         ),
       ),
     );
+
     if (result is Address) {
       setState(() => _selectedAddress = result);
       _fetchPreview(addressId: result.id, silent: true);
@@ -681,17 +793,11 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
     return Scaffold(
       backgroundColor: StorkTheme.surfaceSubtle,
       appBar: AppBar(
-        title: const Text('Checkout'),
-        bottom: _isSyncingPreview
-            ? const PreferredSize(
-                preferredSize: Size.fromHeight(2),
-                child: LinearProgressIndicator(
-                  minHeight: 2,
-                  color: StorkTheme.primary,
-                  backgroundColor: Colors.transparent,
-                ),
-              )
-            : null,
+        title: const FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerLeft,
+          child: Text('Checkout'),
+        ),
       ),
       body: _isLoading && _checkoutData == null
           ? const Center(
@@ -699,7 +805,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
             )
           : _checkoutData == null
               ? Center(
-                  child: Padding(
+                  child: SingleChildScrollView(
                     padding: const EdgeInsets.all(24),
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
@@ -720,6 +826,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                         const SizedBox(height: 14),
                         const Text(
                           'Unable to load checkout details.',
+                          textAlign: TextAlign.center,
                           style: TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.w800,
@@ -751,48 +858,6 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
               : ListView(
                   padding: const EdgeInsets.all(14),
                   children: [
-                    if (_voucherNotices.isNotEmpty)
-                      Container(
-                        margin: const EdgeInsets.only(bottom: 12),
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: StorkTheme.warning.withValues(alpha: 0.14),
-                          borderRadius: BorderRadius.circular(16),
-                          border: Border.all(
-                            color: StorkTheme.warning.withValues(alpha: 0.35),
-                          ),
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            for (final n in _voucherNotices)
-                              Padding(
-                                padding: const EdgeInsets.only(bottom: 4),
-                                child: Row(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    const Icon(
-                                      Icons.info_outline_rounded,
-                                      size: 15,
-                                      color: Color(0xFF92400E),
-                                    ),
-                                    const SizedBox(width: 6),
-                                    Expanded(
-                                      child: Text(
-                                        n,
-                                        style: const TextStyle(
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.w700,
-                                          color: StorkTheme.textMain,
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                          ],
-                        ),
-                      ),
                     _buildAddressSection(),
                     const SizedBox(height: 12),
                     for (int i = 0; i < packages.length; i++)
@@ -827,38 +892,40 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
               ),
               child: SafeArea(
                 top: false,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Expanded(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            'Total Payable Amount',
-                            style: TextStyle(
-                              fontSize: 11.5,
-                              color: StorkTheme.textMuted,
-                              fontWeight: FontWeight.w700,
-                            ),
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final totalCol = Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Total Payable Amount',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            color: StorkTheme.textMuted,
+                            fontWeight: FontWeight.w700,
                           ),
-                          Text(
-                            '₱${_formatMoney(_checkoutData!['overall_total'])}',
+                        ),
+                        FittedBox(
+                          fit: BoxFit.scaleDown,
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            '\u20B1${_formatMoney(_checkoutData!['overall_total'])}',
                             maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
                               fontSize: 20,
                               fontWeight: FontWeight.w900,
                               color: StorkTheme.primary,
                             ),
                           ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Container(
-                      height: 50,
+                        ),
+                      ],
+                    );
+
+                    final placeOrderBtn = Container(
+                      height: 48,
                       decoration: BoxDecoration(
                         gradient: canSubmit ? StorkTheme.brandGradient : null,
                         borderRadius: BorderRadius.circular(14),
@@ -868,7 +935,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.transparent,
                           shadowColor: Colors.transparent,
-                          padding: const EdgeInsets.symmetric(horizontal: 26),
+                          padding: const EdgeInsets.symmetric(horizontal: 22),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(14),
                           ),
@@ -882,10 +949,35 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                                   strokeWidth: 2,
                                 ),
                               )
-                            : const Text('Place Order'),
+                            : const Text(
+                                'Place Order',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
                       ),
-                    ),
-                  ],
+                    );
+
+                    if (constraints.maxWidth < 290) {
+                      return Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          totalCol,
+                          const SizedBox(height: 8),
+                          placeOrderBtn,
+                        ],
+                      );
+                    }
+
+                    return Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Expanded(child: totalCol),
+                        const SizedBox(width: 12),
+                        placeOrderBtn,
+                      ],
+                    );
+                  },
                 ),
               ),
             ),
@@ -895,6 +987,12 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
   Widget _buildAddressSection() {
     return GestureDetector(
       onTap: _navigateAndSelectAddress,
+      onLongPress: _selectedAddress != null
+          ? () => _copyTextWithToast(
+                '${_selectedAddress!.recipientName} (${_selectedAddress!.phoneNumber}) - ${_selectedAddress!.fullAddress}',
+                'Delivery Address',
+              )
+          : null,
       child: Container(
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
@@ -930,6 +1028,8 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                 const Expanded(
                   child: Text(
                     'Delivery Address',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       fontSize: 14.5,
                       fontWeight: FontWeight.w800,
@@ -955,7 +1055,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
             const SizedBox(height: 8),
             if (_selectedAddress != null) ...[
               Text(
-                '${_selectedAddress!.recipientName}  •  +63 ${_selectedAddress!.phoneNumber.replaceFirst(RegExp(r'^(\+?63|0)'), '')}',
+                '${_selectedAddress!.recipientName}  \u2022  +63 ${_selectedAddress!.phoneNumber.replaceFirst(RegExp(r'^(\+?63|0)'), '')}',
                 style: const TextStyle(
                   fontWeight: FontWeight.w800,
                   fontSize: 13.5,
@@ -1029,8 +1129,13 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
     final currentStoreCode = _appliedStoreVouchers[spId] ?? '';
     final String recommendedStoreCode = _recommendedStoreVouchers[spId] ?? '';
 
+    final double pkgSubtotal =
+        double.tryParse(pkg['subtotal']?.toString() ?? '0') ?? 0.0;
     final double bundleDisc =
         double.tryParse(pkg['bundle_discount']?.toString() ?? '0') ?? 0.0;
+    final double eligibleStoreBase =
+        (pkgSubtotal - bundleDisc).clamp(0.0, double.infinity);
+
     final String? bundleTitle = pkg['bundle_title']?.toString();
     final double storeDisc =
         double.tryParse(pkg['store_discount']?.toString() ?? '0') ?? 0.0;
@@ -1040,6 +1145,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
         int.tryParse(pkg['coins_used']?.toString() ?? '0') ?? 0;
     final double pkgCoinsDisc =
         double.tryParse(pkg['coins_discount']?.toString() ?? '0') ?? 0.0;
+
     final double origShippingFee = double.tryParse(
             (pkg['original_shipping_fee'] ??
                     shipping['shipping_fee'] ??
@@ -1066,54 +1172,53 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
             color: StorkTheme.surfaceSubtle.withValues(alpha: 0.7),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            child: Wrap(
+              alignment: WrapAlignment.spaceBetween,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 8,
+              runSpacing: 4,
               children: [
-                Expanded(
-                  child: Row(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 3),
-                        decoration: BoxDecoration(
-                          gradient: StorkTheme.brandGradient,
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Text(
-                          'Package ${pkgIndex + 1}',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 10.5,
-                            fontWeight: FontWeight.w800,
-                          ),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        gradient: StorkTheme.brandGradient,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        'Package ${pkgIndex + 1}',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w800,
                         ),
                       ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          storeName,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontSize: 13.5,
-                            fontWeight: FontWeight.w800,
-                            color: StorkTheme.primaryDark,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 6),
-                Flexible(
-                  child: Text(
-                    'From: ${sellerProfile['municipality'] ?? ''}',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 11,
-                      color: StorkTheme.textMuted,
                     ),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Text(
+                        storeName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w800,
+                          color: StorkTheme.primaryDark,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                Text(
+                  'From: ${sellerProfile['municipality'] ?? ''}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: StorkTheme.textMuted,
                   ),
                 ),
               ],
@@ -1217,7 +1322,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                             children: [
                               Flexible(
                                 child: Text(
-                                  '₱${_formatMoney(rawItem['discounted_unit_price'])} × ${rawItem['quantity']}',
+                                  '\u20B1${_formatMoney(rawItem['discounted_unit_price'])} \u00D7 ${rawItem['quantity']}',
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: const TextStyle(
@@ -1228,7 +1333,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                               ),
                               const SizedBox(width: 8),
                               Text(
-                                '₱${_formatMoney(rawItem['line_total'])}',
+                                '\u20B1${_formatMoney(rawItem['line_total'])}',
                                 style: const TextStyle(
                                   fontSize: 13,
                                   fontWeight: FontWeight.w800,
@@ -1275,7 +1380,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                         ),
                         const SizedBox(width: 8),
                         Text(
-                          '-₱${_formatMoney(bundleDisc)}',
+                          '-\u20B1${_formatMoney(bundleDisc)}',
                           style: const TextStyle(
                             fontSize: 12,
                             fontWeight: FontWeight.w900,
@@ -1326,7 +1431,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                 const SizedBox(height: 8),
                 if (storeVouchers.isNotEmpty) ...[
                   SizedBox(
-                    height: 78,
+                    height: 84,
                     child: ListView(
                       scrollDirection: Axis.horizontal,
                       children: [
@@ -1339,6 +1444,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                           activeColor: StorkTheme.primary,
                           onTap: () {
                             if (currentStoreCode.isEmpty) return;
+                            HapticFeedback.selectionClick();
                             setState(() {
                               _touchedSlots.add('store_$spId');
                               _appliedStoreVouchers[spId] = '';
@@ -1352,7 +1458,8 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                           _buildVoucherOptionChip(
                             code: sv['code']?.toString() ?? '',
                             title: sv['badge_label']?.toString() ?? 'STORE OFF',
-                            subtitle: 'Min ₱${_formatMoney(sv['min_spend'])}',
+                            subtitle:
+                                'Min \u20B1${_formatMoney(sv['min_spend'])}',
                             isSelected: currentStoreCode.toUpperCase() ==
                                 (sv['code']?.toString().toUpperCase() ?? ''),
                             isMostPreferred: sv['is_most_preferred'] == true ||
@@ -1367,6 +1474,17 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                                   c.toUpperCase()) {
                                 return;
                               }
+                              final minSpend = double.tryParse(
+                                      sv['min_spend']?.toString() ?? '0') ??
+                                  0.0;
+                              if (eligibleStoreBase + 0.0001 < minSpend) {
+                                _showPopupNotification(
+                                  'Voucher $c requires a minimum spend of \u20B1${_formatMoney(minSpend)} at $storeName.',
+                                  isError: true,
+                                );
+                                return;
+                              }
+                              HapticFeedback.selectionClick();
                               setState(() {
                                 _touchedSlots.add('store_$spId');
                                 _appliedStoreVouchers[spId] = c;
@@ -1381,27 +1499,44 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                   ),
                   const SizedBox(height: 8),
                 ],
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _storeVoucherControllers[spId],
-                        textCapitalization: TextCapitalization.characters,
-                        decoration: const InputDecoration(
-                          hintText: 'Or enter store voucher code...',
-                        ),
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final voucherInput = TextField(
+                      controller: _storeVoucherControllers[spId],
+                      textCapitalization: TextCapitalization.characters,
+                      decoration: const InputDecoration(
+                        hintText: 'Or enter store voucher code...',
                       ),
-                    ),
-                    const SizedBox(width: 8),
-                    ElevatedButton(
+                    );
+                    final applyBtn = ElevatedButton(
                       onPressed: () {
+                        HapticFeedback.lightImpact();
+                        final entered = _storeVoucherControllers[spId]!
+                            .text
+                            .trim()
+                            .toUpperCase();
+                        if (entered.isNotEmpty) {
+                          final known = _findAvailableVoucher(
+                            entered,
+                            scope: 'store',
+                            sellerId: spId,
+                          );
+                          if (known != null) {
+                            final minSpend = double.tryParse(
+                                    known['min_spend']?.toString() ?? '0') ??
+                                0.0;
+                            if (eligibleStoreBase + 0.0001 < minSpend) {
+                              _showPopupNotification(
+                                'Voucher $entered requires a minimum spend of \u20B1${_formatMoney(minSpend)} at $storeName.',
+                                isError: true,
+                              );
+                              return;
+                            }
+                          }
+                        }
                         setState(() {
                           _touchedSlots.add('store_$spId');
-                          _appliedStoreVouchers[spId] =
-                              _storeVoucherControllers[spId]!
-                                  .text
-                                  .trim()
-                                  .toUpperCase();
+                          _appliedStoreVouchers[spId] = entered;
                         });
                         _applyOptimisticLocalCalculation();
                         _fetchPreview(silent: true);
@@ -1410,23 +1545,42 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                         backgroundColor: StorkTheme.primaryDark,
                       ),
                       child: const Text('Apply'),
-                    ),
-                  ],
+                    );
+
+                    if (constraints.maxWidth < 290) {
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          voucherInput,
+                          const SizedBox(height: 8),
+                          applyBtn,
+                        ],
+                      );
+                    }
+                    return Row(
+                      children: [
+                        Expanded(child: voucherInput),
+                        const SizedBox(width: 8),
+                        applyBtn,
+                      ],
+                    );
+                  },
                 ),
                 const SizedBox(height: 14),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                Wrap(
+                  alignment: WrapAlignment.spaceBetween,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  spacing: 8,
+                  runSpacing: 4,
                   children: [
-                    Expanded(
-                      child: Text(
-                        'PAYMENT METHOD FOR ${storeName.toUpperCase()} *',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w800,
-                          color: StorkTheme.primaryDark,
-                        ),
+                    Text(
+                      'PAYMENT METHOD FOR ${storeName.toUpperCase()} *',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                        color: StorkTheme.primaryDark,
                       ),
                     ),
                     TextButton(
@@ -1456,105 +1610,123 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                   ],
                 ),
                 const SizedBox(height: 6),
-                Row(
-                  children: [
-                    Expanded(
-                      child: InkWell(
-                        onTap: () =>
-                            setState(() => _paymentMethods[spId] = 'COD'),
-                        borderRadius: BorderRadius.circular(14),
-                        child: Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final codCard = InkWell(
+                      onTap: () {
+                        HapticFeedback.selectionClick();
+                        setState(() => _paymentMethods[spId] = 'COD');
+                      },
+                      borderRadius: BorderRadius.circular(14),
+                      child: Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: selectedMethod == 'COD'
+                              ? StorkTheme.primary.withValues(alpha: 0.06)
+                              : StorkTheme.surface,
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
                             color: selectedMethod == 'COD'
-                                ? StorkTheme.primary.withValues(alpha: 0.06)
-                                : StorkTheme.surface,
-                            borderRadius: BorderRadius.circular(14),
-                            border: Border.all(
-                              color: selectedMethod == 'COD'
-                                  ? StorkTheme.primary
-                                  : StorkTheme.borderSubtle,
-                              width: selectedMethod == 'COD' ? 1.8 : 1,
-                            ),
-                          ),
-                          child: const Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                'Cash on Delivery',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: TextStyle(
-                                  fontWeight: FontWeight.w800,
-                                  fontSize: 12.5,
-                                ),
-                              ),
-                              SizedBox(height: 2),
-                              Text(
-                                'Pay cash upon delivery',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: TextStyle(
-                                  fontSize: 10.5,
-                                  color: StorkTheme.textMuted,
-                                ),
-                              ),
-                            ],
+                                ? StorkTheme.primary
+                                : StorkTheme.borderSubtle,
+                            width: selectedMethod == 'COD' ? 1.8 : 1,
                           ),
                         ),
+                        child: const Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Cash on Delivery',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontWeight: FontWeight.w800,
+                                fontSize: 12.5,
+                              ),
+                            ),
+                            SizedBox(height: 2),
+                            Text(
+                              'Pay cash upon delivery',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 10.5,
+                                color: StorkTheme.textMuted,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: InkWell(
-                        onTap: () =>
-                            setState(() => _paymentMethods[spId] = 'WALLET'),
-                        borderRadius: BorderRadius.circular(14),
-                        child: Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
+                    );
+
+                    final walletCard = InkWell(
+                      onTap: () {
+                        HapticFeedback.selectionClick();
+                        setState(() => _paymentMethods[spId] = 'WALLET');
+                      },
+                      borderRadius: BorderRadius.circular(14),
+                      child: Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: selectedMethod == 'WALLET'
+                              ? StorkTheme.primaryDark.withValues(alpha: 0.08)
+                              : StorkTheme.surface,
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
                             color: selectedMethod == 'WALLET'
-                                ? StorkTheme.primaryDark.withValues(alpha: 0.08)
-                                : StorkTheme.surface,
-                            borderRadius: BorderRadius.circular(14),
-                            border: Border.all(
-                              color: selectedMethod == 'WALLET'
-                                  ? StorkTheme.primaryDark
-                                  : StorkTheme.borderSubtle,
-                              width: selectedMethod == 'WALLET' ? 1.8 : 1,
-                            ),
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Text(
-                                'Storkia E-Wallet',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: TextStyle(
-                                  fontWeight: FontWeight.w800,
-                                  fontSize: 12.5,
-                                ),
-                              ),
-                              const SizedBox(height: 2),
-                              Text(
-                                'Bal: ₱${_formatMoney(_buyerWalletBalance)}',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: TextStyle(
-                                  fontSize: 10.5,
-                                  fontWeight: FontWeight.w800,
-                                  color: _hasSufficientWalletBalance
-                                      ? StorkTheme.success
-                                      : StorkTheme.danger,
-                                ),
-                              ),
-                            ],
+                                ? StorkTheme.primaryDark
+                                : StorkTheme.borderSubtle,
+                            width: selectedMethod == 'WALLET' ? 1.8 : 1,
                           ),
                         ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'Storkia E-Wallet',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontWeight: FontWeight.w800,
+                                fontSize: 12.5,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              'Bal: \u20B1${_formatMoney(_buyerWalletBalance)}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w800,
+                                color: _hasSufficientWalletBalance
+                                    ? StorkTheme.success
+                                    : StorkTheme.danger,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
-                    ),
-                  ],
+                    );
+
+                    if (constraints.maxWidth < 330) {
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          codCard,
+                          const SizedBox(height: 8),
+                          walletCard,
+                        ],
+                      );
+                    }
+                    return Row(
+                      children: [
+                        Expanded(child: codCard),
+                        const SizedBox(width: 10),
+                        Expanded(child: walletCard),
+                      ],
+                    );
+                  },
                 ),
                 const Divider(height: 22),
                 if (storeDisc > 0) ...[
@@ -1575,7 +1747,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                       ),
                       const SizedBox(width: 8),
                       Text(
-                        '-₱${_formatMoney(storeDisc)}',
+                        '-\u20B1${_formatMoney(storeDisc)}',
                         style: const TextStyle(
                           fontSize: 12.5,
                           fontWeight: FontWeight.w800,
@@ -1604,7 +1776,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                       ),
                       const SizedBox(width: 8),
                       Text(
-                        '-₱${_formatMoney(platDisc)}',
+                        '-\u20B1${_formatMoney(platDisc)}',
                         style: const TextStyle(
                           fontSize: 12.5,
                           fontWeight: FontWeight.w800,
@@ -1633,7 +1805,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                       ),
                       const SizedBox(width: 8),
                       Text(
-                        '-₱${_formatMoney(pkgCoinsDisc)}',
+                        '-\u20B1${_formatMoney(pkgCoinsDisc)}',
                         style: const TextStyle(
                           fontSize: 12.5,
                           fontWeight: FontWeight.w800,
@@ -1649,7 +1821,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                   children: [
                     Expanded(
                       child: Text(
-                        'Shipping (${shipping['tier_label'] ?? 'Standard'} • ${pkg['total_weight']} kg)',
+                        'Shipping (${shipping['tier_label'] ?? 'Standard'} \u2022 ${pkg['total_weight']} kg)',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
@@ -1664,7 +1836,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                       children: [
                         if (pkgShipDiscount > 0) ...[
                           Text(
-                            '₱${_formatMoney(origShippingFee)}',
+                            '\u20B1${_formatMoney(origShippingFee)}',
                             style: const TextStyle(
                               fontSize: 11,
                               decoration: TextDecoration.lineThrough,
@@ -1675,8 +1847,8 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                         ],
                         Text(
                           netShippingFee <= 0.001
-                              ? 'FREE (₱0.00)'
-                              : '₱${_formatMoney(netShippingFee)}',
+                              ? 'FREE (\u20B10.00)'
+                              : '\u20B1${_formatMoney(netShippingFee)}',
                           style: TextStyle(
                             fontSize: 12.5,
                             fontWeight: FontWeight.w800,
@@ -1701,7 +1873,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                       ),
                     ),
                     Text(
-                      '₱${_formatMoney(pkg['total'])}',
+                      '\u20B1${_formatMoney(pkg['total'])}',
                       style: const TextStyle(
                         fontSize: 15,
                         fontWeight: FontWeight.w900,
@@ -1758,7 +1930,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Text(
-                      'Redeem Storkia Coins (10 Coins = ₱1.00)',
+                      'Redeem Storkia Coins (10 Coins = \u20B11.00)',
                       style: TextStyle(
                         fontSize: 13.5,
                         fontWeight: FontWeight.w800,
@@ -1767,7 +1939,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                     ),
                     Text(
                       canRedeem
-                          ? 'Balance: $_buyerCoinsBalance Coins • Max usable: $_maxRedeemableCoins Coins (-₱${_formatMoney(maxDiscount)})'
+                          ? 'Balance: $_buyerCoinsBalance Coins \u2022 Max usable: $_maxRedeemableCoins Coins (-\u20B1${_formatMoney(maxDiscount)})'
                           : 'Balance: $_buyerCoinsBalance Coins (Minimum $_minRedeemableCoins coins required)',
                       style: const TextStyle(
                         fontSize: 11.5,
@@ -1783,9 +1955,9 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                 onChanged: !canRedeem
                     ? null
                     : (val) {
+                        HapticFeedback.selectionClick();
                         setState(() {
                           _useStorkiaCoins = val;
-                          _coinsValidationMessage = null;
                           if (val && _coinsToUse < _minRedeemableCoins) {
                             _coinsToUse = _maxRedeemableCoins;
                             _coinsInputController.text = '$_coinsToUse';
@@ -1799,8 +1971,11 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
           ),
           if (_useStorkiaCoins && canRedeem) ...[
             const Divider(height: 20),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            Wrap(
+              alignment: WrapAlignment.spaceBetween,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 8,
+              runSpacing: 4,
               children: [
                 Text(
                   'Using $_coinsToUse Coins',
@@ -1811,7 +1986,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                   ),
                 ),
                 Text(
-                  'Discount: -₱${_formatMoney(currentDiscount)}',
+                  'Discount: -\u20B1${_formatMoney(currentDiscount)}',
                   style: const TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w900,
@@ -1835,66 +2010,71 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                   setState(() {
                     _coinsToUse = rounded;
                     _coinsInputController.text = '$rounded';
-                    _coinsValidationMessage = null;
                   });
                   _applyOptimisticLocalCalculation();
                 },
-                onChangeEnd: (_) => _fetchPreview(silent: true),
+                onChangeEnd: (_) {
+                  HapticFeedback.selectionClick();
+                  _fetchPreview(silent: true);
+                },
               ),
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _coinsInputController,
-                    keyboardType: TextInputType.number,
-                    inputFormatters: [
-                      FilteringTextInputFormatter.digitsOnly,
-                    ],
-                    decoration: InputDecoration(
-                      labelText:
-                          'Coins ($_minRedeemableCoins - $_maxRedeemableCoins)',
-                    ),
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final coinsField = TextField(
+                  controller: _coinsInputController,
+                  keyboardType: TextInputType.number,
+                  inputFormatters: [
+                    FilteringTextInputFormatter.digitsOnly,
+                  ],
+                  decoration: InputDecoration(
+                    labelText:
+                        'Coins ($_minRedeemableCoins - $_maxRedeemableCoins)',
                   ),
-                ),
-                const SizedBox(width: 8),
-                OutlinedButton(
+                );
+
+                final maxBtn = OutlinedButton(
                   onPressed: () {
+                    HapticFeedback.selectionClick();
                     setState(() {
                       _coinsToUse = _maxRedeemableCoins;
                       _coinsInputController.text = '$_maxRedeemableCoins';
-                      _coinsValidationMessage = null;
                     });
                     _applyOptimisticLocalCalculation();
                     _fetchPreview(silent: true);
                   },
                   child: const Text('Max'),
-                ),
-                const SizedBox(width: 6),
-                ElevatedButton(
+                );
+
+                final applyBtn = ElevatedButton(
                   onPressed: () {
+                    HapticFeedback.lightImpact();
                     final parsed =
                         int.tryParse(_coinsInputController.text.trim());
                     if (parsed == null) {
-                      setState(() {
-                        _coinsValidationMessage =
-                            'Enter a valid whole number between $_minRedeemableCoins and $_maxRedeemableCoins.';
-                      });
+                      _showPopupNotification(
+                        'Enter a valid whole number between $_minRedeemableCoins and $_maxRedeemableCoins coins.',
+                        isError: true,
+                      );
                       return;
                     }
-                    String? note;
                     if (parsed < _minRedeemableCoins) {
-                      note =
-                          'Minimum redeemable is $_minRedeemableCoins coins.';
+                      _showPopupNotification(
+                        'Minimum redeemable is $_minRedeemableCoins coins.',
+                        isError: false,
+                        isWarning: true,
+                      );
                     } else if (parsed > _maxRedeemableCoins) {
-                      note =
-                          'Maximum redeemable for this order is $_maxRedeemableCoins coins (25% cap).';
+                      _showPopupNotification(
+                        'Maximum redeemable for this order is $_maxRedeemableCoins coins (25% cap).',
+                        isError: false,
+                        isWarning: true,
+                      );
                     }
                     final clamped =
                         parsed.clamp(_minRedeemableCoins, _maxRedeemableCoins);
                     setState(() {
                       _coinsToUse = clamped;
                       _coinsInputController.text = '$clamped';
-                      _coinsValidationMessage = note;
                     });
                     _applyOptimisticLocalCalculation();
                     _fetchPreview(silent: true);
@@ -1903,20 +2083,36 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                     backgroundColor: const Color(0xFFD97706),
                   ),
                   child: const Text('Apply'),
-                ),
-              ],
+                );
+
+                if (constraints.maxWidth < 340) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      coinsField,
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Expanded(child: maxBtn),
+                          const SizedBox(width: 8),
+                          Expanded(child: applyBtn),
+                        ],
+                      ),
+                    ],
+                  );
+                }
+
+                return Row(
+                  children: [
+                    Expanded(child: coinsField),
+                    const SizedBox(width: 8),
+                    maxBtn,
+                    const SizedBox(width: 6),
+                    applyBtn,
+                  ],
+                );
+              },
             ),
-            if (_coinsValidationMessage != null) ...[
-              const SizedBox(height: 6),
-              Text(
-                _coinsValidationMessage!,
-                style: const TextStyle(
-                  fontSize: 11.5,
-                  fontWeight: FontWeight.w700,
-                  color: Color(0xFFB45309),
-                ),
-              ),
-            ],
           ],
         ],
       ),
@@ -1930,6 +2126,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
     final shippingVouchers = _availableVouchers
         .where((v) => v['scope']?.toString() == 'shipping')
         .toList();
+    final double netAfterStore = _resolveNetAfterStoreDiscounts();
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -1942,17 +2139,18 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          const Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 8,
+            runSpacing: 4,
             children: [
-              Expanded(
-                child: Text(
-                  'Platform & Free Shipping Vouchers',
-                  style: TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w800,
-                    color: StorkTheme.primaryDark,
-                  ),
+              Text(
+                'Platform & Free Shipping Vouchers',
+                style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w800,
+                  color: StorkTheme.primaryDark,
                 ),
               ),
               Text(
@@ -1966,17 +2164,18 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
             ],
           ),
           const SizedBox(height: 12),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 8,
+            runSpacing: 4,
             children: [
-              const Expanded(
-                child: Text(
-                  'PLATFORM VOUCHER (ADMIN-SPONSORED)',
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w800,
-                    color: Color(0xFF581C87),
-                  ),
+              const Text(
+                'PLATFORM VOUCHER (ADMIN-SPONSORED)',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w800,
+                  color: Color(0xFF581C87),
                 ),
               ),
               if (_recommendedPlatformVoucher.isNotEmpty)
@@ -1993,7 +2192,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
           const SizedBox(height: 8),
           if (platformVouchers.isNotEmpty) ...[
             SizedBox(
-              height: 78,
+              height: 84,
               child: ListView(
                 scrollDirection: Axis.horizontal,
                 children: [
@@ -2006,6 +2205,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                     activeColor: const Color(0xFF6B21A8),
                     onTap: () {
                       if (_appliedPlatformVoucherCode.isEmpty) return;
+                      HapticFeedback.selectionClick();
                       setState(() {
                         _touchedSlots.add('platform');
                         _appliedPlatformVoucherCode = '';
@@ -2019,7 +2219,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                     _buildVoucherOptionChip(
                       code: pv['code']?.toString() ?? '',
                       title: pv['badge_label']?.toString() ?? 'PLATFORM OFF',
-                      subtitle: 'Min ₱${_formatMoney(pv['min_spend'])}',
+                      subtitle: 'Min \u20B1${_formatMoney(pv['min_spend'])}',
                       isSelected: _appliedPlatformVoucherCode.toUpperCase() ==
                           (pv['code']?.toString().toUpperCase() ?? ''),
                       isMostPreferred: pv['is_most_preferred'] == true ||
@@ -2033,6 +2233,17 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                             c.toUpperCase()) {
                           return;
                         }
+                        final minSpend = double.tryParse(
+                                pv['min_spend']?.toString() ?? '0') ??
+                            0.0;
+                        if (netAfterStore + 0.0001 < minSpend) {
+                          _showPopupNotification(
+                            'Platform voucher $c requires a minimum spend of \u20B1${_formatMoney(minSpend)}.',
+                            isError: true,
+                          );
+                          return;
+                        }
+                        HapticFeedback.selectionClick();
                         setState(() {
                           _touchedSlots.add('platform');
                           _appliedPlatformVoucherCode = c;
@@ -2047,24 +2258,39 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
             ),
             const SizedBox(height: 8),
           ],
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _platformVoucherController,
-                  textCapitalization: TextCapitalization.characters,
-                  decoration: const InputDecoration(
-                    hintText: 'Enter Platform Voucher Code...',
-                  ),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final platField = TextField(
+                controller: _platformVoucherController,
+                textCapitalization: TextCapitalization.characters,
+                decoration: const InputDecoration(
+                  hintText: 'Enter Platform Voucher Code...',
                 ),
-              ),
-              const SizedBox(width: 8),
-              ElevatedButton(
+              );
+              final applyBtn = ElevatedButton(
                 onPressed: () {
+                  HapticFeedback.lightImpact();
+                  final entered =
+                      _platformVoucherController.text.trim().toUpperCase();
+                  if (entered.isNotEmpty) {
+                    final known =
+                        _findAvailableVoucher(entered, scope: 'platform');
+                    if (known != null) {
+                      final minSpend = double.tryParse(
+                              known['min_spend']?.toString() ?? '0') ??
+                          0.0;
+                      if (netAfterStore + 0.0001 < minSpend) {
+                        _showPopupNotification(
+                          'Platform voucher $entered requires a minimum spend of \u20B1${_formatMoney(minSpend)}.',
+                          isError: true,
+                        );
+                        return;
+                      }
+                    }
+                  }
                   setState(() {
                     _touchedSlots.add('platform');
-                    _appliedPlatformVoucherCode =
-                        _platformVoucherController.text.trim().toUpperCase();
+                    _appliedPlatformVoucherCode = entered;
                   });
                   _applyOptimisticLocalCalculation();
                   _fetchPreview(silent: true);
@@ -2073,21 +2299,40 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                   backgroundColor: const Color(0xFF6B21A8),
                 ),
                 child: const Text('Apply'),
-              ),
-            ],
+              );
+
+              if (constraints.maxWidth < 290) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    platField,
+                    const SizedBox(height: 8),
+                    applyBtn,
+                  ],
+                );
+              }
+              return Row(
+                children: [
+                  Expanded(child: platField),
+                  const SizedBox(width: 8),
+                  applyBtn,
+                ],
+              );
+            },
           ),
           const SizedBox(height: 16),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 8,
+            runSpacing: 4,
             children: [
-              const Expanded(
-                child: Text(
-                  'FREE SHIPPING VOUCHER',
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w800,
-                    color: Color(0xFF065F46),
-                  ),
+              const Text(
+                'FREE SHIPPING VOUCHER',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w800,
+                  color: Color(0xFF065F46),
                 ),
               ),
               if (_recommendedShippingVoucher.isNotEmpty)
@@ -2104,7 +2349,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
           const SizedBox(height: 8),
           if (shippingVouchers.isNotEmpty) ...[
             SizedBox(
-              height: 78,
+              height: 84,
               child: ListView(
                 scrollDirection: Axis.horizontal,
                 children: [
@@ -2117,6 +2362,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                     activeColor: const Color(0xFF047857),
                     onTap: () {
                       if (_appliedShippingVoucherCode.isEmpty) return;
+                      HapticFeedback.selectionClick();
                       setState(() {
                         _touchedSlots.add('shipping');
                         _appliedShippingVoucherCode = '';
@@ -2130,7 +2376,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                     _buildVoucherOptionChip(
                       code: shv['code']?.toString() ?? '',
                       title: shv['badge_label']?.toString() ?? 'FREE SHIP',
-                      subtitle: 'Min ₱${_formatMoney(shv['min_spend'])}',
+                      subtitle: 'Min \u20B1${_formatMoney(shv['min_spend'])}',
                       isSelected: _appliedShippingVoucherCode.toUpperCase() ==
                           (shv['code']?.toString().toUpperCase() ?? ''),
                       isMostPreferred: shv['is_most_preferred'] == true ||
@@ -2145,6 +2391,17 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                             c.toUpperCase()) {
                           return;
                         }
+                        final minSpend = double.tryParse(
+                                shv['min_spend']?.toString() ?? '0') ??
+                            0.0;
+                        if (netAfterStore + 0.0001 < minSpend) {
+                          _showPopupNotification(
+                            'Shipping voucher $c requires a minimum order spend of \u20B1${_formatMoney(minSpend)}.',
+                            isError: true,
+                          );
+                          return;
+                        }
+                        HapticFeedback.selectionClick();
                         setState(() {
                           _touchedSlots.add('shipping');
                           _appliedShippingVoucherCode = c;
@@ -2159,24 +2416,39 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
             ),
             const SizedBox(height: 8),
           ],
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _shippingVoucherController,
-                  textCapitalization: TextCapitalization.characters,
-                  decoration: const InputDecoration(
-                    hintText: 'Enter Shipping Voucher Code...',
-                  ),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final shipField = TextField(
+                controller: _shippingVoucherController,
+                textCapitalization: TextCapitalization.characters,
+                decoration: const InputDecoration(
+                  hintText: 'Enter Shipping Voucher Code...',
                 ),
-              ),
-              const SizedBox(width: 8),
-              ElevatedButton(
+              );
+              final applyBtn = ElevatedButton(
                 onPressed: () {
+                  HapticFeedback.lightImpact();
+                  final entered =
+                      _shippingVoucherController.text.trim().toUpperCase();
+                  if (entered.isNotEmpty) {
+                    final known =
+                        _findAvailableVoucher(entered, scope: 'shipping');
+                    if (known != null) {
+                      final minSpend = double.tryParse(
+                              known['min_spend']?.toString() ?? '0') ??
+                          0.0;
+                      if (netAfterStore + 0.0001 < minSpend) {
+                        _showPopupNotification(
+                          'Shipping voucher $entered requires a minimum order spend of \u20B1${_formatMoney(minSpend)}.',
+                          isError: true,
+                        );
+                        return;
+                      }
+                    }
+                  }
                   setState(() {
                     _touchedSlots.add('shipping');
-                    _appliedShippingVoucherCode =
-                        _shippingVoucherController.text.trim().toUpperCase();
+                    _appliedShippingVoucherCode = entered;
                   });
                   _applyOptimisticLocalCalculation();
                   _fetchPreview(silent: true);
@@ -2185,8 +2457,26 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                   backgroundColor: const Color(0xFF047857),
                 ),
                 child: const Text('Apply'),
-              ),
-            ],
+              );
+
+              if (constraints.maxWidth < 290) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    shipField,
+                    const SizedBox(height: 8),
+                    applyBtn,
+                  ],
+                );
+              }
+              return Row(
+                children: [
+                  Expanded(child: shipField),
+                  const SizedBox(width: 8),
+                  applyBtn,
+                ],
+              );
+            },
           ),
         ],
       ),
@@ -2204,61 +2494,72 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
   }) {
     return GestureDetector(
       onTap: onTap,
-      child: Container(
-        margin: const EdgeInsets.only(right: 10),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        decoration: BoxDecoration(
-          color: isSelected
-              ? activeColor.withValues(alpha: 0.08)
-              : StorkTheme.surfaceSubtle,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(
-            color: isSelected ? activeColor : StorkTheme.borderSubtle,
-            width: isSelected ? 1.8 : 1,
+      onLongPress: code.isNotEmpty
+          ? () => _copyTextWithToast(code, 'Voucher Code')
+          : null,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 230),
+        child: Container(
+          margin: const EdgeInsets.only(right: 10),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          decoration: BoxDecoration(
+            color: isSelected
+                ? activeColor.withValues(alpha: 0.08)
+                : StorkTheme.surfaceSubtle,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: isSelected ? activeColor : StorkTheme.borderSubtle,
+              width: isSelected ? 1.8 : 1,
+            ),
           ),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisAlignment: MainAxisAlignment.center,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (isMostPreferred)
-              Container(
-                margin: const EdgeInsets.only(bottom: 3),
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-                decoration: BoxDecoration(
-                  color: activeColor,
-                  borderRadius: BorderRadius.circular(6),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisAlignment: MainAxisAlignment.center,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (isMostPreferred)
+                Container(
+                  margin: const EdgeInsets.only(bottom: 3),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                  decoration: BoxDecoration(
+                    color: activeColor,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: const Text(
+                    '\u2605 MOST PREFERRED',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 8.5,
+                      fontWeight: FontWeight.w900,
+                      color: Colors.white,
+                    ),
+                  ),
                 ),
-                child: const Text(
-                  '★ MOST PREFERRED',
+              Flexible(
+                child: Text(
+                  code.isNotEmpty ? '$code \u2022 $title' : title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    fontSize: 8.5,
-                    fontWeight: FontWeight.w900,
-                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                    color: isSelected ? activeColor : StorkTheme.textMain,
                   ),
                 ),
               ),
-            Text(
-              code.isNotEmpty ? '$code • $title' : title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w800,
-                color: isSelected ? activeColor : StorkTheme.textMain,
+              Text(
+                subtitle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 10.5,
+                  color: StorkTheme.textMuted,
+                ),
               ),
-            ),
-            Text(
-              subtitle,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                fontSize: 10.5,
-                color: StorkTheme.textMuted,
-              ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -2303,18 +2604,18 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
           const Divider(height: 22),
           _buildSummaryRow(
             'Merchandise Subtotal (${_checkoutData!['total_items'] ?? 0} items)',
-            '₱${_formatMoney(_checkoutData!['overall_subtotal'])}',
+            '\u20B1${_formatMoney(_checkoutData!['overall_subtotal'])}',
           ),
           const SizedBox(height: 8),
           _buildSummaryRow(
             'Original Shipping Subtotal',
-            '₱${_formatMoney(_checkoutData!['overall_shipping'])}',
+            '\u20B1${_formatMoney(_checkoutData!['overall_shipping'])}',
           ),
           if (storeDisc > 0) ...[
             const SizedBox(height: 8),
             _buildSummaryRow(
               'Store & Bundle Discounts',
-              '-₱${_formatMoney(storeDisc)}',
+              '-\u20B1${_formatMoney(storeDisc)}',
               valueColor: StorkTheme.success,
             ),
           ],
@@ -2322,7 +2623,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
             const SizedBox(height: 8),
             _buildSummaryRow(
               'Platform Voucher ($_appliedPlatformVoucherCode)',
-              '-₱${_formatMoney(platDisc)}',
+              '-\u20B1${_formatMoney(platDisc)}',
               valueColor: const Color(0xFF6B21A8),
             ),
           ],
@@ -2330,7 +2631,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
             const SizedBox(height: 8),
             _buildSummaryRow(
               'Shipping Voucher ($_appliedShippingVoucherCode)',
-              '-₱${_formatMoney(shipDisc)}',
+              '-\u20B1${_formatMoney(shipDisc)}',
               valueColor: const Color(0xFF047857),
             ),
           ],
@@ -2338,7 +2639,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
             const SizedBox(height: 8),
             _buildSummaryRow(
               'Storkia Coins ($overallCoinsUsed Coins)',
-              '-₱${_formatMoney(coinsDisc)}',
+              '-\u20B1${_formatMoney(coinsDisc)}',
               valueColor: const Color(0xFFB45309),
             ),
           ],
@@ -2346,7 +2647,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
             const SizedBox(height: 8),
             _buildSummaryRow(
               'Payable via Storkia E-Wallet',
-              '₱${_formatMoney(_totalWalletRequired)}',
+              '\u20B1${_formatMoney(_totalWalletRequired)}',
               valueColor: _hasSufficientWalletBalance
                   ? StorkTheme.primaryDark
                   : StorkTheme.danger,
@@ -2367,12 +2668,18 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                 ),
               ),
               const SizedBox(width: 8),
-              Text(
-                '₱${_formatMoney(_checkoutData!['overall_total'])}',
-                style: const TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.w900,
-                  color: StorkTheme.primary,
+              Flexible(
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerRight,
+                  child: Text(
+                    '\u20B1${_formatMoney(_checkoutData!['overall_total'])}',
+                    style: const TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w900,
+                      color: StorkTheme.primary,
+                    ),
+                  ),
                 ),
               ),
             ],

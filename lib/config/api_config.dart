@@ -7,7 +7,7 @@ class ApiConfig {
   static const String baseUrl = '$domainUrl/api/v1';
 
   static const String pusherKey = String.fromEnvironment(
-    'STORKIA_PUSHER_KEY',
+    'REVERB_APP_KEY',
     defaultValue: 'bn93mdlba1frvyhfe5gf',
   );
 
@@ -16,16 +16,19 @@ class ApiConfig {
     defaultValue: 'storkia.shop',
   );
 
-  static const int websocketPort = 8080;
+  static const int websocketPort = int.fromEnvironment(
+    'REVERB_PORT',
+    defaultValue: 8080,
+  );
 
-  static const Duration requestTimeout = Duration(seconds: 25);
+  static const Duration requestTimeout = Duration(seconds: 20);
 
   static String resolveBaseDomain([String? overrideBaseUrl]) {
     if (overrideBaseUrl == null || overrideBaseUrl.trim().isEmpty) {
       return domainUrl;
     }
     String clean = overrideBaseUrl.trim();
-    if (clean.endsWith('/')) {
+    while (clean.endsWith('/')) {
       clean = clean.substring(0, clean.length - 1);
     }
     if (clean.endsWith('/api/v1')) {

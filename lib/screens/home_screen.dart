@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:http/http.dart' as http;
 import '../components/custom_bottom_nav.dart';
 import '../components/daily_chest_floating_button.dart';
 import '../components/product_card.dart';
@@ -14,6 +14,7 @@ import '../models/seller_profile_model.dart';
 import '../models/user_model.dart';
 import '../providers/global_counters_provider.dart';
 import '../services/api_service.dart';
+import '../services/websocket_service.dart';
 import 'announcements_screen.dart';
 import 'browse_screen.dart';
 import 'bundle_deals_screen.dart';
@@ -56,7 +57,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   final ScrollController _scrollController = ScrollController();
   final PageController _bannerController = PageController();
   Timer? _bannerTimer;
-  Timer? _autoSyncTimer;
+  Timer? _wsDebounceTimer;
   int _activeBanner = 0;
 
   List<JsonMap> _apiBanners = [];
@@ -91,7 +92,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       'badge_text': 'DAILY REWARDS & COINS',
       'title': 'Open Your Daily Chest\n& Spin to Win Coins',
       'subtitle':
-          'Redeem 10 Storkia Coins = ₱1.00 at checkout or unlock platform & shipping vouchers.',
+          'Redeem 10 Storkia Coins = \u20B11.00 at checkout or unlock platform & shipping vouchers.',
       'cta_text': 'Open Rewards',
       'cta_target': {'type': 'rewards', 'value': null},
     },
@@ -114,13 +115,26 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     _scrollController.addListener(_onScroll);
     _startBannerAutoPlay();
 
+    WebSocketService.init(widget.token, userId: widget.user.id);
+    WebSocketService.addListener(_onRealtimeEvent);
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       syncAllBuyerCounters(ref, widget.token);
     });
+  }
 
-    _autoSyncTimer = Timer.periodic(const Duration(seconds: 6), (_) {
+  void _onRealtimeEvent(BuyerRealtimeEvent event) {
+    if (!mounted) return;
+    _wsDebounceTimer?.cancel();
+    _wsDebounceTimer = Timer(const Duration(milliseconds: 280), () {
+      if (!mounted) return;
       syncAllBuyerCounters(ref, widget.token);
-      if (_currentIndex == 0 && !_isLoading && !_isFetchingMore) {
+      if (_currentIndex == 0 &&
+          !_isLoading &&
+          !_isFetchingMore &&
+          (event.scope == 'catalog' ||
+              event.scope == 'marketplace' ||
+              event.scope == 'general')) {
         _fetchHomeFeedSilently();
         _fetchFirstPageProductsSilently();
       }
@@ -130,6 +144,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      WebSocketService.init(widget.token, userId: widget.user.id);
       syncAllBuyerCounters(ref, widget.token);
       if (_currentIndex == 0) {
         _fetchHomeFeedSilently();
@@ -160,7 +175,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _autoSyncTimer?.cancel();
+    _wsDebounceTimer?.cancel();
+    WebSocketService.removeListener(_onRealtimeEvent);
     _bannerTimer?.cancel();
     _bannerController.dispose();
     _scrollController.dispose();
@@ -186,23 +202,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
   Future<void> _fetchHomeFeedSilently() async {
     try {
-      final response = await http.get(
-        Uri.parse('$_baseUrl/api/v1/home'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .get(
+            Uri.parse('$_baseUrl/api/v1/home'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (!mounted || response.statusCode != 200) return;
       final body = json.decode(response.body);
       if (body is Map && body['success'] == true && body['data'] is Map) {
-        final data = Map<String, dynamic>.from(body['data'] as Map);
+        final data = JsonMap.from(body['data'] as Map);
         final List<dynamic> rawBanners = data['banners'] is List
             ? List<dynamic>.from(data['banners'] as List)
             : <dynamic>[];
         final JsonMap superDealsMap = data['super_deals'] is Map
-            ? Map<String, dynamic>.from(data['super_deals'] as Map)
+            ? JsonMap.from(data['super_deals'] as Map)
             : <String, dynamic>{};
         final List<dynamic> rawDealItems = superDealsMap['items'] is List
             ? List<dynamic>.from(superDealsMap['items'] as List)
@@ -219,18 +234,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           setState(() {
             _apiBanners = [
               for (final e in rawBanners)
-                if (e is Map) Map<String, dynamic>.from(e),
+                if (e is Map) JsonMap.from(e),
             ];
             _superDealItems = [
               for (final e in rawDealItems)
-                if (e is Map) Map<String, dynamic>.from(e),
+                if (e is Map) JsonMap.from(e),
             ];
             _superDealsTotal =
                 int.tryParse(superDealsMap['total']?.toString() ?? '0') ??
                     _superDealItems.length;
             _trendingItems = [
               for (final e in rawTrending)
-                if (e is Map) Map<String, dynamic>.from(e),
+                if (e is Map) JsonMap.from(e),
             ];
             _activeBundleCount =
                 int.tryParse(data['bundle_count']?.toString() ?? '0') ?? 0;
@@ -251,14 +266,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
       final rawPayload = result['data'];
       final JsonMap paginatedData = rawPayload['data'] is Map
-          ? Map<String, dynamic>.from(rawPayload['data'] as Map)
-          : Map<String, dynamic>.from(rawPayload as Map);
+          ? JsonMap.from(rawPayload['data'] as Map)
+          : JsonMap.from(rawPayload as Map);
       final List<dynamic> productsJson = paginatedData['data'] is List
           ? List<dynamic>.from(paginatedData['data'] as List)
           : <dynamic>[];
       final List<Product> firstPageProducts = [
         for (final json in productsJson)
-          if (json is Map) Product.fromJson(Map<String, dynamic>.from(json)),
+          if (json is Map) Product.fromJson(JsonMap.from(json)),
       ];
 
       final List<dynamic> sellersRaw = rawPayload['featured_sellers'] is List
@@ -274,15 +289,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       setState(() {
         _featuredSellers = [
           for (final s in sellersRaw)
-            if (s is Map) SellerProfile.fromJson(Map<String, dynamic>.from(s)),
+            if (s is Map) SellerProfile.fromJson(JsonMap.from(s)),
         ];
         _youMayAlsoLike = [
           for (final p in recsRaw)
-            if (p is Map) Product.fromJson(Map<String, dynamic>.from(p)),
+            if (p is Map) Product.fromJson(JsonMap.from(p)),
         ];
         _dealsProducts = [
           for (final p in dealsRaw)
-            if (p is Map) Product.fromJson(Map<String, dynamic>.from(p)),
+            if (p is Map) Product.fromJson(JsonMap.from(p)),
         ];
 
         if (_products.isEmpty) {
@@ -334,8 +349,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     if (result['success'] == true) {
       final rawPayload = result['data'];
       final JsonMap paginatedData = rawPayload['data'] is Map
-          ? Map<String, dynamic>.from(rawPayload['data'] as Map)
-          : Map<String, dynamic>.from(rawPayload as Map);
+          ? JsonMap.from(rawPayload['data'] as Map)
+          : JsonMap.from(rawPayload as Map);
 
       final List<dynamic> productsJson = paginatedData['data'] is List
           ? List<dynamic>.from(paginatedData['data'] as List)
@@ -345,7 +360,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
       final List<Product> newProducts = [
         for (final json in productsJson)
-          if (json is Map) Product.fromJson(Map<String, dynamic>.from(json)),
+          if (json is Map) Product.fromJson(JsonMap.from(json)),
       ];
 
       if (!loadMore) {
@@ -361,15 +376,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
         _featuredSellers = [
           for (final s in sellersRaw)
-            if (s is Map) SellerProfile.fromJson(Map<String, dynamic>.from(s)),
+            if (s is Map) SellerProfile.fromJson(JsonMap.from(s)),
         ];
         _youMayAlsoLike = [
           for (final p in recsRaw)
-            if (p is Map) Product.fromJson(Map<String, dynamic>.from(p)),
+            if (p is Map) Product.fromJson(JsonMap.from(p)),
         ];
         _dealsProducts = [
           for (final p in dealsRaw)
-            if (p is Map) Product.fromJson(Map<String, dynamic>.from(p)),
+            if (p is Map) Product.fromJson(JsonMap.from(p)),
         ];
       }
 
@@ -407,8 +422,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   }
 
   void _handleBannerTap(JsonMap slide) {
+    HapticFeedback.selectionClick();
     final target = slide['cta_target'] is Map
-        ? Map<String, dynamic>.from(slide['cta_target'] as Map)
+        ? JsonMap.from(slide['cta_target'] as Map)
         : <String, dynamic>{};
     final String type = target['type']?.toString() ?? '';
     final String? val = target['value']?.toString();
@@ -503,8 +519,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     int unreadMessageCount,
     int unreadAnnouncementCount,
   ) {
+    final isCompact = MediaQuery.sizeOf(context).width < 360;
+
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      padding: EdgeInsets.symmetric(
+        horizontal: isCompact ? 10 : 14,
+        vertical: 10,
+      ),
       decoration: const BoxDecoration(
         color: StorkTheme.surface,
         border: Border(
@@ -521,20 +542,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             ),
             child: Image.asset(
               'assets/icon.webp',
-              width: 24,
-              height: 24,
+              width: isCompact ? 22 : 24,
+              height: isCompact ? 22 : 24,
               fit: BoxFit.contain,
-              errorBuilder: (_, __, ___) => const Icon(
+              errorBuilder: (_, __, ___) => Icon(
                 Icons.storefront_rounded,
                 color: StorkTheme.primary,
-                size: 22,
+                size: isCompact ? 20 : 22,
               ),
             ),
           ),
-          const SizedBox(width: 10),
+          SizedBox(width: isCompact ? 8 : 10),
           Expanded(
             child: GestureDetector(
               onTap: () {
+                HapticFeedback.selectionClick();
                 Navigator.push(
                   context,
                   StorkRoute.fade(
@@ -547,7 +569,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
               },
               child: Container(
                 height: 40,
-                padding: const EdgeInsets.symmetric(horizontal: 12),
+                padding: EdgeInsets.symmetric(horizontal: isCompact ? 10 : 12),
                 decoration: BoxDecoration(
                   color: StorkTheme.surfaceSubtle,
                   borderRadius: BorderRadius.circular(14),
@@ -560,14 +582,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                       size: 18,
                       color: StorkTheme.primary,
                     ),
-                    SizedBox(width: 8),
+                    SizedBox(width: 6),
                     Expanded(
                       child: Text(
                         'Search products, stores, deals...',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                          fontSize: 12.5,
+                          fontSize: 12,
                           fontWeight: FontWeight.w500,
                           color: StorkTheme.textMuted,
                         ),
@@ -578,11 +600,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
               ),
             ),
           ),
-          const SizedBox(width: 4),
+          const SizedBox(width: 2),
           _TopIconBadgeButton(
             icon: Icons.campaign_outlined,
             badgeCount: unreadAnnouncementCount,
             onTap: () {
+              HapticFeedback.selectionClick();
               Navigator.push(
                 context,
                 StorkRoute.fade(
@@ -602,6 +625,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             icon: Icons.shopping_bag_outlined,
             badgeCount: cartItemCount,
             onTap: () {
+              HapticFeedback.selectionClick();
               Navigator.push(
                 context,
                 StorkRoute.fade(
@@ -621,6 +645,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             icon: Icons.chat_bubble_outline_rounded,
             badgeCount: unreadMessageCount,
             onTap: () {
+              HapticFeedback.selectionClick();
               Navigator.push(
                 context,
                 StorkRoute.fade(
@@ -649,7 +674,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       child: Column(
         children: [
           SizedBox(
-            height: 168,
+            height: 184,
             child: PageView.builder(
               controller: _bannerController,
               itemCount: slides.length,
@@ -702,10 +727,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                             ),
                           ),
                         Padding(
-                          padding: const EdgeInsets.all(18),
+                          padding: const EdgeInsets.all(16),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
-                            mainAxisAlignment: MainAxisAlignment.center,
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
                               Container(
                                 padding: const EdgeInsets.symmetric(
@@ -728,33 +753,41 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                                   ),
                                 ),
                               ),
-                              const SizedBox(height: 6),
-                              Text(
-                                title,
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 17.5,
-                                  fontWeight: FontWeight.w900,
-                                  height: 1.15,
-                                  letterSpacing: -0.3,
+                              Flexible(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(
+                                      title,
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 16.5,
+                                        fontWeight: FontWeight.w900,
+                                        height: 1.15,
+                                        letterSpacing: -0.3,
+                                      ),
+                                    ),
+                                    if (subtitle.isNotEmpty) ...[
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        subtitle,
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: TextStyle(
+                                          color: Colors.white
+                                              .withValues(alpha: 0.88),
+                                          fontSize: 11,
+                                          height: 1.25,
+                                        ),
+                                      ),
+                                    ],
+                                  ],
                                 ),
                               ),
-                              if (subtitle.isNotEmpty) ...[
-                                const SizedBox(height: 4),
-                                Text(
-                                  subtitle,
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(
-                                    color: Colors.white.withValues(alpha: 0.88),
-                                    fontSize: 11,
-                                    height: 1.25,
-                                  ),
-                                ),
-                              ],
-                              const Spacer(),
                               Container(
                                 padding: const EdgeInsets.symmetric(
                                   horizontal: 10,
@@ -767,12 +800,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                                 child: Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    Text(
-                                      ctaText,
-                                      style: const TextStyle(
-                                        color: StorkTheme.brandLight,
-                                        fontSize: 11,
-                                        fontWeight: FontWeight.w800,
+                                    Flexible(
+                                      child: Text(
+                                        ctaText,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          color: StorkTheme.brandLight,
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w800,
+                                        ),
                                       ),
                                     ),
                                     const SizedBox(width: 4),
@@ -824,6 +861,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         'icon': Icons.bolt_rounded,
         'color': const Color(0xFFE11D48),
         'onTap': () {
+          HapticFeedback.selectionClick();
           Navigator.push(
             context,
             StorkRoute.fade(
@@ -840,6 +878,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         'icon': Icons.redeem_rounded,
         'color': const Color(0xFF7C3AED),
         'onTap': () {
+          HapticFeedback.selectionClick();
           Navigator.push(
             context,
             StorkRoute.fade(
@@ -854,6 +893,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         'icon': Icons.local_fire_department_rounded,
         'color': const Color(0xFFEA580C),
         'onTap': () {
+          HapticFeedback.selectionClick();
           Navigator.push(
             context,
             StorkRoute.fade(
@@ -868,6 +908,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         'icon': Icons.monetization_on_rounded,
         'color': const Color(0xFFD97706),
         'onTap': () {
+          HapticFeedback.selectionClick();
           Navigator.push(
             context,
             StorkRoute.fade(
@@ -882,10 +923,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       },
       {
         'label': 'E-Wallet',
-        'sub': '₱${_formatMoney(rewardState.walletAvailableBalance)}',
+        'sub': '\u20B1${_formatMoney(rewardState.walletAvailableBalance)}',
         'icon': Icons.account_balance_wallet_rounded,
         'color': StorkTheme.primaryDark,
         'onTap': () {
+          HapticFeedback.selectionClick();
           Navigator.push(
             context,
             StorkRoute.fade(
@@ -904,6 +946,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         'icon': Icons.confirmation_number_outlined,
         'color': const Color(0xFF0D9488),
         'onTap': () {
+          HapticFeedback.selectionClick();
           Navigator.push(
             context,
             StorkRoute.fade(
@@ -917,7 +960,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
       child: SizedBox(
-        height: 88,
+        height: 92,
         child: ListView.separated(
           scrollDirection: Axis.horizontal,
           itemCount: items.length,
@@ -954,14 +997,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                       ),
                     ),
                     const SizedBox(height: 5),
-                    Text(
-                      item['label'] as String,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w800,
-                        color: StorkTheme.textMain,
+                    FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text(
+                        item['label'] as String,
+                        maxLines: 1,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w800,
+                          color: StorkTheme.textMain,
+                        ),
                       ),
                     ),
                     Text(
@@ -992,45 +1037,47 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 10),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          child: Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 8,
+            runSpacing: 4,
             children: [
-              Expanded(
-                child: Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        gradient: const LinearGradient(
-                          colors: [StorkTheme.danger, StorkTheme.primary],
-                        ),
-                        borderRadius: BorderRadius.circular(8),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                        colors: [StorkTheme.danger, StorkTheme.primary],
                       ),
-                      child: const Text(
-                        '⚡ SUPER DEALS',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 10,
-                          fontWeight: FontWeight.w900,
-                        ),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Text(
+                      '\u26A1 SUPER DEALS',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w900,
                       ),
                     ),
-                    const SizedBox(width: 8),
-                    const Flexible(
-                      child: Text(
-                        'Limited Slot Offers',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w800,
-                          color: StorkTheme.primaryDark,
-                        ),
+                  ),
+                  const SizedBox(width: 8),
+                  const Flexible(
+                    child: Text(
+                      'Limited Slot Offers',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w800,
+                        color: StorkTheme.primaryDark,
                       ),
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ),
               GestureDetector(
                 onTap: () {
@@ -1042,7 +1089,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   );
                 },
                 child: const Text(
-                  'See All →',
+                  'See All \u2192',
                   style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w800,
@@ -1054,7 +1101,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           ),
         ),
         SizedBox(
-          height: 234,
+          height: 240,
           child: ListView.separated(
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -1063,7 +1110,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             itemBuilder: (context, index) {
               final entry = _superDealItems[index];
               final prodMap = entry['product'] is Map
-                  ? Map<String, dynamic>.from(entry['product'] as Map)
+                  ? JsonMap.from(entry['product'] as Map)
                   : entry;
               final product = Product.fromJson(prodMap);
 
@@ -1145,7 +1192,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                                     borderRadius: BorderRadius.circular(6),
                                   ),
                                   child: Text(
-                                    '⚡ -${pct.toStringAsFixed(0)}%',
+                                    '\u26A1 -${pct.toStringAsFixed(0)}%',
                                     style: const TextStyle(
                                       color: Colors.white,
                                       fontSize: 9.5,
@@ -1178,7 +1225,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                               children: [
                                 Flexible(
                                   child: Text(
-                                    '₱${_formatMoney(dealPrice)}',
+                                    '\u20B1${_formatMoney(dealPrice)}',
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
                                     style: const TextStyle(
@@ -1191,7 +1238,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                                 const SizedBox(width: 4),
                                 Flexible(
                                   child: Text(
-                                    '₱${_formatMoney(origPrice)}',
+                                    '\u20B1${_formatMoney(origPrice)}',
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
                                     style: const TextStyle(
@@ -1249,7 +1296,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     final trendingProducts = _trendingItems
         .map((item) {
           final pMap = item['product'] is Map
-              ? Map<String, dynamic>.from(item['product'] as Map)
+              ? JsonMap.from(item['product'] as Map)
               : item;
           return Product.fromJson(pMap);
         })
@@ -1263,10 +1310,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 18, 16, 10),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          child: Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 8,
+            runSpacing: 4,
             children: [
               const Row(
+                mainAxisSize: MainAxisSize.min,
                 children: [
                   Icon(
                     Icons.local_fire_department_rounded,
@@ -1294,7 +1345,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   );
                 },
                 child: const Text(
-                  'View Rankings →',
+                  'View Rankings \u2192',
                   style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w800,
@@ -1306,7 +1357,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           ),
         ),
         SizedBox(
-          height: 242,
+          height: 248,
           child: ListView.separated(
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -1336,8 +1387,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 10),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          child: Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 8,
+            runSpacing: 4,
             children: [
               const Text(
                 'OUR OFFICIAL SELLERS',
@@ -1361,7 +1415,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   );
                 },
                 child: const Text(
-                  'All Verified Stores →',
+                  'All Verified Stores \u2192',
                   style: TextStyle(
                     fontSize: 11.5,
                     fontWeight: FontWeight.w800,
@@ -1373,7 +1427,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           ),
         ),
         SizedBox(
-          height: 114,
+          height: 116,
           child: ListView.separated(
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -1399,7 +1453,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   );
                 },
                 child: Container(
-                  width: 156,
+                  width: 158,
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
                     color: StorkTheme.surface,
@@ -1409,7 +1463,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisAlignment: MainAxisAlignment.center,
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       Row(
                         children: [
@@ -1449,7 +1503,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                           ),
                         ],
                       ),
-                      const Spacer(),
                       Text(
                         seller.lineOfBusiness.isNotEmpty
                             ? seller.lineOfBusiness
@@ -1517,7 +1570,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           ),
         ),
         SizedBox(
-          height: 242,
+          height: 248,
           child: ListView.separated(
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -1546,7 +1599,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     final rewardState = ref.watch(rewardSummaryProvider);
     final screenWidth = MediaQuery.sizeOf(context).width;
     final gridCols = screenWidth >= 700 ? 3 : 2;
-    final aspectRatio = screenWidth < 350 ? 0.63 : 0.68;
+    final aspectRatio =
+        screenWidth < 340 ? 0.56 : (screenWidth < 380 ? 0.61 : 0.66);
 
     return Stack(
       children: [
@@ -1565,7 +1619,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                     )
                   : _errorMessage != null && _products.isEmpty
                       ? Center(
-                          child: Padding(
+                          child: SingleChildScrollView(
                             padding: const EdgeInsets.all(24),
                             child: Column(
                               mainAxisSize: MainAxisSize.min,
@@ -1752,6 +1806,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         unreadNotifications: unreadNotifications,
         onTap: (index) {
           if (_currentIndex == index) return;
+          HapticFeedback.selectionClick();
           setState(() {
             _currentIndex = index;
           });
@@ -1778,6 +1833,8 @@ class _TopIconBadgeButton extends StatelessWidget {
     return IconButton(
       onPressed: onTap,
       visualDensity: VisualDensity.compact,
+      constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+      padding: const EdgeInsets.symmetric(horizontal: 5),
       icon: Stack(
         clipBehavior: Clip.none,
         children: [

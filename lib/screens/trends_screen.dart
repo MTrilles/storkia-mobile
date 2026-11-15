@@ -2,12 +2,13 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:http/http.dart' as http;
 import '../config/api_config.dart';
 import '../config/app_routes.dart';
 import '../config/app_theme.dart';
 import '../models/product_model.dart';
 import '../providers/wishlist_provider.dart';
+import '../services/api_service.dart';
+import '../services/websocket_service.dart';
 import 'product_show.dart';
 
 typedef JsonMap = Map<String, dynamic>;
@@ -36,7 +37,7 @@ class _TrendsScreenState extends ConsumerState<TrendsScreen>
   final IntBoolMap _wishlistOverrides = {};
   String _selectedCategory = 'All';
   String _sortBy = 'trending';
-  Timer? _autoSyncTimer;
+  Timer? _wsDebounceTimer;
 
   String get _domain => ApiConfig.resolveBaseDomain(widget.baseUrl);
 
@@ -45,15 +46,28 @@ class _TrendsScreenState extends ConsumerState<TrendsScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _fetchTrends();
-    _autoSyncTimer = Timer.periodic(const Duration(seconds: 8), (_) {
-      _fetchTrends(silent: true);
-    });
+    WebSocketService.addListener(_onRealtimeEvent);
+  }
+
+  void _onRealtimeEvent(BuyerRealtimeEvent event) {
+    if (!mounted) return;
+    if (event.scope == 'catalog' ||
+        event.scope == 'marketplace' ||
+        event.scope == 'order') {
+      _wsDebounceTimer?.cancel();
+      _wsDebounceTimer = Timer(const Duration(milliseconds: 280), () {
+        if (mounted) {
+          _fetchTrends(silent: true);
+        }
+      });
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _autoSyncTimer?.cancel();
+    _wsDebounceTimer?.cancel();
+    WebSocketService.removeListener(_onRealtimeEvent);
     super.dispose();
   }
 
@@ -101,12 +115,9 @@ class _TrendsScreenState extends ConsumerState<TrendsScreen>
       setState(() => _isLoading = true);
     }
     try {
-      final headers = {
-        'Authorization': 'Bearer ${widget.token}',
-        'Accept': 'application/json',
-      };
+      final headers = ApiService.buildHeaders(widget.token);
 
-      final response = await http
+      final response = await ApiService.httpClient
           .get(Uri.parse('$_domain/api/v1/trends'), headers: headers)
           .timeout(ApiConfig.requestTimeout);
 
@@ -119,7 +130,7 @@ class _TrendsScreenState extends ConsumerState<TrendsScreen>
       }
 
       if (parsed.isEmpty) {
-        final homeRes = await http
+        final homeRes = await ApiService.httpClient
             .get(Uri.parse('$_domain/api/v1/home'), headers: headers)
             .timeout(ApiConfig.requestTimeout);
         if (!mounted) return;

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
@@ -16,6 +17,7 @@ import '../providers/global_counters_provider.dart';
 import '../providers/wishlist_provider.dart';
 import '../services/api_service.dart';
 import '../services/recently_viewed_service.dart';
+import '../services/websocket_service.dart';
 import 'cart_screen.dart';
 import 'chat_screen.dart';
 import 'checkout_screen.dart';
@@ -43,7 +45,7 @@ class ProductShowScreen extends ConsumerStatefulWidget {
 class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
     with WidgetsBindingObserver {
   final ScrollController _scrollController = ScrollController();
-  Timer? _autoSyncTimer;
+  Timer? _wsDebounceTimer;
 
   late Product _product;
   SellerProfile? _seller;
@@ -123,15 +125,30 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
     _activeStock = _totalStock;
 
     _fetchFullProductDetails(silent: false);
-    _autoSyncTimer = Timer.periodic(const Duration(seconds: 6), (_) {
-      _fetchFullProductDetails(silent: true);
-    });
+    WebSocketService.addListener(_onRealtimeEvent);
+  }
+
+  void _onRealtimeEvent(BuyerRealtimeEvent event) {
+    if (!mounted) return;
+    if (event.scope == 'catalog' ||
+        event.scope == 'marketplace' ||
+        event.scope == 'voucher' ||
+        event.scope == 'order' ||
+        event.scope == 'general') {
+      _wsDebounceTimer?.cancel();
+      _wsDebounceTimer = Timer(const Duration(milliseconds: 280), () {
+        if (mounted) {
+          _fetchFullProductDetails(silent: true);
+        }
+      });
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _autoSyncTimer?.cancel();
+    _wsDebounceTimer?.cancel();
+    WebSocketService.removeListener(_onRealtimeEvent);
     _scrollController.dispose();
     super.dispose();
   }
@@ -141,6 +158,15 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
     if (state == AppLifecycleState.resumed) {
       _fetchFullProductDetails(silent: true);
     }
+  }
+
+  Future<void> _copyText(String text, String label) async {
+    final cleaned = text.trim();
+    if (cleaned.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: cleaned));
+    HapticFeedback.lightImpact();
+    if (!mounted) return;
+    _showToast('Copied $label: $cleaned', isError: false);
   }
 
   int _calculateTotalStock(Product prod) {
@@ -235,13 +261,12 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
 
   Future<void> _fetchFullProductDetails({bool silent = true}) async {
     try {
-      final response = await http.get(
-        Uri.parse('$_domain/api/v1/products/${_product.id}'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .get(
+            Uri.parse('$_domain/api/v1/products/${_product.id}'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (!mounted) return;
 
@@ -389,6 +414,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
 
   void _selectGalleryImage(int index) {
     if (index < 0 || index >= _product.pictures.length) return;
+    HapticFeedback.selectionClick();
     setState(() {
       _activeGalleryIndex = index;
       _isViewingVariantImage = false;
@@ -397,6 +423,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
   }
 
   void _onMainVariantSelected(int index, JsonMap item) {
+    HapticFeedback.selectionClick();
     setState(() {
       if (_selectedMainIndex == index) {
         _selectedMainIndex = null;
@@ -450,6 +477,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
   }
 
   void _onSubVariantSelected(int index, JsonMap sub, JsonMap parentItem) {
+    HapticFeedback.selectionClick();
     setState(() {
       if (_selectedSubIndex == index) {
         _selectedSubIndex = null;
@@ -482,18 +510,15 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
 
   Future<void> _subscribeRestock() async {
     if (_isSubscribingRestock) return;
+    HapticFeedback.lightImpact();
     setState(() => _isSubscribingRestock = true);
 
     try {
-      final response = await http
+      final response = await ApiService.httpClient
           .post(
             Uri.parse(
                 '$_domain/api/v1/products/${_product.id}/restock-subscribe'),
-            headers: {
-              'Authorization': 'Bearer ${widget.token}',
-              'Accept': 'application/json',
-              'Content-Type': 'application/json',
-            },
+            headers: ApiService.buildHeaders(widget.token, isJson: true),
             body: json.encode({
               'variant_name':
                   _selectedMainName.isNotEmpty ? _selectedMainName : null,
@@ -531,7 +556,6 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
   void _openAskQuestionModal() {
     final questionCtrl = TextEditingController();
     bool isSubmitting = false;
-    String? modalError;
 
     showModalBottomSheet<void>(
       context: context,
@@ -543,161 +567,151 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
       builder: (modalContext) {
         return StatefulBuilder(
           builder: (ctx, setModalState) {
-            return Padding(
-              padding: EdgeInsets.only(
-                left: 20,
-                right: 20,
-                top: 14,
-                bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
+            final mediaQuery = MediaQuery.of(ctx);
+            final bottomInset = mediaQuery.viewInsets.bottom;
+            final safeBottom = mediaQuery.viewPadding.bottom;
+
+            return ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: mediaQuery.size.height * 0.88,
               ),
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Center(
-                      child: Container(
-                        width: 42,
-                        height: 4,
-                        margin: const EdgeInsets.only(bottom: 16),
-                        decoration: BoxDecoration(
-                          color: StorkTheme.borderSubtle,
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                      ),
-                    ),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Expanded(
-                          child: Text(
-                            'Ask the Seller a Question',
-                            style: TextStyle(
-                              fontSize: 16.5,
-                              fontWeight: FontWeight.w800,
-                              color: StorkTheme.primaryDark,
-                            ),
+              child: Padding(
+                padding: EdgeInsets.only(
+                  left: 20,
+                  right: 20,
+                  top: 14,
+                  bottom:
+                      bottomInset + (bottomInset > 0 ? 16 : safeBottom + 24),
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Center(
+                        child: Container(
+                          width: 42,
+                          height: 4,
+                          margin: const EdgeInsets.only(bottom: 16),
+                          decoration: BoxDecoration(
+                            color: StorkTheme.borderSubtle,
+                            borderRadius: BorderRadius.circular(4),
                           ),
                         ),
-                        IconButton(
-                          onPressed: () => Navigator.pop(modalContext),
-                          icon: const Icon(Icons.close_rounded),
-                        ),
-                      ],
-                    ),
-                    const Text(
-                      'Your question and the seller\'s official answer will be visible on this product page to help shoppers.',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: StorkTheme.textMuted,
                       ),
-                    ),
-                    const SizedBox(height: 14),
-                    TextField(
-                      controller: questionCtrl,
-                      maxLines: 3,
-                      maxLength: 500,
-                      onChanged: (_) {
-                        if (modalError != null) {
-                          setModalState(() => modalError = null);
-                        }
-                      },
-                      decoration: const InputDecoration(
-                        labelText: 'Type your question (5–500 characters) *',
-                        fillColor: StorkTheme.surfaceSubtle,
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Expanded(
+                            child: Text(
+                              'Ask the Seller a Question',
+                              style: TextStyle(
+                                fontSize: 16.5,
+                                fontWeight: FontWeight.w800,
+                                color: StorkTheme.primaryDark,
+                              ),
+                            ),
+                          ),
+                          IconButton(
+                            onPressed: () => Navigator.pop(modalContext),
+                            icon: const Icon(Icons.close_rounded),
+                          ),
+                        ],
                       ),
-                    ),
-                    if (modalError != null) ...[
-                      const SizedBox(height: 6),
-                      Text(
-                        modalError!,
-                        style: const TextStyle(
-                          color: StorkTheme.danger,
+                      const Text(
+                        'Your question and the seller\'s official answer will be visible on this product page to help shoppers.',
+                        style: TextStyle(
                           fontSize: 12,
-                          fontWeight: FontWeight.w700,
+                          color: StorkTheme.textMuted,
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      TextField(
+                        controller: questionCtrl,
+                        maxLines: 3,
+                        maxLength: 500,
+                        decoration: const InputDecoration(
+                          labelText:
+                              'Type your question (5\u2013500 characters) *',
+                          fillColor: StorkTheme.surfaceSubtle,
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      SizedBox(
+                        width: double.infinity,
+                        height: 50,
+                        child: ElevatedButton(
+                          onPressed: isSubmitting
+                              ? null
+                              : () async {
+                                  final sheetNavigator =
+                                      Navigator.of(modalContext);
+                                  final qText = questionCtrl.text.trim();
+                                  if (qText.length < 5) {
+                                    _showToast(
+                                        'Question must be at least 5 characters.');
+                                    return;
+                                  }
+                                  setModalState(() => isSubmitting = true);
+                                  try {
+                                    final response = await ApiService.httpClient
+                                        .post(
+                                          Uri.parse(
+                                              '$_domain/api/v1/products/${_product.id}/questions'),
+                                          headers: ApiService.buildHeaders(
+                                            widget.token,
+                                            isJson: true,
+                                          ),
+                                          body:
+                                              json.encode({'question': qText}),
+                                        )
+                                        .timeout(ApiConfig.requestTimeout);
+
+                                    final data = json.decode(response.body);
+                                    if ((response.statusCode == 200 ||
+                                            response.statusCode == 201) &&
+                                        data is Map &&
+                                        data['success'] == true) {
+                                      HapticFeedback.mediumImpact();
+                                      if (modalContext.mounted) {
+                                        sheetNavigator.pop();
+                                      }
+                                      _showToast(
+                                        data['message']?.toString() ??
+                                            'Question posted!',
+                                        isError: false,
+                                      );
+                                      _fetchFullProductDetails(silent: true);
+                                    } else {
+                                      _showToast(
+                                        data is Map
+                                            ? (data['message']?.toString() ??
+                                                'Unable to post question.')
+                                            : 'Unable to post question.',
+                                      );
+                                    }
+                                  } catch (_) {
+                                    _showToast('Network error occurred.');
+                                  } finally {
+                                    if (modalContext.mounted) {
+                                      setModalState(() => isSubmitting = false);
+                                    }
+                                  }
+                                },
+                          child: isSubmitting
+                              ? const SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                    color: Colors.white,
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Text('Post Question'),
                         ),
                       ),
                     ],
-                    const SizedBox(height: 14),
-                    SizedBox(
-                      width: double.infinity,
-                      height: 50,
-                      child: ElevatedButton(
-                        onPressed: isSubmitting
-                            ? null
-                            : () async {
-                                final qText = questionCtrl.text.trim();
-                                if (qText.length < 5) {
-                                  setModalState(() {
-                                    modalError =
-                                        'Question must be at least 5 characters.';
-                                  });
-                                  return;
-                                }
-                                setModalState(() {
-                                  isSubmitting = true;
-                                  modalError = null;
-                                });
-                                try {
-                                  final response = await http
-                                      .post(
-                                        Uri.parse(
-                                            '$_domain/api/v1/products/${_product.id}/questions'),
-                                        headers: {
-                                          'Authorization':
-                                              'Bearer ${widget.token}',
-                                          'Accept': 'application/json',
-                                          'Content-Type': 'application/json',
-                                        },
-                                        body: json.encode({'question': qText}),
-                                      )
-                                      .timeout(ApiConfig.requestTimeout);
-
-                                  final data = json.decode(response.body);
-                                  if ((response.statusCode == 200 ||
-                                          response.statusCode == 201) &&
-                                      data is Map &&
-                                      data['success'] == true) {
-                                    if (modalContext.mounted) {
-                                      Navigator.pop(modalContext);
-                                    }
-                                    _showToast(
-                                      data['message']?.toString() ??
-                                          'Question posted!',
-                                      isError: false,
-                                    );
-                                    _fetchFullProductDetails(silent: true);
-                                  } else {
-                                    setModalState(() {
-                                      modalError = data is Map
-                                          ? (data['message']?.toString() ??
-                                              'Unable to post question.')
-                                          : 'Unable to post question.';
-                                    });
-                                  }
-                                } catch (_) {
-                                  setModalState(() {
-                                    modalError = 'Network error occurred.';
-                                  });
-                                } finally {
-                                  if (modalContext.mounted) {
-                                    setModalState(() => isSubmitting = false);
-                                  }
-                                }
-                              },
-                        child: isSubmitting
-                            ? const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(
-                                  color: Colors.white,
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : const Text('Post Question'),
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
               ),
             );
@@ -712,6 +726,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
         (r) => (int.tryParse(r['id']?.toString() ?? '0') ?? 0) == reviewId);
     if (index < 0) return;
 
+    HapticFeedback.selectionClick();
     final rev = _reviews[index];
     final bool wasUpvoted = rev['is_upvoted'] == true;
     final int prevCount =
@@ -724,13 +739,12 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
     });
 
     try {
-      final response = await http.post(
-        Uri.parse('$_domain/api/v1/reviews/$reviewId/helpful'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .post(
+            Uri.parse('$_domain/api/v1/reviews/$reviewId/helpful'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (!mounted) return;
       if (response.statusCode == 200) {
@@ -752,6 +766,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
 
   Future<void> _toggleWishlist() async {
     if (_isTogglingWishlist) return;
+    HapticFeedback.lightImpact();
     setState(() {
       _isTogglingWishlist = true;
       _isWishlisted = !_isWishlisted;
@@ -770,16 +785,16 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
 
   Future<void> _toggleFollowStore() async {
     if (_seller == null || _isTogglingFollow || _isOwnStore) return;
+    HapticFeedback.lightImpact();
     setState(() => _isTogglingFollow = true);
 
     try {
-      final response = await http.post(
-        Uri.parse('$_domain/api/v1/sellers/${_seller!.id}/follow'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .post(
+            Uri.parse('$_domain/api/v1/sellers/${_seller!.id}/follow'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (!mounted) return;
       final data = json.decode(response.body);
@@ -803,15 +818,12 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
 
   Future<void> _claimStoreVoucher(String code) async {
     if (_seller == null) return;
+    HapticFeedback.lightImpact();
     try {
-      final response = await http
+      final response = await ApiService.httpClient
           .post(
             Uri.parse('$_domain/api/v1/vouchers/claim'),
-            headers: {
-              'Authorization': 'Bearer ${widget.token}',
-              'Accept': 'application/json',
-              'Content-Type': 'application/json',
-            },
+            headers: ApiService.buildHeaders(widget.token, isJson: true),
             body: json.encode({
               'code': code,
               'seller_profile_id': _seller!.id,
@@ -823,6 +835,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
       final data = json.decode(response.body);
       if ((response.statusCode == 200 || response.statusCode == 201) &&
           data['success'] == true) {
+        HapticFeedback.mediumImpact();
         setState(() {
           for (final v in _storeVouchers) {
             if (v['code']?.toString().toUpperCase() == code.toUpperCase()) {
@@ -844,31 +857,37 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
 
   bool _validateBeforePurchase() {
     if (_isStoreOnVacation) {
+      HapticFeedback.heavyImpact();
       _showToast(
           'This store is currently on vacation and is temporarily not accepting orders.');
       return false;
     }
     if (_activeStock <= 0) {
+      HapticFeedback.heavyImpact();
       _showToast(
           'This product or selected variation is currently out of stock.');
       return false;
     }
     if (_hasVariants && _selectedMainName.isEmpty) {
+      HapticFeedback.heavyImpact();
       _showToast(
           'Please select a ${_product.variants?['title'] ?? 'variation'} first.');
       return false;
     }
     if (_hasSubVariants && _selectedSubName.isEmpty) {
+      HapticFeedback.heavyImpact();
       _showToast(
           'Please select a ${_product.variants?['sub_title'] ?? 'sub-variation'} too.');
       return false;
     }
     if (_perBuyerLimit > 0 && _quantity > _perBuyerLimit) {
+      HapticFeedback.heavyImpact();
       _showToast(
           'Purchase limit reached: You can buy at most $_perBuyerLimit unit(s) of this item.');
       return false;
     }
     if (_quantity > _activeStock) {
+      HapticFeedback.heavyImpact();
       _showToast('Only $_activeStock piece(s) available in stock.');
       return false;
     }
@@ -877,17 +896,14 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
 
   Future<void> _addToCart() async {
     if (!_validateBeforePurchase()) return;
+    HapticFeedback.lightImpact();
 
     setState(() => _isAddingToCart = true);
     try {
-      final response = await http
+      final response = await ApiService.httpClient
           .post(
             Uri.parse('$_domain/api/v1/cart'),
-            headers: {
-              'Authorization': 'Bearer ${widget.token}',
-              'Accept': 'application/json',
-              'Content-Type': 'application/json',
-            },
+            headers: ApiService.buildHeaders(widget.token, isJson: true),
             body: json.encode({
               'product_id': _product.id,
               'quantity': _quantity,
@@ -902,6 +918,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
       if (!mounted) return;
       final data = json.decode(response.body);
       if (response.statusCode == 200 || response.statusCode == 201) {
+        HapticFeedback.mediumImpact();
         ref.read(cartCountProvider.notifier).fetchCartCount(widget.token);
         _showToast('Product added to your shopping cart!', isError: false);
       } else {
@@ -917,6 +934,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
 
   void _buyNow() {
     if (!_validateBeforePurchase()) return;
+    HapticFeedback.mediumImpact();
 
     Navigator.push(
       context,
@@ -941,6 +959,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
     final sellerUserId = _seller?.userId ?? _product.userId;
     if (sellerUserId == null) return;
 
+    final navigator = Navigator.of(context);
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -950,13 +969,12 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
     );
 
     try {
-      final userRes = await http.get(
-        Uri.parse('$_domain/api/v1/user'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final userRes = await ApiService.httpClient
+          .get(
+            Uri.parse('$_domain/api/v1/user'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (!mounted) return;
 
@@ -971,7 +989,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
         );
 
         if (!mounted) return;
-        Navigator.pop(context);
+        navigator.pop();
 
         if (contactRes['success'] == true) {
           final List<ChatContact> contacts =
@@ -981,8 +999,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
               (c) => c.id == sellerUserId,
               orElse: () => contacts.first,
             );
-            Navigator.push(
-              context,
+            navigator.push(
               StorkRoute.fade(
                 ChatScreen(
                   contact: contact,
@@ -995,11 +1012,11 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
           }
         }
       } else {
-        Navigator.pop(context);
+        navigator.pop();
       }
       _showToast('Unable to open seller chat right now.');
     } catch (_) {
-      if (mounted) Navigator.pop(context);
+      if (mounted) navigator.pop();
       _showToast('Error connecting to chat.');
     }
   }
@@ -1009,7 +1026,6 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
     final textCtrl =
         TextEditingController(text: rev['review_text']?.toString() ?? '');
     List<XFile> pickedPhotos = [];
-    String? modalError;
     bool isSaving = false;
 
     showModalBottomSheet(
@@ -1022,244 +1038,233 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
       builder: (modalContext) {
         return StatefulBuilder(
           builder: (ctx, setModalState) {
-            return Padding(
-              padding: EdgeInsets.only(
-                left: 20,
-                right: 20,
-                top: 14,
-                bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
+            final mediaQuery = MediaQuery.of(ctx);
+            final bottomInset = mediaQuery.viewInsets.bottom;
+            final safeBottom = mediaQuery.viewPadding.bottom;
+
+            return ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: mediaQuery.size.height * 0.90,
               ),
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Center(
-                      child: Container(
-                        width: 42,
-                        height: 4,
-                        margin: const EdgeInsets.only(bottom: 16),
-                        decoration: BoxDecoration(
-                          color: StorkTheme.borderSubtle,
-                          borderRadius: BorderRadius.circular(4),
+              child: Padding(
+                padding: EdgeInsets.only(
+                  left: 20,
+                  right: 20,
+                  top: 14,
+                  bottom:
+                      bottomInset + (bottomInset > 0 ? 16 : safeBottom + 24),
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Center(
+                        child: Container(
+                          width: 42,
+                          height: 4,
+                          margin: const EdgeInsets.only(bottom: 16),
+                          decoration: BoxDecoration(
+                            color: StorkTheme.borderSubtle,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
                         ),
                       ),
-                    ),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Expanded(
-                          child: Text(
-                            'Edit Your Review (1-Time Edit)',
-                            style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w800,
-                              color: StorkTheme.primaryDark,
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Expanded(
+                            child: Text(
+                              'Edit Your Review (1-Time Edit)',
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w800,
+                                color: StorkTheme.primaryDark,
+                              ),
                             ),
                           ),
-                        ),
-                        IconButton(
-                          onPressed: () => Navigator.pop(modalContext),
-                          icon: const Icon(Icons.close_rounded),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Wrap(
-                      children: List.generate(5, (i) {
-                        final star = i + 1;
-                        return IconButton(
-                          onPressed: () =>
-                              setModalState(() => editRating = star),
-                          icon: Icon(
-                            star <= editRating
-                                ? Icons.star_rounded
-                                : Icons.star_border_rounded,
-                            color: Colors.amber,
-                            size: 30,
+                          IconButton(
+                            onPressed: () => Navigator.pop(modalContext),
+                            icon: const Icon(Icons.close_rounded),
                           ),
-                        );
-                      }),
-                    ),
-                    const SizedBox(height: 8),
-                    TextField(
-                      controller: textCtrl,
-                      maxLines: 3,
-                      maxLength: 500,
-                      onChanged: (_) {
-                        if (modalError != null) {
-                          setModalState(() => modalError = null);
-                        }
-                      },
-                      decoration: const InputDecoration(
-                        labelText: 'Update Review Comment',
-                        fillColor: StorkTheme.surfaceSubtle,
+                        ],
                       ),
-                    ),
-                    const SizedBox(height: 8),
-                    OutlinedButton.icon(
-                      onPressed: () async {
-                        final picker = ImagePicker();
-                        final files = await picker.pickMultiImage(
-                          imageQuality: 82,
-                        );
-                        if (files.isNotEmpty) {
-                          final valid = <XFile>[];
-                          for (final f in files.take(5)) {
-                            final len = await f.length();
-                            if (len > 5 * 1024 * 1024) {
-                              setModalState(() {
-                                modalError =
-                                    'Each review photo must not exceed 5MB.';
-                              });
-                              continue;
-                            }
-                            valid.add(f);
-                          }
-                          setModalState(() {
-                            pickedPhotos = valid;
-                          });
-                        }
-                      },
-                      icon: const Icon(Icons.photo_camera_outlined, size: 18),
-                      label: Text(pickedPhotos.isEmpty
-                          ? 'Replace Review Photos (Max 5)'
-                          : '${pickedPhotos.length} photo(s) selected'),
-                    ),
-                    if (pickedPhotos.isNotEmpty) ...[
                       const SizedBox(height: 8),
                       Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
-                        children: List.generate(pickedPhotos.length, (pIdx) {
-                          return Stack(
-                            alignment: Alignment.topRight,
-                            children: [
-                              ClipRRect(
-                                borderRadius: BorderRadius.circular(8),
-                                child: Image.file(
-                                  File(pickedPhotos[pIdx].path),
-                                  width: 48,
-                                  height: 48,
-                                  fit: BoxFit.cover,
-                                ),
-                              ),
-                              GestureDetector(
-                                onTap: () {
-                                  setModalState(() {
-                                    pickedPhotos.removeAt(pIdx);
-                                  });
-                                },
-                                child: Container(
-                                  padding: const EdgeInsets.all(2),
-                                  decoration: const BoxDecoration(
-                                    color: Colors.black54,
-                                    shape: BoxShape.circle,
-                                  ),
-                                  child: const Icon(
-                                    Icons.close_rounded,
-                                    size: 12,
-                                    color: Colors.white,
-                                  ),
-                                ),
-                              ),
-                            ],
+                        children: List.generate(5, (i) {
+                          final star = i + 1;
+                          return IconButton(
+                            onPressed: () =>
+                                setModalState(() => editRating = star),
+                            icon: Icon(
+                              star <= editRating
+                                  ? Icons.star_rounded
+                                  : Icons.star_border_rounded,
+                              color: Colors.amber,
+                              size: 30,
+                            ),
                           );
                         }),
                       ),
-                    ],
-                    if (modalError != null) ...[
                       const SizedBox(height: 8),
-                      Text(
-                        modalError!,
-                        style: const TextStyle(
-                          color: StorkTheme.danger,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w700,
+                      TextField(
+                        controller: textCtrl,
+                        maxLines: 3,
+                        maxLength: 500,
+                        decoration: const InputDecoration(
+                          labelText: 'Update Review Comment',
+                          fillColor: StorkTheme.surfaceSubtle,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      OutlinedButton.icon(
+                        onPressed: () async {
+                          final picker = ImagePicker();
+                          final files = await picker.pickMultiImage(
+                            imageQuality: 82,
+                          );
+                          if (files.isNotEmpty) {
+                            final valid = <XFile>[];
+                            for (final f in files.take(5)) {
+                              final len = await f.length();
+                              if (len > 5 * 1024 * 1024) {
+                                _showToast(
+                                    'Each review photo must not exceed 5MB.');
+                                continue;
+                              }
+                              valid.add(f);
+                            }
+                            setModalState(() {
+                              pickedPhotos = valid;
+                            });
+                          }
+                        },
+                        icon: const Icon(Icons.photo_camera_outlined, size: 18),
+                        label: Text(pickedPhotos.isEmpty
+                            ? 'Replace Review Photos (Max 5)'
+                            : '${pickedPhotos.length} photo(s) selected'),
+                      ),
+                      if (pickedPhotos.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: List.generate(pickedPhotos.length, (pIdx) {
+                            return Stack(
+                              alignment: Alignment.topRight,
+                              children: [
+                                ClipRRect(
+                                  borderRadius: BorderRadius.circular(8),
+                                  child: Image.file(
+                                    File(pickedPhotos[pIdx].path),
+                                    width: 48,
+                                    height: 48,
+                                    fit: BoxFit.cover,
+                                  ),
+                                ),
+                                GestureDetector(
+                                  onTap: () {
+                                    setModalState(() {
+                                      pickedPhotos.removeAt(pIdx);
+                                    });
+                                  },
+                                  child: Container(
+                                    padding: const EdgeInsets.all(2),
+                                    decoration: const BoxDecoration(
+                                      color: Colors.black54,
+                                      shape: BoxShape.circle,
+                                    ),
+                                    child: const Icon(
+                                      Icons.close_rounded,
+                                      size: 12,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            );
+                          }),
+                        ),
+                      ],
+                      const SizedBox(height: 16),
+                      SizedBox(
+                        width: double.infinity,
+                        height: 50,
+                        child: ElevatedButton(
+                          onPressed: isSaving
+                              ? null
+                              : () async {
+                                  final sheetNavigator =
+                                      Navigator.of(modalContext);
+                                  setModalState(() => isSaving = true);
+                                  try {
+                                    final req = http.MultipartRequest(
+                                      'POST',
+                                      Uri.parse(
+                                          '$_domain/api/v1/reviews/${rev['id']}'),
+                                    );
+                                    req.headers.addAll(
+                                      ApiService.buildHeaders(widget.token),
+                                    );
+                                    req.fields['rating'] = '$editRating';
+                                    req.fields['review_text'] =
+                                        textCtrl.text.trim();
+
+                                    for (final f in pickedPhotos) {
+                                      req.files.add(
+                                        await http.MultipartFile.fromPath(
+                                          'review_photos[]',
+                                          f.path,
+                                        ),
+                                      );
+                                    }
+
+                                    final streamed = await ApiService.httpClient
+                                        .send(req)
+                                        .timeout(ApiConfig.requestTimeout);
+                                    final res = await http.Response.fromStream(
+                                        streamed);
+                                    final data = json.decode(res.body);
+
+                                    if (res.statusCode == 200 &&
+                                        data['success'] == true) {
+                                      HapticFeedback.mediumImpact();
+                                      if (modalContext.mounted) {
+                                        sheetNavigator.pop();
+                                      }
+                                      _showToast(
+                                          data['message']?.toString() ??
+                                              'Review updated!',
+                                          isError: false);
+                                      _fetchFullProductDetails(silent: true);
+                                    } else {
+                                      _showToast(
+                                        data['message']?.toString() ??
+                                            'Failed to update review.',
+                                      );
+                                    }
+                                  } catch (_) {
+                                    _showToast('Network error occurred.');
+                                  } finally {
+                                    if (modalContext.mounted) {
+                                      setModalState(() => isSaving = false);
+                                    }
+                                  }
+                                },
+                          child: isSaving
+                              ? const SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                    color: Colors.white,
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Text('Save Updated Review'),
                         ),
                       ),
                     ],
-                    const SizedBox(height: 16),
-                    SizedBox(
-                      width: double.infinity,
-                      height: 50,
-                      child: ElevatedButton(
-                        onPressed: isSaving
-                            ? null
-                            : () async {
-                                setModalState(() {
-                                  isSaving = true;
-                                  modalError = null;
-                                });
-                                try {
-                                  final req = http.MultipartRequest(
-                                    'POST',
-                                    Uri.parse(
-                                        '$_domain/api/v1/reviews/${rev['id']}'),
-                                  );
-                                  req.headers['Authorization'] =
-                                      'Bearer ${widget.token}';
-                                  req.headers['Accept'] = 'application/json';
-                                  req.fields['rating'] = '$editRating';
-                                  req.fields['review_text'] =
-                                      textCtrl.text.trim();
-
-                                  for (final f in pickedPhotos) {
-                                    req.files.add(
-                                      await http.MultipartFile.fromPath(
-                                        'review_photos[]',
-                                        f.path,
-                                      ),
-                                    );
-                                  }
-
-                                  final streamed = await req
-                                      .send()
-                                      .timeout(ApiConfig.requestTimeout);
-                                  final res =
-                                      await http.Response.fromStream(streamed);
-                                  final data = json.decode(res.body);
-
-                                  if (res.statusCode == 200 &&
-                                      data['success'] == true) {
-                                    if (modalContext.mounted) {
-                                      Navigator.pop(modalContext);
-                                    }
-                                    _showToast(
-                                        data['message']?.toString() ??
-                                            'Review updated!',
-                                        isError: false);
-                                    _fetchFullProductDetails(silent: true);
-                                  } else {
-                                    setModalState(() {
-                                      modalError =
-                                          data['message']?.toString() ??
-                                              'Failed to update review.';
-                                    });
-                                  }
-                                } catch (_) {
-                                  setModalState(() {
-                                    modalError = 'Network error occurred.';
-                                  });
-                                } finally {
-                                  if (modalContext.mounted) {
-                                    setModalState(() => isSaving = false);
-                                  }
-                                }
-                              },
-                        child: isSaving
-                            ? const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(
-                                  color: Colors.white,
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : const Text('Save Updated Review'),
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
               ),
             );
@@ -1270,11 +1275,41 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
   }
 
   void _showToast(String message, {bool isError = true}) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
+    if (!mounted || message.trim().isEmpty) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.clearSnackBars();
+    messenger.showSnackBar(
       SnackBar(
-        content: Text(message),
+        content: Row(
+          children: [
+            Icon(
+              isError
+                  ? Icons.error_outline_rounded
+                  : Icons.check_circle_outline_rounded,
+              color: Colors.white,
+              size: 19,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                message.trim(),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                  height: 1.3,
+                ),
+              ),
+            ),
+          ],
+        ),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 3),
+        margin: const EdgeInsets.fromLTRB(16, 12, 16, 16),
         backgroundColor: isError ? StorkTheme.danger : StorkTheme.success,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+        ),
       ),
     );
   }
@@ -1324,15 +1359,19 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
     final cartCount = ref.watch(cartCountProvider);
     final screenWidth = MediaQuery.sizeOf(context).width;
     final gridColumns = screenWidth >= 700 ? 3 : 2;
-    final aspectRatio = screenWidth < 350 ? 0.63 : 0.68;
+    final aspectRatio =
+        screenWidth < 340 ? 0.56 : (screenWidth < 380 ? 0.61 : 0.66);
 
     return Scaffold(
       backgroundColor: StorkTheme.surfaceSubtle,
       appBar: AppBar(
-        title: Text(
-          _product.name,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
+        title: GestureDetector(
+          onLongPress: () => _copyText(_product.name, 'Product Name'),
+          child: Text(
+            _product.name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
         ),
         actions: [
           IconButton(
@@ -1695,17 +1734,18 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                 gradient: StorkTheme.brandGradient,
                 borderRadius: BorderRadius.circular(14),
               ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              child: Wrap(
+                alignment: WrapAlignment.spaceBetween,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                spacing: 8,
+                runSpacing: 4,
                 children: [
-                  Expanded(
-                    child: Text(
-                      '⚡ ${_dealPricing!['promo_label'] ?? 'SUPER DEAL ACTIVE'}',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 11.5,
-                        fontWeight: FontWeight.w900,
-                      ),
+                  Text(
+                    '\u26A1 ${_dealPricing!['promo_label'] ?? 'SUPER DEAL ACTIVE'}',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w900,
                     ),
                   ),
                   if (_dealPricing!['remaining_slot_stock'] != null)
@@ -1721,13 +1761,16 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
               ),
             ),
           ],
-          Text(
-            _product.name,
-            style: const TextStyle(
-              fontSize: 19,
-              fontWeight: FontWeight.w900,
-              color: StorkTheme.textMain,
-              height: 1.25,
+          GestureDetector(
+            onLongPress: () => _copyText(_product.name, 'Product Name'),
+            child: Text(
+              _product.name,
+              style: const TextStyle(
+                fontSize: 18.5,
+                fontWeight: FontWeight.w900,
+                color: StorkTheme.textMain,
+                height: 1.25,
+              ),
             ),
           ),
           const SizedBox(height: 10),
@@ -1810,17 +1853,20 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
               spacing: 10,
               runSpacing: 6,
               children: [
-                Text(
-                  '₱${_formatMoney(_discountedActivePrice)}',
-                  style: const TextStyle(
-                    fontSize: 26,
-                    fontWeight: FontWeight.w900,
-                    color: StorkTheme.primary,
+                FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Text(
+                    '\u20B1${_formatMoney(_discountedActivePrice)}',
+                    style: const TextStyle(
+                      fontSize: 25,
+                      fontWeight: FontWeight.w900,
+                      color: StorkTheme.primary,
+                    ),
                   ),
                 ),
                 if (discountPct > 0) ...[
                   Text(
-                    '₱${_formatMoney(_activePrice)}',
+                    '\u20B1${_formatMoney(_activePrice)}',
                     style: const TextStyle(
                       fontSize: 14,
                       decoration: TextDecoration.lineThrough,
@@ -1866,22 +1912,22 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 8,
+            runSpacing: 4,
             children: [
-              Expanded(
-                child: Text(
-                  'STORE VOUCHERS (${_seller?.businessName ?? 'STORE'})',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 11.5,
-                    fontWeight: FontWeight.w800,
-                    color: StorkTheme.primaryDark,
-                  ),
+              Text(
+                'STORE VOUCHERS (${_seller?.businessName ?? 'STORE'})',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w800,
+                  color: StorkTheme.primaryDark,
                 ),
               ),
-              const SizedBox(width: 8),
               const Text(
                 'Claimable here only',
                 style: TextStyle(fontSize: 11, color: StorkTheme.textMuted),
@@ -1890,7 +1936,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
           ),
           const SizedBox(height: 10),
           SizedBox(
-            height: 70,
+            height: 74,
             child: ListView.separated(
               scrollDirection: Axis.horizontal,
               itemCount: _storeVouchers.length,
@@ -1903,75 +1949,78 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                     double.tryParse(sv['min_spend']?.toString() ?? '0') ?? 0;
                 final isClaimed = sv['is_claimed'] == true;
 
-                return Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: StorkTheme.brandLight.withValues(alpha: 0.25),
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(
-                      color: StorkTheme.primary.withValues(alpha: 0.3),
+                return GestureDetector(
+                  onLongPress: () => _copyText(code, 'Voucher Code'),
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: StorkTheme.brandLight.withValues(alpha: 0.25),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(
+                        color: StorkTheme.primary.withValues(alpha: 0.3),
+                      ),
                     ),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Row(
-                            children: [
-                              Text(
-                                code,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w800,
-                                  fontSize: 12,
-                                  color: StorkTheme.primaryDark,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Row(
+                              children: [
+                                Text(
+                                  code,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w800,
+                                    fontSize: 12,
+                                    color: StorkTheme.primaryDark,
+                                  ),
                                 ),
-                              ),
-                              const SizedBox(width: 6),
-                              Text(
-                                badge,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w800,
-                                  fontSize: 12,
-                                  color: StorkTheme.primary,
+                                const SizedBox(width: 6),
+                                Text(
+                                  badge,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w800,
+                                    fontSize: 12,
+                                    color: StorkTheme.primary,
+                                  ),
                                 ),
+                              ],
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              'Min. Spend \u20B1${minSpend.toStringAsFixed(0)}',
+                              style: const TextStyle(
+                                fontSize: 10.5,
+                                color: StorkTheme.textMuted,
                               ),
-                            ],
+                            ),
+                          ],
+                        ),
+                        const SizedBox(width: 12),
+                        ElevatedButton(
+                          onPressed:
+                              isClaimed ? null : () => _claimStoreVoucher(code),
+                          style: ElevatedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 6),
+                            minimumSize: const Size(0, 32),
+                            backgroundColor: isClaimed
+                                ? StorkTheme.borderSubtle
+                                : StorkTheme.primary,
                           ),
-                          const SizedBox(height: 2),
-                          Text(
-                            'Min. Spend ₱${minSpend.toStringAsFixed(0)}',
+                          child: Text(
+                            isClaimed ? 'Claimed' : 'Claim',
                             style: const TextStyle(
-                              fontSize: 10.5,
-                              color: StorkTheme.textMuted,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
                             ),
                           ),
-                        ],
-                      ),
-                      const SizedBox(width: 12),
-                      ElevatedButton(
-                        onPressed:
-                            isClaimed ? null : () => _claimStoreVoucher(code),
-                        style: ElevatedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 6),
-                          minimumSize: const Size(0, 32),
-                          backgroundColor: isClaimed
-                              ? StorkTheme.borderSubtle
-                              : StorkTheme.primary,
                         ),
-                        child: Text(
-                          isClaimed ? 'Claimed' : 'Claim',
-                          style: const TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 );
               },
@@ -2177,8 +2226,10 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                   color: StorkTheme.primaryDark,
                 ),
               ),
-              Row(
-                mainAxisSize: MainAxisSize.min,
+              Wrap(
+                crossAxisAlignment: WrapCrossAlignment.center,
+                spacing: 10,
+                runSpacing: 6,
                 children: [
                   Container(
                     height: 38,
@@ -2194,7 +2245,10 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                           visualDensity: VisualDensity.compact,
                           icon: const Icon(Icons.remove_rounded, size: 16),
                           onPressed: _quantity > 1
-                              ? () => setState(() => _quantity--)
+                              ? () {
+                                  HapticFeedback.lightImpact();
+                                  setState(() => _quantity--);
+                                }
                               : null,
                         ),
                         SizedBox(
@@ -2212,13 +2266,15 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                           visualDensity: VisualDensity.compact,
                           icon: const Icon(Icons.add_rounded, size: 16),
                           onPressed: _quantity < _maxAllowedQuantity
-                              ? () => setState(() => _quantity++)
+                              ? () {
+                                  HapticFeedback.lightImpact();
+                                  setState(() => _quantity++);
+                                }
                               : null,
                         ),
                       ],
                     ),
                   ),
-                  const SizedBox(width: 10),
                   Container(
                     padding:
                         const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
@@ -2259,10 +2315,12 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                 ),
                 label: Text(
                   _hasRestockSubscription
-                      ? '✓ Subscribed for Back-in-Stock Alert'
+                      ? '\u2713 Subscribed for Back-in-Stock Alert'
                       : (_isSubscribingRestock
                           ? 'Subscribing...'
                           : 'Notify Me When Back in Stock'),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
             ),
@@ -2291,10 +2349,164 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              GestureDetector(
-                onTap: () {
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final followBtn = !_isOwnStore
+                  ? ElevatedButton(
+                      onPressed: _isTogglingFollow ? null : _toggleFollowStore,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: _isFollowingStore
+                            ? StorkTheme.surfaceSubtle
+                            : StorkTheme.primary,
+                        foregroundColor: _isFollowingStore
+                            ? StorkTheme.textMain
+                            : Colors.white,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 8),
+                        minimumSize: const Size(0, 36),
+                      ),
+                      child: Text(
+                        _isFollowingStore
+                            ? 'Following'
+                            : '+ Follow (\u20B130 Off)',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    )
+                  : null;
+
+              final storeHeaderRow = Row(
+                children: [
+                  GestureDetector(
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        StorkRoute.fade(
+                          SellerStoreScreen(
+                            sellerProfile: seller,
+                            baseUrl: _domain,
+                            token: widget.token,
+                          ),
+                        ),
+                      );
+                    },
+                    child: Stack(
+                      children: [
+                        CircleAvatar(
+                          radius: 24,
+                          backgroundColor:
+                              StorkTheme.primary.withValues(alpha: 0.12),
+                          backgroundImage:
+                              logoUrl.isNotEmpty ? NetworkImage(logoUrl) : null,
+                          child: logoUrl.isEmpty
+                              ? Text(
+                                  seller.businessName.isNotEmpty
+                                      ? seller.businessName[0].toUpperCase()
+                                      : 'S',
+                                  style: const TextStyle(
+                                    fontSize: 19,
+                                    fontWeight: FontWeight.w800,
+                                    color: StorkTheme.primary,
+                                  ),
+                                )
+                              : null,
+                        ),
+                        Positioned(
+                          bottom: 0,
+                          right: 0,
+                          child: Container(
+                            width: 12,
+                            height: 12,
+                            decoration: BoxDecoration(
+                              color: _isStoreOnVacation
+                                  ? StorkTheme.warning
+                                  : StorkTheme.success,
+                              shape: BoxShape.circle,
+                              border: Border.all(color: Colors.white, width: 2),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          seller.businessName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 15.5,
+                            fontWeight: FontWeight.w800,
+                            color: StorkTheme.primaryDark,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          seller.lineOfBusiness.isNotEmpty
+                              ? '${seller.lineOfBusiness} \u2022 ${seller.municipality}, ${seller.province}'
+                              : '${seller.municipality}, ${seller.province}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 11.5,
+                            color: StorkTheme.textMuted,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              );
+
+              if (constraints.maxWidth < 330 && followBtn != null) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    storeHeaderRow,
+                    const SizedBox(height: 10),
+                    followBtn,
+                  ],
+                );
+              }
+
+              return Row(
+                children: [
+                  Expanded(child: storeHeaderRow),
+                  if (followBtn != null) ...[
+                    const SizedBox(width: 8),
+                    followBtn,
+                  ],
+                ],
+              );
+            },
+          ),
+          const SizedBox(height: 14),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final chatBtn = OutlinedButton.icon(
+                onPressed: _chatNowAboutProduct,
+                icon: const Icon(Icons.chat_bubble_outline_rounded, size: 17),
+                label: const Text(
+                  'Chat Now',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: StorkTheme.primary,
+                  side: BorderSide(
+                      color: StorkTheme.primary.withValues(alpha: 0.4)),
+                ),
+              );
+              final viewStoreBtn = OutlinedButton.icon(
+                onPressed: () {
                   Navigator.push(
                     context,
                     StorkRoute.fade(
@@ -2306,139 +2518,36 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                     ),
                   );
                 },
-                child: Stack(
+                icon: const Icon(Icons.storefront_outlined, size: 17),
+                label: const Text(
+                  'View Store',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              );
+
+              if (constraints.maxWidth < 290) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    CircleAvatar(
-                      radius: 26,
-                      backgroundColor:
-                          StorkTheme.primary.withValues(alpha: 0.12),
-                      backgroundImage:
-                          logoUrl.isNotEmpty ? NetworkImage(logoUrl) : null,
-                      child: logoUrl.isEmpty
-                          ? Text(
-                              seller.businessName.isNotEmpty
-                                  ? seller.businessName[0].toUpperCase()
-                                  : 'S',
-                              style: const TextStyle(
-                                fontSize: 20,
-                                fontWeight: FontWeight.w800,
-                                color: StorkTheme.primary,
-                              ),
-                            )
-                          : null,
-                    ),
-                    Positioned(
-                      bottom: 0,
-                      right: 0,
-                      child: Container(
-                        width: 12,
-                        height: 12,
-                        decoration: BoxDecoration(
-                          color: _isStoreOnVacation
-                              ? StorkTheme.warning
-                              : StorkTheme.success,
-                          shape: BoxShape.circle,
-                          border: Border.all(color: Colors.white, width: 2),
-                        ),
-                      ),
-                    ),
+                    chatBtn,
+                    const SizedBox(height: 8),
+                    viewStoreBtn,
                   ],
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      seller.businessName,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w800,
-                        color: StorkTheme.primaryDark,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      seller.lineOfBusiness.isNotEmpty
-                          ? '${seller.lineOfBusiness} • ${seller.municipality}, ${seller.province}'
-                          : '${seller.municipality}, ${seller.province}',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: StorkTheme.textMuted,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              if (!_isOwnStore) ...[
-                const SizedBox(width: 8),
-                ElevatedButton(
-                  onPressed: _isTogglingFollow ? null : _toggleFollowStore,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: _isFollowingStore
-                        ? StorkTheme.surfaceSubtle
-                        : StorkTheme.primary,
-                    foregroundColor:
-                        _isFollowingStore ? StorkTheme.textMain : Colors.white,
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                    minimumSize: const Size(0, 36),
-                  ),
-                  child: Text(
-                    _isFollowingStore ? 'Following' : '+ Follow (₱30 Off)',
-                    style: const TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                ),
-              ],
-            ],
-          ),
-          const SizedBox(height: 14),
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: _chatNowAboutProduct,
-                  icon: const Icon(Icons.chat_bubble_outline_rounded, size: 17),
-                  label: const Text('Chat Now'),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: StorkTheme.primary,
-                    side: BorderSide(
-                        color: StorkTheme.primary.withValues(alpha: 0.4)),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: () {
-                    Navigator.push(
-                      context,
-                      StorkRoute.fade(
-                        SellerStoreScreen(
-                          sellerProfile: seller,
-                          baseUrl: _domain,
-                          token: widget.token,
-                        ),
-                      ),
-                    );
-                  },
-                  icon: const Icon(Icons.storefront_outlined, size: 17),
-                  label: const Text('View Store'),
-                ),
-              ),
-            ],
+                );
+              }
+              return Row(
+                children: [
+                  Expanded(child: chatBtn),
+                  const SizedBox(width: 10),
+                  Expanded(child: viewStoreBtn),
+                ],
+              );
+            },
           ),
           const SizedBox(height: 14),
           Container(
-            padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+            padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
             decoration: BoxDecoration(
               color: StorkTheme.surfaceSubtle,
               borderRadius: BorderRadius.circular(14),
@@ -2456,7 +2565,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                 ),
                 Expanded(
                   child: _buildStoreStatItem(
-                      'Rating', '${_storeStats['ratings'] ?? '0.0'} ★'),
+                      'Rating', '${_storeStats['ratings'] ?? '0.0'} \u2605'),
                 ),
                 Expanded(
                   child: _buildStoreStatItem(
@@ -2471,29 +2580,36 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
   }
 
   Widget _buildStoreStatItem(String label, String value) {
-    return Column(
-      children: [
-        Text(
-          value,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(
-            fontSize: 12.5,
-            fontWeight: FontWeight.w800,
-            color: StorkTheme.primaryDark,
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 2),
+      child: Column(
+        children: [
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Text(
+              value,
+              maxLines: 1,
+              style: const TextStyle(
+                fontSize: 12.5,
+                fontWeight: FontWeight.w800,
+                color: StorkTheme.primaryDark,
+              ),
+            ),
           ),
-        ),
-        const SizedBox(height: 2),
-        Text(
-          label,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(
-            fontSize: 10.5,
-            color: StorkTheme.textMuted,
+          const SizedBox(height: 2),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Text(
+              label,
+              maxLines: 1,
+              style: const TextStyle(
+                fontSize: 10.5,
+                color: StorkTheme.textMuted,
+              ),
+            ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 
@@ -2575,18 +2691,19 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          SizedBox(
-            width: 110,
+          Expanded(
+            flex: 2,
             child: Text(
               label,
               style: const TextStyle(
-                fontSize: 13,
+                fontSize: 12.5,
                 color: StorkTheme.textMuted,
               ),
             ),
           ),
           const SizedBox(width: 8),
           Expanded(
+            flex: 3,
             child: Text(
               value,
               style: const TextStyle(
@@ -2615,23 +2732,27 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 8,
+            runSpacing: 4,
             children: [
-              Expanded(
-                child: Text(
-                  'BUYER PRODUCT Q&A (${_questions.length})',
-                  style: const TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w800,
-                    color: StorkTheme.primaryDark,
-                    letterSpacing: 0.4,
-                  ),
+              Text(
+                'BUYER PRODUCT Q&A (${_questions.length})',
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                  color: StorkTheme.primaryDark,
+                  letterSpacing: 0.4,
                 ),
               ),
               if (!_isOwnStore)
                 TextButton.icon(
                   onPressed: _openAskQuestionModal,
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                  ),
                   icon: const Icon(Icons.help_outline_rounded, size: 16),
                   label: const Text(
                     'Ask Question',
@@ -2767,22 +2888,23 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 8,
+            runSpacing: 4,
             children: [
-              Expanded(
-                child: Text(
-                  'VERIFIED BUYER RATINGS (${_reviews.length})',
-                  style: const TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w800,
-                    color: StorkTheme.primaryDark,
-                    letterSpacing: 0.4,
-                  ),
+              Text(
+                'VERIFIED BUYER RATINGS (${_reviews.length})',
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                  color: StorkTheme.primaryDark,
+                  letterSpacing: 0.4,
                 ),
               ),
               Text(
-                '${_productAvgRating.toStringAsFixed(1)} / 5.0 ★',
+                '${_productAvgRating.toStringAsFixed(1)} / 5.0 \u2605',
                 style: const TextStyle(
                   fontSize: 13,
                   fontWeight: FontWeight.w800,
@@ -2801,14 +2923,19 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                   _buildReviewFilterChip(
                     label: 'All (${_reviews.length})',
                     isSelected: _selectedReviewStarFilter == 0,
-                    onTap: () => setState(() => _selectedReviewStarFilter = 0),
+                    onTap: () {
+                      HapticFeedback.selectionClick();
+                      setState(() => _selectedReviewStarFilter = 0);
+                    },
                   ),
                   for (int star = 5; star >= 1; star--)
                     _buildReviewFilterChip(
-                      label: '$star ★ (${_countReviewsByStar(star)})',
+                      label: '$star \u2605 (${_countReviewsByStar(star)})',
                       isSelected: _selectedReviewStarFilter == star,
-                      onTap: () =>
-                          setState(() => _selectedReviewStarFilter = star),
+                      onTap: () {
+                        HapticFeedback.selectionClick();
+                        setState(() => _selectedReviewStarFilter = star);
+                      },
                     ),
                 ],
               ),
@@ -3130,72 +3257,92 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
       ),
       child: SafeArea(
         top: false,
-        child: Row(
-          children: [
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: (_isAddingToCart || isDisabled) ? null : _addToCart,
-                icon: _isAddingToCart
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: StorkTheme.primary,
-                        ),
-                      )
-                    : const Icon(Icons.add_shopping_cart_rounded, size: 19),
-                label: Text(
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final addCartBtn = OutlinedButton.icon(
+              onPressed: (_isAddingToCart || isDisabled) ? null : _addToCart,
+              icon: _isAddingToCart
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: StorkTheme.primary,
+                      ),
+                    )
+                  : const Icon(Icons.add_shopping_cart_rounded, size: 18),
+              label: Text(
+                _isStoreOnVacation
+                    ? 'On Vacation'
+                    : (_activeStock <= 0
+                        ? 'Sold Out'
+                        : (_isAddingToCart ? 'Adding...' : 'Add To Cart')),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: StorkTheme.primary,
+                backgroundColor: StorkTheme.primary.withValues(alpha: 0.08),
+                side: BorderSide(
+                  color: isDisabled
+                      ? StorkTheme.borderSubtle
+                      : StorkTheme.primary.withValues(alpha: 0.4),
+                ),
+                padding: const EdgeInsets.symmetric(
+                  vertical: 14,
+                  horizontal: 10,
+                ),
+              ),
+            );
+
+            final buyNowBtn = Container(
+              height: 48,
+              decoration: BoxDecoration(
+                gradient: (_isAddingToCart || isDisabled)
+                    ? null
+                    : StorkTheme.brandGradient,
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: ElevatedButton(
+                onPressed: (_isAddingToCart || isDisabled) ? null : _buyNow,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.transparent,
+                  shadowColor: Colors.transparent,
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                ),
+                child: Text(
                   _isStoreOnVacation
-                      ? 'On Vacation'
-                      : (_activeStock <= 0
-                          ? 'Sold Out'
-                          : (_isAddingToCart ? 'Adding...' : 'Add To Cart')),
+                      ? 'Store On Vacation'
+                      : (_activeStock <= 0 ? 'Sold Out' : 'Buy Now'),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: StorkTheme.primary,
-                  backgroundColor: StorkTheme.primary.withValues(alpha: 0.08),
-                  side: BorderSide(
-                    color: isDisabled
-                        ? StorkTheme.borderSubtle
-                        : StorkTheme.primary.withValues(alpha: 0.4),
-                  ),
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                ),
               ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Container(
-                height: 48,
-                decoration: BoxDecoration(
-                  gradient: (_isAddingToCart || isDisabled)
-                      ? null
-                      : StorkTheme.brandGradient,
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: ElevatedButton(
-                  onPressed: (_isAddingToCart || isDisabled) ? null : _buyNow,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.transparent,
-                    shadowColor: Colors.transparent,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                  ),
-                  child: Text(
-                    _isStoreOnVacation
-                        ? 'Store On Vacation'
-                        : (_activeStock <= 0 ? 'Sold Out' : 'Buy Now'),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ),
-            ),
-          ],
+            );
+
+            if (constraints.maxWidth < 290) {
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  buyNowBtn,
+                  const SizedBox(height: 8),
+                  addCartBtn,
+                ],
+              );
+            }
+
+            return Row(
+              children: [
+                Expanded(child: addCartBtn),
+                const SizedBox(width: 12),
+                Expanded(child: buyNowBtn),
+              ],
+            );
+          },
         ),
       ),
     );

@@ -7,6 +7,7 @@ import '../config/app_theme.dart';
 import '../models/user_model.dart';
 import '../providers/auth_provider.dart';
 import '../services/api_service.dart';
+import '../services/websocket_service.dart';
 import 'home_screen.dart';
 import 'login_screen.dart';
 
@@ -32,7 +33,7 @@ class _SuspendedAccountScreenState extends ConsumerState<SuspendedAccountScreen>
   JsonMap? _sanction;
   bool _isLoading = true;
   bool _isSubmitting = false;
-  Timer? _autoSyncTimer;
+  Timer? _wsDebounceTimer;
   final _explanationController = TextEditingController();
   XFile? _pickedFile;
 
@@ -41,18 +42,30 @@ class _SuspendedAccountScreenState extends ConsumerState<SuspendedAccountScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _sanction = widget.user.sanction;
+    WebSocketService.init(widget.token, userId: widget.user.id);
+    WebSocketService.addListener(_onRealtimeEvent);
     _refreshSanction();
-    _autoSyncTimer = Timer.periodic(const Duration(seconds: 6), (_) {
-      if (!_isSubmitting) {
-        _refreshSanction(silent: true);
-      }
-    });
+  }
+
+  void _onRealtimeEvent(BuyerRealtimeEvent event) {
+    if (!mounted) return;
+    if (event.scope == 'compliance' ||
+        event.scope == 'notification' ||
+        event.scope == 'general') {
+      _wsDebounceTimer?.cancel();
+      _wsDebounceTimer = Timer(const Duration(milliseconds: 260), () {
+        if (mounted && !_isSubmitting) {
+          _refreshSanction(silent: true);
+        }
+      });
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _autoSyncTimer?.cancel();
+    _wsDebounceTimer?.cancel();
+    WebSocketService.removeListener(_onRealtimeEvent);
     _explanationController.dispose();
     super.dispose();
   }
@@ -62,6 +75,46 @@ class _SuspendedAccountScreenState extends ConsumerState<SuspendedAccountScreen>
     if (state == AppLifecycleState.resumed && !_isSubmitting) {
       _refreshSanction(silent: true);
     }
+  }
+
+  void _showPopupToast(String message, {bool isError = true}) {
+    if (!mounted || message.trim().isEmpty) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.clearSnackBars();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            Icon(
+              isError
+                  ? Icons.error_outline_rounded
+                  : Icons.check_circle_outline_rounded,
+              color: Colors.white,
+              size: 19,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                message.trim(),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                  height: 1.3,
+                ),
+              ),
+            ),
+          ],
+        ),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 3),
+        margin: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+        backgroundColor: isError ? StorkTheme.danger : StorkTheme.success,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+        ),
+      ),
+    );
   }
 
   Future<void> _refreshSanction({bool silent = false}) async {
@@ -103,12 +156,9 @@ class _SuspendedAccountScreenState extends ConsumerState<SuspendedAccountScreen>
   Future<void> _submitAppeal() async {
     final text = _explanationController.text.trim();
     if (text.length < 20) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-              'Please provide at least 20 characters explaining your appeal.'),
-          backgroundColor: StorkTheme.danger,
-        ),
+      _showPopupToast(
+        'Please provide at least 20 characters explaining your appeal.',
+        isError: true,
       );
       return;
     }
@@ -125,20 +175,16 @@ class _SuspendedAccountScreenState extends ConsumerState<SuspendedAccountScreen>
     if (res['success'] == true) {
       _explanationController.clear();
       setState(() => _pickedFile = null);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-              res['data']?['message'] ?? 'Appeal submitted for Admin review.'),
-          backgroundColor: StorkTheme.success,
-        ),
+      _showPopupToast(
+        res['data']?['message']?.toString() ??
+            'Appeal submitted for Admin review.',
+        isError: false,
       );
       _refreshSanction();
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(res['message'] ?? 'Failed to submit appeal.'),
-          backgroundColor: StorkTheme.danger,
-        ),
+      _showPopupToast(
+        res['message']?.toString() ?? 'Failed to submit appeal.',
+        isError: true,
       );
     }
   }

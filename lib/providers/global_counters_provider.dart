@@ -1,10 +1,7 @@
 import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:http/http.dart' as http;
 import '../config/api_config.dart';
 import '../services/api_service.dart';
-
-typedef JsonMap = Map<String, dynamic>;
 
 class CartCountNotifier extends StateNotifier<int> {
   CartCountNotifier() : super(0);
@@ -16,13 +13,12 @@ class CartCountNotifier extends StateNotifier<int> {
   Future<void> fetchCartCount(String token) async {
     if (token.isEmpty) return;
     try {
-      final response = await http.get(
-        Uri.parse('${ApiConfig.baseUrl}/cart'),
-        headers: {
-          'Authorization': 'Bearer $token',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .get(
+            Uri.parse('${ApiConfig.baseUrl}/cart'),
+            headers: ApiService.buildHeaders(token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (response.statusCode == 200) {
         final body = json.decode(response.body);
@@ -69,13 +65,12 @@ class UnreadNotificationNotifier extends StateNotifier<int> {
   Future<void> fetchUnreadCount(String token) async {
     if (token.isEmpty) return;
     try {
-      final response = await http.get(
-        Uri.parse('${ApiConfig.baseUrl}/notifications/unread-count'),
-        headers: {
-          'Authorization': 'Bearer $token',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .get(
+            Uri.parse('${ApiConfig.baseUrl}/notifications/unread-count'),
+            headers: ApiService.buildHeaders(token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (response.statusCode == 200) {
         final body = json.decode(response.body);
@@ -104,13 +99,12 @@ class UnreadAnnouncementNotifier extends StateNotifier<int> {
   Future<void> fetchUnreadCount(String token) async {
     if (token.isEmpty) return;
     try {
-      final response = await http.get(
-        Uri.parse('${ApiConfig.baseUrl}/announcements/unread-count'),
-        headers: {
-          'Authorization': 'Bearer $token',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .get(
+            Uri.parse('${ApiConfig.baseUrl}/announcements/unread-count'),
+            headers: ApiService.buildHeaders(token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (response.statusCode == 200) {
         final body = json.decode(response.body);
@@ -208,13 +202,12 @@ class OrderCountsNotifier extends StateNotifier<OrderCountsState> {
   Future<void> fetchOrderCounts(String token) async {
     if (token.isEmpty) return;
     try {
-      final response = await http.get(
-        Uri.parse('${ApiConfig.baseUrl}/orders?per_page=1'),
-        headers: {
-          'Authorization': 'Bearer $token',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .get(
+            Uri.parse('${ApiConfig.baseUrl}/orders?per_page=1'),
+            headers: ApiService.buildHeaders(token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (response.statusCode == 200) {
         final body = json.decode(response.body);
@@ -281,29 +274,28 @@ class RewardSummaryNotifier extends StateNotifier<RewardSummaryState> {
   Future<void> fetchRewardAndWalletSummary(String token) async {
     if (token.isEmpty) return;
     try {
-      final response = await http.get(
-        Uri.parse('${ApiConfig.baseUrl}/rewards'),
-        headers: {
-          'Authorization': 'Bearer $token',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .get(
+            Uri.parse('${ApiConfig.baseUrl}/rewards'),
+            headers: ApiService.buildHeaders(token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (response.statusCode == 200) {
         final body = json.decode(response.body);
         if (body is Map && body['data'] is Map) {
-          final data = Map<String, dynamic>.from(body['data'] as Map);
+          final data = JsonMap.from(body['data'] as Map);
           final JsonMap wallet = data['wallet'] is Map
-              ? Map<String, dynamic>.from(data['wallet'] as Map)
+              ? JsonMap.from(data['wallet'] as Map)
               : data;
           final JsonMap chest = data['chest'] is Map
-              ? Map<String, dynamic>.from(data['chest'] as Map)
+              ? JsonMap.from(data['chest'] as Map)
               : <String, dynamic>{};
           final JsonMap ewallet = data['buyer_ewallet'] is Map
-              ? Map<String, dynamic>.from(data['buyer_ewallet'] as Map)
+              ? JsonMap.from(data['buyer_ewallet'] as Map)
               : <String, dynamic>{};
           final JsonMap dailySpin = data['daily_spin'] is Map
-              ? Map<String, dynamic>.from(data['daily_spin'] as Map)
+              ? JsonMap.from(data['daily_spin'] as Map)
               : <String, dynamic>{};
 
           final int coins = int.tryParse(

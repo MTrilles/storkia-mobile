@@ -12,6 +12,7 @@ import '../models/chat_models.dart';
 import '../models/product_model.dart';
 import '../models/seller_profile_model.dart';
 import '../services/api_service.dart';
+import '../services/websocket_service.dart';
 import 'chat_screen.dart';
 
 typedef JsonMap = Map<String, dynamic>;
@@ -37,7 +38,7 @@ class SellerStoreScreen extends StatefulWidget {
 class _SellerStoreScreenState extends State<SellerStoreScreen>
     with WidgetsBindingObserver {
   late SellerProfile _seller;
-  Timer? _autoSyncTimer;
+  Timer? _wsDebounceTimer;
 
   JsonMap _stats = {
     'chat_response_rate': 98,
@@ -77,15 +78,29 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
       _stats = JsonMap.from(_seller.stats!);
     }
     _fetchStoreData(silent: false);
-    _autoSyncTimer = Timer.periodic(const Duration(seconds: 6), (_) {
-      _fetchStoreData(silent: true);
-    });
+    WebSocketService.addListener(_onRealtimeEvent);
+  }
+
+  void _onRealtimeEvent(BuyerRealtimeEvent event) {
+    if (!mounted) return;
+    if (event.scope == 'catalog' ||
+        event.scope == 'marketplace' ||
+        event.scope == 'voucher' ||
+        event.scope == 'compliance') {
+      _wsDebounceTimer?.cancel();
+      _wsDebounceTimer = Timer(const Duration(milliseconds: 280), () {
+        if (mounted) {
+          _fetchStoreData(silent: true);
+        }
+      });
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _autoSyncTimer?.cancel();
+    _wsDebounceTimer?.cancel();
+    WebSocketService.removeListener(_onRealtimeEvent);
     super.dispose();
   }
 
@@ -114,13 +129,12 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
       setState(() => _isLoadingStore = true);
     }
     try {
-      final response = await http.get(
-        Uri.parse('$_domain/api/v1/sellers/${_seller.id}'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .get(
+            Uri.parse('$_domain/api/v1/sellers/${_seller.id}'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (!mounted) return;
 
@@ -192,13 +206,12 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
     JsonList eligibleOrders = [];
 
     try {
-      final ctxRes = await http.get(
-        Uri.parse('$_domain/api/v1/sellers/${_seller.id}/report/context'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final ctxRes = await ApiService.httpClient
+          .get(
+            Uri.parse('$_domain/api/v1/sellers/${_seller.id}/report/context'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (mounted) Navigator.pop(context);
 
@@ -247,7 +260,6 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
     int? selectedOrderId;
     final descCtrl = TextEditingController();
     XFileList evidencePhotos = [];
-    String? modalError;
     bool isSubmitting = false;
 
     await showModalBottomSheet<void>(
@@ -361,11 +373,6 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
                       controller: descCtrl,
                       maxLines: 3,
                       maxLength: 1000,
-                      onChanged: (_) {
-                        if (modalError != null) {
-                          setModalState(() => modalError = null);
-                        }
-                      },
                       decoration: const InputDecoration(
                         labelText: 'Describe the Violation (15+ chars) *',
                         fillColor: StorkTheme.surfaceSubtle,
@@ -382,10 +389,10 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
                           for (final f in picked.take(5)) {
                             final len = await f.length();
                             if (len > 5 * 1024 * 1024) {
-                              setModalState(() {
-                                modalError =
-                                    'Each evidence photo must not exceed 5MB.';
-                              });
+                              _showSnack(
+                                'Each evidence photo must not exceed 5MB.',
+                                true,
+                              );
                               continue;
                             }
                             valid.add(f);
@@ -444,17 +451,6 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
                         }),
                       ),
                     ],
-                    if (modalError != null) ...[
-                      const SizedBox(height: 8),
-                      Text(
-                        modalError!,
-                        style: const TextStyle(
-                          color: StorkTheme.danger,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                    ],
                     const SizedBox(height: 16),
                     SizedBox(
                       width: double.infinity,
@@ -468,25 +464,22 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
                             : () async {
                                 final text = descCtrl.text.trim();
                                 if (text.length < 15) {
-                                  setModalState(() {
-                                    modalError =
-                                        'Please provide at least 15 characters describing the issue.';
-                                  });
+                                  _showSnack(
+                                    'Please provide at least 15 characters describing the issue.',
+                                    true,
+                                  );
                                   return;
                                 }
-                                setModalState(() {
-                                  isSubmitting = true;
-                                  modalError = null;
-                                });
+                                setModalState(() => isSubmitting = true);
                                 try {
                                   final req = http.MultipartRequest(
                                     'POST',
                                     Uri.parse(
                                         '$_domain/api/v1/sellers/${_seller.id}/report'),
                                   );
-                                  req.headers['Authorization'] =
-                                      'Bearer ${widget.token}';
-                                  req.headers['Accept'] = 'application/json';
+                                  req.headers.addAll(
+                                    ApiService.buildHeaders(widget.token),
+                                  );
                                   req.fields['reason_category'] =
                                       selectedReasonKey;
                                   req.fields['description'] = text;
@@ -503,8 +496,8 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
                                     );
                                   }
 
-                                  final streamed = await req
-                                      .send()
+                                  final streamed = await ApiService.httpClient
+                                      .send(req)
                                       .timeout(ApiConfig.requestTimeout);
                                   final res =
                                       await http.Response.fromStream(streamed);
@@ -536,12 +529,10 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
                                         err = first.first.toString();
                                       }
                                     }
-                                    setModalState(() => modalError = err);
+                                    _showSnack(err, true);
                                   }
                                 } catch (_) {
-                                  setModalState(() {
-                                    modalError = 'Network error occurred.';
-                                  });
+                                  _showSnack('Network error occurred.', true);
                                 } finally {
                                   if (modalContext.mounted) {
                                     setModalState(() => isSubmitting = false);
@@ -575,13 +566,12 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
     setState(() => _isTogglingFollow = true);
 
     try {
-      final response = await http.post(
-        Uri.parse('$_domain/api/v1/sellers/${_seller.id}/follow'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .post(
+            Uri.parse('$_domain/api/v1/sellers/${_seller.id}/follow'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (!mounted) return;
       final data = json.decode(response.body);
@@ -605,14 +595,10 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
 
   Future<void> _claimStoreVoucher(String code) async {
     try {
-      final response = await http
+      final response = await ApiService.httpClient
           .post(
             Uri.parse('$_domain/api/v1/vouchers/claim'),
-            headers: {
-              'Authorization': 'Bearer ${widget.token}',
-              'Accept': 'application/json',
-              'Content-Type': 'application/json',
-            },
+            headers: ApiService.buildHeaders(widget.token, isJson: true),
             body: json.encode({
               'code': code,
               'seller_profile_id': _seller.id,
@@ -652,13 +638,12 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
     );
 
     try {
-      final userRes = await http.get(
-        Uri.parse('$_domain/api/v1/user'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final userRes = await ApiService.httpClient
+          .get(
+            Uri.parse('$_domain/api/v1/user'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (!mounted) return;
 
@@ -744,11 +729,41 @@ class _SellerStoreScreenState extends State<SellerStoreScreen>
   }
 
   void _showSnack(String message, bool isError) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
+    if (!mounted || message.trim().isEmpty) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.clearSnackBars();
+    messenger.showSnackBar(
       SnackBar(
-        content: Text(message),
+        content: Row(
+          children: [
+            Icon(
+              isError
+                  ? Icons.error_outline_rounded
+                  : Icons.check_circle_outline_rounded,
+              color: Colors.white,
+              size: 19,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                message.trim(),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                  height: 1.3,
+                ),
+              ),
+            ),
+          ],
+        ),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 3),
+        margin: const EdgeInsets.fromLTRB(16, 12, 16, 16),
         backgroundColor: isError ? StorkTheme.danger : StorkTheme.success,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+        ),
       ),
     );
   }

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../config/api_config.dart';
 import '../config/app_routes.dart';
 import '../config/app_theme.dart';
@@ -98,7 +99,7 @@ class BrowseScreen extends StatelessWidget {
     final domain = ApiConfig.resolveBaseDomain(baseUrl);
     final width = MediaQuery.sizeOf(context).width;
     final crossAxisCount = width >= 700 ? 4 : (width >= 480 ? 3 : 2);
-    final aspectRatio = width < 350 ? 1.18 : 1.32;
+    final aspectRatio = width < 340 ? 1.02 : (width < 380 ? 1.14 : 1.28);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -119,8 +120,10 @@ class BrowseScreen extends StatelessWidget {
                   children: [
                     Text(
                       'Browse Categories',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        fontSize: 19,
+                        fontSize: 18.5,
                         fontWeight: FontWeight.w900,
                         color: StorkTheme.primaryDark,
                         letterSpacing: -0.3,
@@ -129,6 +132,8 @@ class BrowseScreen extends StatelessWidget {
                     SizedBox(height: 2),
                     Text(
                       'Explore 12 curated department catalogs',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         fontSize: 12,
                         color: StorkTheme.textMuted,
@@ -137,12 +142,14 @@ class BrowseScreen extends StatelessWidget {
                   ],
                 ),
               ),
+              const SizedBox(width: 8),
               Material(
                 color: StorkTheme.surfaceSubtle,
                 borderRadius: BorderRadius.circular(12),
                 child: InkWell(
                   borderRadius: BorderRadius.circular(12),
                   onTap: () {
+                    HapticFeedback.selectionClick();
                     Navigator.push(
                       context,
                       StorkRoute.fade(
@@ -171,6 +178,7 @@ class BrowseScreen extends StatelessWidget {
                   padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
                   child: InkWell(
                     onTap: () {
+                      HapticFeedback.selectionClick();
                       Navigator.push(
                         context,
                         StorkRoute.fade(
@@ -199,8 +207,8 @@ class BrowseScreen extends StatelessWidget {
                       child: Row(
                         children: [
                           Container(
-                            width: 46,
-                            height: 46,
+                            width: 44,
+                            height: 44,
                             decoration: BoxDecoration(
                               color: Colors.white.withValues(alpha: 0.18),
                               borderRadius: BorderRadius.circular(14),
@@ -208,25 +216,29 @@ class BrowseScreen extends StatelessWidget {
                             child: const Icon(
                               Icons.storefront_rounded,
                               color: Colors.white,
-                              size: 24,
+                              size: 23,
                             ),
                           ),
-                          const SizedBox(width: 14),
+                          const SizedBox(width: 12),
                           const Expanded(
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Text(
                                   'Explore Official Stores',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
                                   style: TextStyle(
                                     color: Colors.white,
-                                    fontSize: 15.5,
+                                    fontSize: 15,
                                     fontWeight: FontWeight.w900,
                                   ),
                                 ),
                                 SizedBox(height: 2),
                                 Text(
-                                  'Filter verified merchants by category or A–Z index',
+                                  'Filter verified merchants by category or A\u2013Z index',
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
                                   style: TextStyle(
                                     color: StorkTheme.brandLight,
                                     fontSize: 11.5,
@@ -235,6 +247,7 @@ class BrowseScreen extends StatelessWidget {
                               ],
                             ),
                           ),
+                          const SizedBox(width: 6),
                           const Icon(
                             Icons.arrow_forward_ios_rounded,
                             color: Colors.white,
@@ -260,6 +273,7 @@ class BrowseScreen extends StatelessWidget {
                       final category = categories[index];
                       return InkWell(
                         onTap: () {
+                          HapticFeedback.selectionClick();
                           Navigator.push(
                             context,
                             StorkRoute.fade(
@@ -273,7 +287,7 @@ class BrowseScreen extends StatelessWidget {
                         },
                         borderRadius: BorderRadius.circular(18),
                         child: Container(
-                          padding: const EdgeInsets.all(14),
+                          padding: const EdgeInsets.all(12),
                           decoration: BoxDecoration(
                             color: StorkTheme.surface,
                             borderRadius: BorderRadius.circular(18),
@@ -289,8 +303,8 @@ class BrowseScreen extends StatelessWidget {
                                     MainAxisAlignment.spaceBetween,
                                 children: [
                                   Container(
-                                    width: 40,
-                                    height: 40,
+                                    width: 38,
+                                    height: 38,
                                     decoration: BoxDecoration(
                                       gradient: LinearGradient(
                                         colors: [
@@ -306,7 +320,7 @@ class BrowseScreen extends StatelessWidget {
                                     ),
                                     child: Icon(
                                       category['icon'] as IconData,
-                                      size: 21,
+                                      size: 20,
                                       color: StorkTheme.primaryDark,
                                     ),
                                   ),
@@ -317,31 +331,33 @@ class BrowseScreen extends StatelessWidget {
                                   ),
                                 ],
                               ),
-                              Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Text(
-                                    category['name'] as String,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      fontSize: 13.5,
-                                      fontWeight: FontWeight.w800,
-                                      color: StorkTheme.textMain,
+                              Flexible(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(
+                                      category['name'] as String,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w800,
+                                        color: StorkTheme.textMain,
+                                      ),
                                     ),
-                                  ),
-                                  const SizedBox(height: 2),
-                                  Text(
-                                    category['subtitle'] as String,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      fontSize: 11,
-                                      color: StorkTheme.textMuted,
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      category['subtitle'] as String,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        fontSize: 10.5,
+                                        color: StorkTheme.textMuted,
+                                      ),
                                     ),
-                                  ),
-                                ],
+                                  ],
+                                ),
                               ),
                             ],
                           ),

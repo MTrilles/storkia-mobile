@@ -1,11 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 import '../config/api_config.dart';
 import '../config/app_routes.dart';
 import '../config/app_theme.dart';
 import '../models/product_model.dart';
+import '../services/api_service.dart';
+import '../services/websocket_service.dart';
 import 'product_show.dart';
 
 typedef JsonMap = Map<String, dynamic>;
@@ -30,7 +31,7 @@ class _SuperDealsScreenState extends State<SuperDealsScreen>
   bool _isLoading = true;
   JsonList _deals = [];
   String _selectedFilter = 'all';
-  Timer? _autoSyncTimer;
+  Timer? _wsDebounceTimer;
 
   String get _domain => ApiConfig.resolveBaseDomain(widget.baseUrl);
 
@@ -39,15 +40,28 @@ class _SuperDealsScreenState extends State<SuperDealsScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _fetchDeals();
-    _autoSyncTimer = Timer.periodic(const Duration(seconds: 6), (_) {
-      _fetchDeals(silent: true);
-    });
+    WebSocketService.addListener(_onRealtimeEvent);
+  }
+
+  void _onRealtimeEvent(BuyerRealtimeEvent event) {
+    if (!mounted) return;
+    if (event.scope == 'catalog' ||
+        event.scope == 'marketplace' ||
+        event.scope == 'order') {
+      _wsDebounceTimer?.cancel();
+      _wsDebounceTimer = Timer(const Duration(milliseconds: 280), () {
+        if (mounted) {
+          _fetchDeals(silent: true);
+        }
+      });
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _autoSyncTimer?.cancel();
+    _wsDebounceTimer?.cancel();
+    WebSocketService.removeListener(_onRealtimeEvent);
     super.dispose();
   }
 
@@ -102,12 +116,9 @@ class _SuperDealsScreenState extends State<SuperDealsScreen>
       setState(() => _isLoading = true);
     }
     try {
-      final headers = {
-        'Authorization': 'Bearer ${widget.token}',
-        'Accept': 'application/json',
-      };
+      final headers = ApiService.buildHeaders(widget.token);
 
-      final response = await http
+      final response = await ApiService.httpClient
           .get(Uri.parse('$_domain/api/v1/super-deals'), headers: headers)
           .timeout(ApiConfig.requestTimeout);
 
@@ -119,7 +130,7 @@ class _SuperDealsScreenState extends State<SuperDealsScreen>
       }
 
       if (parsed.isEmpty) {
-        final homeRes = await http
+        final homeRes = await ApiService.httpClient
             .get(Uri.parse('$_domain/api/v1/home'), headers: headers)
             .timeout(ApiConfig.requestTimeout);
         if (!mounted) return;

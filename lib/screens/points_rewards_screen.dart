@@ -11,6 +11,8 @@ import '../components/daily_chest_floating_button.dart';
 import '../config/api_config.dart';
 import '../config/app_theme.dart';
 import '../providers/global_counters_provider.dart';
+import '../services/api_service.dart';
+import '../services/websocket_service.dart';
 
 typedef JsonMap = Map<String, dynamic>;
 typedef JsonList = List<JsonMap>;
@@ -38,7 +40,7 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
   late AnimationController _wheelController;
   double _wheelRotationRadians = 0.0;
 
-  Timer? _autoSyncTimer;
+  Timer? _wsDebounceTimer;
   bool _isLoading = true;
   bool _isSpinning = false;
   String? _redeemingKey;
@@ -84,15 +86,29 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
       duration: const Duration(milliseconds: 3600),
     );
     _loadAllData();
-    _autoSyncTimer = Timer.periodic(const Duration(seconds: 6), (_) {
-      _loadAllData(silent: true);
-    });
+    WebSocketService.addListener(_onRealtimeEvent);
+  }
+
+  void _onRealtimeEvent(BuyerRealtimeEvent event) {
+    if (!mounted) return;
+    if (event.scope == 'wallet' ||
+        event.scope == 'voucher' ||
+        event.scope == 'order' ||
+        event.scope == 'notification') {
+      _wsDebounceTimer?.cancel();
+      _wsDebounceTimer = Timer(const Duration(milliseconds: 260), () {
+        if (mounted && !_isSpinning) {
+          _loadAllData(silent: true);
+        }
+      });
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _autoSyncTimer?.cancel();
+    _wsDebounceTimer?.cancel();
+    WebSocketService.removeListener(_onRealtimeEvent);
     _tabController.dispose();
     _wheelController.dispose();
     super.dispose();
@@ -100,9 +116,18 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
+    if (state == AppLifecycleState.resumed && !_isSpinning) {
       _loadAllData(silent: true);
     }
+  }
+
+  Future<void> _copyReference(String text, String label) async {
+    final cleaned = text.trim();
+    if (cleaned.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: cleaned));
+    HapticFeedback.lightImpact();
+    if (!mounted) return;
+    _showToast('Copied $label: $cleaned', isError: false);
   }
 
   String _formatMoney(dynamic raw) {
@@ -128,28 +153,20 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
       setState(() => _isLoading = true);
     }
     try {
+      final headers = ApiService.buildHeaders(widget.token);
       final results = await Future.wait([
-        http.get(
-          Uri.parse('$_domain/api/v1/rewards'),
-          headers: {
-            'Authorization': 'Bearer ${widget.token}',
-            'Accept': 'application/json',
-          },
-        ).timeout(ApiConfig.requestTimeout),
-        http.get(
-          Uri.parse('$_domain/api/v1/wallet'),
-          headers: {
-            'Authorization': 'Bearer ${widget.token}',
-            'Accept': 'application/json',
-          },
-        ).timeout(ApiConfig.requestTimeout),
-        http.get(
-          Uri.parse('$_domain/api/v1/rewards/transactions?per_page=20'),
-          headers: {
-            'Authorization': 'Bearer ${widget.token}',
-            'Accept': 'application/json',
-          },
-        ).timeout(ApiConfig.requestTimeout),
+        ApiService.httpClient
+            .get(Uri.parse('$_domain/api/v1/rewards'), headers: headers)
+            .timeout(ApiConfig.requestTimeout),
+        ApiService.httpClient
+            .get(Uri.parse('$_domain/api/v1/wallet'), headers: headers)
+            .timeout(ApiConfig.requestTimeout),
+        ApiService.httpClient
+            .get(
+              Uri.parse('$_domain/api/v1/rewards/transactions?per_page=20'),
+              headers: headers,
+            )
+            .timeout(ApiConfig.requestTimeout),
       ]);
 
       if (!mounted) return;
@@ -256,16 +273,16 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
         int.tryParse(_walletInfo['spin_tickets']?.toString() ?? '0') ?? 0;
     if (_isSpinning || tickets <= 0) return;
 
+    HapticFeedback.mediumImpact();
     setState(() => _isSpinning = true);
 
     try {
-      final response = await http.post(
-        Uri.parse('$_domain/api/v1/rewards/spin'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .post(
+            Uri.parse('$_domain/api/v1/rewards/spin'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (!mounted) return;
       final data = json.decode(response.body);
@@ -306,6 +323,7 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
         _wheelController.removeListener(listener);
 
         if (!mounted) return;
+        HapticFeedback.mediumImpact();
 
         final int newCoins =
             int.tryParse(data['coins_balance']?.toString() ?? '0') ?? 0;
@@ -374,55 +392,58 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
             ),
           ],
         ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              message,
-              style: const TextStyle(
-                fontSize: 13.5,
-                color: StorkTheme.textMain,
-                height: 1.4,
-              ),
-            ),
-            if (voucherCode != null && voucherCode.isNotEmpty) ...[
-              const SizedBox(height: 12),
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                decoration: BoxDecoration(
-                  color: StorkTheme.brandLight.withValues(alpha: 0.4),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: StorkTheme.borderSubtle),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                message,
+                style: const TextStyle(
+                  fontSize: 13.5,
+                  color: StorkTheme.textMain,
+                  height: 1.4,
                 ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Flexible(
-                      child: Text(
-                        'Code: $voucherCode',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontWeight: FontWeight.w900,
-                          fontSize: 13,
-                          color: StorkTheme.primaryDark,
+              ),
+              if (voucherCode != null && voucherCode.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: StorkTheme.brandLight.withValues(alpha: 0.4),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: StorkTheme.borderSubtle),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Flexible(
+                        child: Text(
+                          'Code: $voucherCode',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w900,
+                            fontSize: 13,
+                            color: StorkTheme.primaryDark,
+                          ),
                         ),
                       ),
-                    ),
-                    TextButton(
-                      onPressed: () {
-                        Clipboard.setData(ClipboardData(text: voucherCode));
-                        _showToast('Voucher code copied!', isError: false);
-                      },
-                      child: const Text('Copy'),
-                    ),
-                  ],
+                      TextButton(
+                        onPressed: () {
+                          Clipboard.setData(ClipboardData(text: voucherCode));
+                          HapticFeedback.lightImpact();
+                          _showToast('Voucher code copied!', isError: false);
+                        },
+                        child: const Text('Copy'),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
+              ],
             ],
-          ],
+          ),
         ),
         actions: [
           ElevatedButton(
@@ -469,17 +490,14 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
     );
 
     if (confirmed != true) return;
+    HapticFeedback.lightImpact();
 
     setState(() => _redeemingKey = key);
     try {
-      final response = await http
+      final response = await ApiService.httpClient
           .post(
             Uri.parse('$_domain/api/v1/rewards/redeem'),
-            headers: {
-              'Authorization': 'Bearer ${widget.token}',
-              'Accept': 'application/json',
-              'Content-Type': 'application/json',
-            },
+            headers: ApiService.buildHeaders(widget.token, isJson: true),
             body: json.encode({'catalog_key': key}),
           )
           .timeout(ApiConfig.requestTimeout);
@@ -490,6 +508,7 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
       if (response.statusCode == 200 &&
           data is Map &&
           data['success'] == true) {
+        HapticFeedback.mediumImpact();
         final int newCoins =
             int.tryParse(data['coins_balance']?.toString() ?? '0') ?? 0;
         ref.read(rewardSummaryProvider.notifier).applySpinOrRedeemUpdate(
@@ -521,7 +540,6 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
     final refNumCtrl = TextEditingController();
     XFile? receiptFile;
     bool showQr = false;
-    String? modalError;
 
     final String adminGcashName =
         _platformGcash?['account_name']?.toString() ?? 'Storkia Admin Escrow';
@@ -543,392 +561,386 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
       builder: (modalContext) {
         return StatefulBuilder(
           builder: (ctx, setModalState) {
-            return Padding(
-              padding: EdgeInsets.only(
-                left: 20,
-                right: 20,
-                top: 14,
-                bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
+            final mediaQuery = MediaQuery.of(ctx);
+            final bottomInset = mediaQuery.viewInsets.bottom;
+            final safeBottom = mediaQuery.viewPadding.bottom;
+
+            return ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: mediaQuery.size.height * 0.90,
               ),
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Center(
-                      child: Container(
-                        width: 42,
-                        height: 4,
-                        margin: const EdgeInsets.only(bottom: 16),
-                        decoration: BoxDecoration(
-                          color: StorkTheme.borderSubtle,
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                      ),
-                    ),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Expanded(
-                          child: Text(
-                            'Top Up Storkia E-Wallet via GCash',
-                            style: TextStyle(
-                              fontSize: 16.5,
-                              fontWeight: FontWeight.w800,
-                              color: StorkTheme.primaryDark,
-                            ),
+              child: Padding(
+                padding: EdgeInsets.only(
+                  left: 20,
+                  right: 20,
+                  top: 14,
+                  bottom:
+                      bottomInset + (bottomInset > 0 ? 16 : safeBottom + 24),
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Center(
+                        child: Container(
+                          width: 42,
+                          height: 4,
+                          margin: const EdgeInsets.only(bottom: 16),
+                          decoration: BoxDecoration(
+                            color: StorkTheme.borderSubtle,
+                            borderRadius: BorderRadius.circular(4),
                           ),
                         ),
-                        IconButton(
-                          onPressed: () => Navigator.pop(modalContext),
-                          icon: const Icon(Icons.close_rounded),
-                        ),
-                      ],
-                    ),
-                    const Text(
-                      'Send your desired amount to Storkia Admin Escrow via GCash, then upload the receipt screenshot. Admin will verify the screenshot and credit the exact Peso amount to your E-Wallet.',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: StorkTheme.textMuted,
-                        height: 1.38,
                       ),
-                    ),
-                    const SizedBox(height: 14),
-                    Container(
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        color: StorkTheme.info.withValues(alpha: 0.08),
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(
-                          color: StorkTheme.info.withValues(alpha: 0.25),
-                        ),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              const Flexible(
-                                child: Text(
+                          const Expanded(
+                            child: Text(
+                              'Top Up Storkia E-Wallet via GCash',
+                              style: TextStyle(
+                                fontSize: 16.5,
+                                fontWeight: FontWeight.w800,
+                                color: StorkTheme.primaryDark,
+                              ),
+                            ),
+                          ),
+                          IconButton(
+                            onPressed: () => Navigator.pop(modalContext),
+                            icon: const Icon(Icons.close_rounded),
+                          ),
+                        ],
+                      ),
+                      const Text(
+                        'Send your desired amount to Storkia Admin Escrow via GCash, then upload the receipt screenshot. Admin will verify the screenshot and credit the exact Peso amount to your E-Wallet.',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: StorkTheme.textMuted,
+                          height: 1.38,
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      Container(
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: StorkTheme.info.withValues(alpha: 0.08),
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(
+                            color: StorkTheme.info.withValues(alpha: 0.25),
+                          ),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Wrap(
+                              alignment: WrapAlignment.spaceBetween,
+                              crossAxisAlignment: WrapCrossAlignment.center,
+                              spacing: 8,
+                              runSpacing: 4,
+                              children: [
+                                const Text(
                                   'STORKIA ADMIN GCASH ESCROW',
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
                                   style: TextStyle(
                                     fontSize: 10.5,
                                     fontWeight: FontWeight.w800,
                                     color: StorkTheme.info,
                                   ),
                                 ),
-                              ),
-                              if (qrUrl.isNotEmpty)
-                                TextButton(
-                                  onPressed: () =>
-                                      setModalState(() => showQr = !showQr),
-                                  style: TextButton.styleFrom(
-                                    visualDensity: VisualDensity.compact,
+                                if (qrUrl.isNotEmpty)
+                                  TextButton(
+                                    onPressed: () =>
+                                        setModalState(() => showQr = !showQr),
+                                    style: TextButton.styleFrom(
+                                      visualDensity: VisualDensity.compact,
+                                    ),
+                                    child: Text(
+                                      showQr ? 'Hide QR' : 'Show QR Code',
+                                      style: const TextStyle(
+                                        fontSize: 11.5,
+                                        fontWeight: FontWeight.w800,
+                                      ),
+                                    ),
                                   ),
+                              ],
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              'Account Name: $adminGcashName',
+                              style: const TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w700,
+                                color: StorkTheme.textMain,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Flexible(
                                   child: Text(
-                                    showQr ? 'Hide QR' : 'Show QR Code',
+                                    'GCash Number: $adminGcashNumber',
                                     style: const TextStyle(
-                                      fontSize: 11.5,
-                                      fontWeight: FontWeight.w800,
+                                      fontSize: 13.5,
+                                      fontWeight: FontWeight.w900,
+                                      color: StorkTheme.info,
                                     ),
                                   ),
                                 ),
-                            ],
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            'Account Name: $adminGcashName',
-                            style: const TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w700,
-                              color: StorkTheme.textMain,
+                                IconButton(
+                                  visualDensity: VisualDensity.compact,
+                                  icon:
+                                      const Icon(Icons.copy_rounded, size: 16),
+                                  onPressed: () {
+                                    Clipboard.setData(
+                                        ClipboardData(text: adminGcashNumber));
+                                    HapticFeedback.lightImpact();
+                                    _showToast('GCash number copied!',
+                                        isError: false);
+                                  },
+                                ),
+                              ],
                             ),
-                          ),
-                          const SizedBox(height: 2),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Flexible(
-                                child: Text(
-                                  'GCash Number: $adminGcashNumber',
-                                  style: const TextStyle(
-                                    fontSize: 13.5,
-                                    fontWeight: FontWeight.w900,
-                                    color: StorkTheme.info,
+                            if (showQr && qrUrl.isNotEmpty) ...[
+                              const SizedBox(height: 10),
+                              Center(
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(12),
+                                  child: Image.network(
+                                    qrUrl,
+                                    width: 180,
+                                    height: 180,
+                                    fit: BoxFit.contain,
                                   ),
                                 ),
                               ),
-                              IconButton(
-                                visualDensity: VisualDensity.compact,
-                                icon: const Icon(Icons.copy_rounded, size: 16),
-                                onPressed: () {
-                                  Clipboard.setData(
-                                      ClipboardData(text: adminGcashNumber));
-                                  _showToast('GCash number copied!',
-                                      isError: false);
-                                },
-                              ),
                             ],
-                          ),
-                          if (showQr && qrUrl.isNotEmpty) ...[
-                            const SizedBox(height: 10),
-                            Center(
-                              child: ClipRRect(
-                                borderRadius: BorderRadius.circular(12),
-                                child: Image.network(
-                                  qrUrl,
-                                  width: 180,
-                                  height: 180,
-                                  fit: BoxFit.contain,
-                                ),
-                              ),
-                            ),
                           ],
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      TextField(
+                        controller: senderNameCtrl,
+                        textCapitalization: TextCapitalization.words,
+                        decoration: const InputDecoration(
+                          labelText: 'GCash Sender Account Name *',
+                          fillColor: StorkTheme.surfaceSubtle,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      TextField(
+                        controller: senderPhoneCtrl,
+                        keyboardType: TextInputType.phone,
+                        inputFormatters: [
+                          FilteringTextInputFormatter.digitsOnly,
+                          LengthLimitingTextInputFormatter(11),
                         ],
-                      ),
-                    ),
-                    const SizedBox(height: 14),
-                    TextField(
-                      controller: senderNameCtrl,
-                      textCapitalization: TextCapitalization.words,
-                      decoration: const InputDecoration(
-                        labelText: 'GCash Sender Account Name *',
-                        fillColor: StorkTheme.surfaceSubtle,
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    TextField(
-                      controller: senderPhoneCtrl,
-                      keyboardType: TextInputType.phone,
-                      inputFormatters: [
-                        FilteringTextInputFormatter.digitsOnly,
-                        LengthLimitingTextInputFormatter(11),
-                      ],
-                      decoration: const InputDecoration(
-                        labelText: 'Sender Mobile # (Optional)',
-                        prefixText: '+63 ',
-                        hintText: '09171234567 or 9171234567',
-                        fillColor: StorkTheme.surfaceSubtle,
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    TextField(
-                      controller: refNumCtrl,
-                      textCapitalization: TextCapitalization.characters,
-                      decoration: const InputDecoration(
-                        labelText: 'GCash Reference Number (4+ chars) *',
-                        fillColor: StorkTheme.surfaceSubtle,
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    OutlinedButton.icon(
-                      onPressed: () async {
-                        final picker = ImagePicker();
-                        final picked = await picker.pickImage(
-                          source: ImageSource.gallery,
-                          imageQuality: 85,
-                        );
-                        if (picked != null) {
-                          final len = await picked.length();
-                          if (len > 5 * 1024 * 1024) {
-                            setModalState(() {
-                              modalError =
-                                  'Receipt screenshot must not exceed 5MB.';
-                            });
-                            return;
-                          }
-                          setModalState(() {
-                            receiptFile = picked;
-                            modalError = null;
-                          });
-                        }
-                      },
-                      icon: const Icon(Icons.upload_file_rounded, size: 18),
-                      label: Text(
-                        receiptFile != null
-                            ? 'Receipt: ${receiptFile!.name}'
-                            : 'Upload GCash Transfer Screenshot (Max 5MB)*',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                    if (receiptFile != null) ...[
-                      const SizedBox(height: 8),
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(10),
-                        child: Image.file(
-                          File(receiptFile!.path),
-                          height: 90,
-                          fit: BoxFit.cover,
+                        decoration: const InputDecoration(
+                          labelText: 'Sender Mobile # (Optional)',
+                          prefixText: '+63 ',
+                          hintText: '09171234567 or 9171234567',
+                          fillColor: StorkTheme.surfaceSubtle,
                         ),
                       ),
-                    ],
-                    if (modalError != null) ...[
-                      const SizedBox(height: 8),
-                      Text(
-                        modalError!,
-                        style: const TextStyle(
-                          color: StorkTheme.danger,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w700,
+                      const SizedBox(height: 10),
+                      TextField(
+                        controller: refNumCtrl,
+                        textCapitalization: TextCapitalization.characters,
+                        decoration: const InputDecoration(
+                          labelText: 'GCash Reference Number (4+ chars) *',
+                          fillColor: StorkTheme.surfaceSubtle,
                         ),
                       ),
-                    ],
-                    const SizedBox(height: 16),
-                    Container(
-                      width: double.infinity,
-                      height: 50,
-                      decoration: BoxDecoration(
-                        gradient: _isSubmittingTopup
-                            ? null
-                            : StorkTheme.brandGradient,
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      child: ElevatedButton(
-                        onPressed: _isSubmittingTopup
-                            ? null
-                            : () async {
-                                final sName = senderNameCtrl.text.trim();
-                                final rawPhone = senderPhoneCtrl.text
-                                    .trim()
-                                    .replaceAll(RegExp(r'\D'), '');
-                                final rNum =
-                                    refNumCtrl.text.trim().toUpperCase();
-
-                                if (sName.length < 2) {
-                                  setModalState(() {
-                                    modalError =
-                                        'Please enter the GCash sender account name.';
-                                  });
-                                  return;
-                                }
-                                if (rawPhone.isNotEmpty &&
-                                    !RegExp(r'^0?9\d{9}$').hasMatch(rawPhone)) {
-                                  setModalState(() {
-                                    modalError =
-                                        'Enter a valid 11-digit (09XXXXXXXXX) or 10-digit (9XXXXXXXXX) sender mobile number.';
-                                  });
-                                  return;
-                                }
-                                if (rNum.length < 4) {
-                                  setModalState(() {
-                                    modalError =
-                                        'Please enter the unique GCash reference number (4+ chars).';
-                                  });
-                                  return;
-                                }
-                                if (receiptFile == null) {
-                                  setModalState(() {
-                                    modalError =
-                                        'Please upload your GCash receipt screenshot.';
-                                  });
-                                  return;
-                                }
-
-                                final String normalizedPhone = rawPhone.isEmpty
-                                    ? ''
-                                    : (rawPhone.startsWith('9') &&
-                                            rawPhone.length == 10
-                                        ? '0$rawPhone'
-                                        : rawPhone);
-
-                                setModalState(() {
-                                  modalError = null;
-                                  _isSubmittingTopup = true;
-                                });
-
-                                try {
-                                  final req = http.MultipartRequest(
-                                    'POST',
-                                    Uri.parse('$_domain/api/v1/wallet/topup'),
-                                  );
-                                  req.headers['Authorization'] =
-                                      'Bearer ${widget.token}';
-                                  req.headers['Accept'] = 'application/json';
-                                  req.fields['sender_account_name'] = sName;
-                                  if (normalizedPhone.isNotEmpty) {
-                                    req.fields['sender_account_number'] =
-                                        normalizedPhone;
-                                  }
-                                  req.fields['reference_number'] = rNum;
-                                  req.files.add(
-                                    await http.MultipartFile.fromPath(
-                                      'screenshot',
-                                      receiptFile!.path,
-                                    ),
-                                  );
-
-                                  final streamed = await req
-                                      .send()
-                                      .timeout(ApiConfig.requestTimeout);
-                                  final response =
-                                      await http.Response.fromStream(streamed);
-                                  final data = json.decode(response.body);
-
-                                  if ((response.statusCode == 200 ||
-                                          response.statusCode == 201) &&
-                                      data is Map &&
-                                      data['success'] == true) {
-                                    if (modalContext.mounted) {
-                                      Navigator.pop(modalContext);
-                                    }
-                                    _showToast(
-                                      data['message']?.toString() ??
-                                          'Top-up receipt submitted for Admin verification!',
-                                      isError: false,
-                                    );
-                                    _loadAllData(silent: true);
-                                  } else {
-                                    String err = data is Map
-                                        ? (data['message']?.toString() ??
-                                            'Failed to submit top-up.')
-                                        : 'Failed to submit top-up.';
-                                    if (data is Map &&
-                                        data['errors'] is Map &&
-                                        (data['errors'] as Map).isNotEmpty) {
-                                      final first =
-                                          (data['errors'] as Map).values.first;
-                                      if (first is List && first.isNotEmpty) {
-                                        err = first.first.toString();
-                                      }
-                                    }
-                                    setModalState(() => modalError = err);
-                                  }
-                                } catch (_) {
-                                  setModalState(() {
-                                    modalError =
-                                        'Network error occurred while uploading.';
-                                  });
-                                } finally {
-                                  if (modalContext.mounted) {
-                                    setModalState(
-                                        () => _isSubmittingTopup = false);
-                                  }
-                                }
-                              },
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.transparent,
-                          shadowColor: Colors.transparent,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(14),
+                      const SizedBox(height: 12),
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton.icon(
+                          onPressed: () async {
+                            final picker = ImagePicker();
+                            final picked = await picker.pickImage(
+                              source: ImageSource.gallery,
+                              imageQuality: 85,
+                            );
+                            if (picked != null) {
+                              final len = await picked.length();
+                              if (len > 5 * 1024 * 1024) {
+                                _showToast(
+                                    'Receipt screenshot must not exceed 5MB.');
+                                return;
+                              }
+                              setModalState(() {
+                                receiptFile = picked;
+                              });
+                            }
+                          },
+                          icon: const Icon(Icons.upload_file_rounded, size: 18),
+                          label: Text(
+                            receiptFile != null
+                                ? 'Receipt: ${receiptFile!.name}'
+                                : 'Upload GCash Transfer Screenshot (Max 5MB)*',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
-                        child: _isSubmittingTopup
-                            ? const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(
-                                  color: Colors.white,
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : const Text('Submit Top-Up Receipt'),
                       ),
-                    ),
-                  ],
+                      if (receiptFile != null) ...[
+                        const SizedBox(height: 8),
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(10),
+                          child: Image.file(
+                            File(receiptFile!.path),
+                            height: 90,
+                            fit: BoxFit.cover,
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 16),
+                      Container(
+                        width: double.infinity,
+                        height: 50,
+                        decoration: BoxDecoration(
+                          gradient: _isSubmittingTopup
+                              ? null
+                              : StorkTheme.brandGradient,
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: ElevatedButton(
+                          onPressed: _isSubmittingTopup
+                              ? null
+                              : () async {
+                                  final sName = senderNameCtrl.text.trim();
+                                  final rawPhone = senderPhoneCtrl.text
+                                      .trim()
+                                      .replaceAll(RegExp(r'\D'), '');
+                                  final rNum =
+                                      refNumCtrl.text.trim().toUpperCase();
+
+                                  if (sName.length < 2) {
+                                    _showToast(
+                                        'Please enter the GCash sender account name.');
+                                    return;
+                                  }
+                                  if (rawPhone.isNotEmpty &&
+                                      !RegExp(r'^0?9\d{9}$')
+                                          .hasMatch(rawPhone)) {
+                                    _showToast(
+                                        'Enter a valid 11-digit (09XXXXXXXXX) or 10-digit (9XXXXXXXXX) sender mobile number.');
+                                    return;
+                                  }
+                                  if (rNum.length < 4) {
+                                    _showToast(
+                                        'Please enter the unique GCash reference number (4+ chars).');
+                                    return;
+                                  }
+                                  if (receiptFile == null) {
+                                    _showToast(
+                                        'Please upload your GCash receipt screenshot.');
+                                    return;
+                                  }
+
+                                  final String normalizedPhone =
+                                      rawPhone.isEmpty
+                                          ? ''
+                                          : (rawPhone.startsWith('9') &&
+                                                  rawPhone.length == 10
+                                              ? '0$rawPhone'
+                                              : rawPhone);
+
+                                  setModalState(() {
+                                    _isSubmittingTopup = true;
+                                  });
+
+                                  try {
+                                    final req = http.MultipartRequest(
+                                      'POST',
+                                      Uri.parse('$_domain/api/v1/wallet/topup'),
+                                    );
+                                    req.headers.addAll(
+                                      ApiService.buildHeaders(widget.token),
+                                    );
+                                    req.fields['sender_account_name'] = sName;
+                                    if (normalizedPhone.isNotEmpty) {
+                                      req.fields['sender_account_number'] =
+                                          normalizedPhone;
+                                    }
+                                    req.fields['reference_number'] = rNum;
+                                    req.files.add(
+                                      await http.MultipartFile.fromPath(
+                                        'screenshot',
+                                        receiptFile!.path,
+                                      ),
+                                    );
+
+                                    final streamed = await ApiService.httpClient
+                                        .send(req)
+                                        .timeout(ApiConfig.requestTimeout);
+                                    final response =
+                                        await http.Response.fromStream(
+                                            streamed);
+                                    final data = json.decode(response.body);
+
+                                    if ((response.statusCode == 200 ||
+                                            response.statusCode == 201) &&
+                                        data is Map &&
+                                        data['success'] == true) {
+                                      HapticFeedback.mediumImpact();
+                                      if (modalContext.mounted) {
+                                        Navigator.pop(modalContext);
+                                      }
+                                      _showToast(
+                                        data['message']?.toString() ??
+                                            'Top-up receipt submitted for Admin verification!',
+                                        isError: false,
+                                      );
+                                      _loadAllData(silent: true);
+                                    } else {
+                                      String err = data is Map
+                                          ? (data['message']?.toString() ??
+                                              'Failed to submit top-up.')
+                                          : 'Failed to submit top-up.';
+                                      if (data is Map &&
+                                          data['errors'] is Map &&
+                                          (data['errors'] as Map).isNotEmpty) {
+                                        final first = (data['errors'] as Map)
+                                            .values
+                                            .first;
+                                        if (first is List && first.isNotEmpty) {
+                                          err = first.first.toString();
+                                        }
+                                      }
+                                      _showToast(err);
+                                    }
+                                  } catch (_) {
+                                    _showToast(
+                                        'Network error occurred while uploading.');
+                                  } finally {
+                                    if (modalContext.mounted) {
+                                      setModalState(
+                                          () => _isSubmittingTopup = false);
+                                    }
+                                  }
+                                },
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.transparent,
+                            shadowColor: Colors.transparent,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                          ),
+                          child: _isSubmittingTopup
+                              ? const SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                    color: Colors.white,
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Text('Submit Top-Up Receipt'),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             );
@@ -939,11 +951,41 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
   }
 
   void _showToast(String message, {bool isError = true}) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
+    if (!mounted || message.trim().isEmpty) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.clearSnackBars();
+    messenger.showSnackBar(
       SnackBar(
-        content: Text(message),
+        content: Row(
+          children: [
+            Icon(
+              isError
+                  ? Icons.error_outline_rounded
+                  : Icons.check_circle_outline_rounded,
+              color: Colors.white,
+              size: 19,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                message.trim(),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                  height: 1.3,
+                ),
+              ),
+            ),
+          ],
+        ),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 3),
+        margin: const EdgeInsets.fromLTRB(16, 12, 16, 16),
         backgroundColor: isError ? StorkTheme.danger : StorkTheme.success,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+        ),
       ),
     );
   }
@@ -958,19 +1000,27 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
     final int liveSpins = rewardState.isLoaded
         ? rewardState.spinTickets
         : (int.tryParse(_walletInfo['spin_tickets']?.toString() ?? '0') ?? 0);
+    final isNarrowScreen = MediaQuery.sizeOf(context).width < 350;
 
     return Scaffold(
       backgroundColor: StorkTheme.surfaceSubtle,
       appBar: AppBar(
-        title: const Text('My Coins & Storkia E-Wallet'),
+        title: const FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerLeft,
+          child: Text('My Coins & Storkia E-Wallet'),
+        ),
         bottom: TabBar(
           controller: _tabController,
+          isScrollable: isNarrowScreen,
+          tabAlignment: isNarrowScreen ? TabAlignment.start : TabAlignment.fill,
+          onTap: (_) => HapticFeedback.selectionClick(),
           indicatorColor: StorkTheme.primary,
           labelColor: StorkTheme.primary,
           unselectedLabelColor: StorkTheme.textMuted,
           labelStyle: const TextStyle(
             fontWeight: FontWeight.w800,
-            fontSize: 13,
+            fontSize: 12.5,
           ),
           tabs: const [
             Tab(text: 'Storkia Coins & Rewards'),
@@ -1046,7 +1096,7 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
                         borderRadius: BorderRadius.circular(20),
                       ),
                       child: const Text(
-                        'CHECKOUT RATE: 10 COINS = ₱1.00',
+                        'CHECKOUT RATE: 10 COINS = \u20B11.00',
                         style: TextStyle(
                           color: StorkTheme.brandLight,
                           fontSize: 10,
@@ -1078,18 +1128,22 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
                   spacing: 10,
                   runSpacing: 4,
                   children: [
-                    Text(
-                      '$liveCoins Coins',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 28,
-                        fontWeight: FontWeight.w900,
+                    FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        '$liveCoins Coins',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 28,
+                          fontWeight: FontWeight.w900,
+                        ),
                       ),
                     ),
                     Padding(
                       padding: const EdgeInsets.only(bottom: 4),
                       child: Text(
-                        '(≈ ₱${_formatMoney(livePesoEq)} Checkout Discount)',
+                        '(\u2248 \u20B1${_formatMoney(livePesoEq)} Checkout Discount)',
                         style: const TextStyle(
                           color: StorkTheme.brandLight,
                           fontSize: 13,
@@ -1101,7 +1155,7 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Redeem any whole-number amount ≥ 10 coins at checkout (up to 25% of net merchandise subtotal), or exchange coins below for vouchers.',
+                  'Redeem any whole-number amount \u2265 10 coins at checkout (up to 25% of net merchandise subtotal), or exchange coins below for vouchers.',
                   style: TextStyle(
                     color: Colors.white.withValues(alpha: 0.88),
                     fontSize: 11.5,
@@ -1120,52 +1174,11 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
               border: Border.all(color: StorkTheme.borderSubtle),
               boxShadow: StorkTheme.softCardShadow,
             ),
-            child: Row(
-              children: [
-                SizedBox(
-                  width: 58,
-                  height: 58,
-                  child: Image.asset(
-                    chestCanOpen
-                        ? 'assets/chest-frame-1.png'
-                        : 'assets/chest-for-reward-stage-1.png',
-                    fit: BoxFit.contain,
-                    errorBuilder: (_, __, ___) => const Icon(
-                      Icons.redeem_rounded,
-                      size: 40,
-                      color: StorkTheme.primary,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'Daily Treasure Chest (3-Tap Unlock)',
-                        style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w800,
-                          color: StorkTheme.primaryDark,
-                        ),
-                      ),
-                      const SizedBox(height: 3),
-                      Text(
-                        chestCanOpen
-                            ? 'Ready to unlock! Tap 3 times to win Stage 1, 2, or 3 Jackpot Coins.'
-                            : 'Next chest unlocks in ${_formatDuration(chestCooldownSec)}',
-                        style: const TextStyle(
-                          fontSize: 11.5,
-                          color: StorkTheme.textMuted,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 8),
-                ElevatedButton(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final chestBtn = ElevatedButton(
                   onPressed: () {
+                    HapticFeedback.lightImpact();
                     showDialog(
                       context: context,
                       builder: (_) => DailyTreasureChestDialog(
@@ -1184,8 +1197,73 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
                     chestCanOpen ? 'Open Chest' : 'View Timer',
                     style: const TextStyle(fontSize: 11.5),
                   ),
-                ),
-              ],
+                );
+
+                final chestInfoRow = Row(
+                  children: [
+                    SizedBox(
+                      width: 52,
+                      height: 52,
+                      child: Image.asset(
+                        chestCanOpen
+                            ? 'assets/chest-frame-1.png'
+                            : 'assets/chest-for-reward-stage-1.png',
+                        fit: BoxFit.contain,
+                        errorBuilder: (_, __, ___) => const Icon(
+                          Icons.redeem_rounded,
+                          size: 38,
+                          color: StorkTheme.primary,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Daily Treasure Chest (3-Tap Unlock)',
+                            style: TextStyle(
+                              fontSize: 13.5,
+                              fontWeight: FontWeight.w800,
+                              color: StorkTheme.primaryDark,
+                            ),
+                          ),
+                          const SizedBox(height: 3),
+                          Text(
+                            chestCanOpen
+                                ? 'Ready to unlock! Tap 3 times to win Stage 1, 2, or 3 Jackpot Coins.'
+                                : 'Next chest unlocks in ${_formatDuration(chestCooldownSec)}',
+                            style: const TextStyle(
+                              fontSize: 11.5,
+                              color: StorkTheme.textMuted,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                );
+
+                if (constraints.maxWidth < 310) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      chestInfoRow,
+                      const SizedBox(height: 10),
+                      chestBtn,
+                    ],
+                  );
+                }
+
+                return Row(
+                  children: [
+                    Expanded(child: chestInfoRow),
+                    const SizedBox(width: 8),
+                    chestBtn,
+                  ],
+                );
+              },
             ),
           ),
           const SizedBox(height: 14),
@@ -1211,10 +1289,14 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
               'text_color': '#F6D8BD'
             },
             {'label': '15 Coins', 'color': '#F39399', 'text_color': '#5D3140'},
-            {'label': '₱25 Ship', 'color': '#F6D8BD', 'text_color': '#5D3140'},
+            {
+              'label': '\u20B125 Ship',
+              'color': '#F6D8BD',
+              'text_color': '#5D3140'
+            },
             {'label': '30 Coins', 'color': '#CF4173', 'text_color': '#FFFFFF'},
             {
-              'label': '₱40 Voucher',
+              'label': '\u20B140 Voucher',
               'color': '#5D3140',
               'text_color': '#FFFFFF'
             },
@@ -1230,146 +1312,160 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
         border: Border.all(color: StorkTheme.borderSubtle),
         boxShadow: StorkTheme.softCardShadow,
       ),
-      child: Column(
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final wheelDiameter = (constraints.maxWidth - 24).clamp(175.0, 240.0);
+          final paintDiameter = wheelDiameter - 10;
+
+          return Column(
             children: [
-              const Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '24-Hour Daily Login Spin Wheel',
-                      style: TextStyle(
-                        fontSize: 15.5,
-                        fontWeight: FontWeight.w800,
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '24-Hour Daily Login Spin Wheel',
+                          style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w800,
+                            color: StorkTheme.primaryDark,
+                          ),
+                        ),
+                        SizedBox(height: 2),
+                        Text(
+                          '+1 Spin Attempt automatically stacks every 24h login',
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            color: StorkTheme.textMuted,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: StorkTheme.brandLight.withValues(alpha: 0.45),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Text(
+                      '$liveSpins Spin(s)',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w900,
                         color: StorkTheme.primaryDark,
                       ),
                     ),
-                    SizedBox(height: 2),
-                    Text(
-                      '+1 Spin Attempt automatically stacks every 24h login',
-                      style: TextStyle(
-                        fontSize: 11.5,
-                        color: StorkTheme.textMuted,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 18),
+              SizedBox(
+                width: wheelDiameter,
+                height: wheelDiameter,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    Transform.rotate(
+                      angle: _wheelRotationRadians,
+                      child: CustomPaint(
+                        size: Size(paintDiameter, paintDiameter),
+                        painter: _SpinWheelPainter(segments: segments),
+                      ),
+                    ),
+                    const Positioned(
+                      top: 0,
+                      child: Icon(
+                        Icons.arrow_drop_down_circle_rounded,
+                        size: 34,
+                        color: StorkTheme.primaryDark,
+                      ),
+                    ),
+                    GestureDetector(
+                      onTap:
+                          (_isSpinning || liveSpins <= 0) ? null : _spinWheel,
+                      child: Container(
+                        width: 62,
+                        height: 62,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient: LinearGradient(
+                            colors: liveSpins > 0
+                                ? const [
+                                    StorkTheme.primaryDark,
+                                    StorkTheme.primary
+                                  ]
+                                : const [Colors.grey, Colors.blueGrey],
+                          ),
+                          border: Border.all(color: Colors.white, width: 3),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.2),
+                              blurRadius: 8,
+                            ),
+                          ],
+                        ),
+                        child: _isSpinning
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  color: Colors.white,
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : Text(
+                                liveSpins > 0 ? 'SPIN' : '0 SPINS',
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w900,
+                                ),
+                              ),
                       ),
                     ),
                   ],
                 ),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(height: 16),
               Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                width: double.infinity,
+                height: 48,
                 decoration: BoxDecoration(
-                  color: StorkTheme.brandLight.withValues(alpha: 0.45),
+                  gradient: (!_isSpinning && liveSpins > 0)
+                      ? StorkTheme.brandGradient
+                      : null,
                   borderRadius: BorderRadius.circular(14),
                 ),
-                child: Text(
-                  '$liveSpins Spin(s)',
-                  style: const TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w900,
-                    color: StorkTheme.primaryDark,
+                child: ElevatedButton(
+                  onPressed:
+                      (_isSpinning || liveSpins <= 0) ? null : _spinWheel,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.transparent,
+                    shadowColor: Colors.transparent,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                  ),
+                  child: Text(
+                    liveSpins > 0
+                        ? 'Spin the Wheel ($liveSpins Attempt${liveSpins == 1 ? '' : 's'} Left)'
+                        : 'Next Daily Spin Unlocks Soon',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
               ),
             ],
-          ),
-          const SizedBox(height: 18),
-          SizedBox(
-            width: 240,
-            height: 240,
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                Transform.rotate(
-                  angle: _wheelRotationRadians,
-                  child: CustomPaint(
-                    size: const Size(230, 230),
-                    painter: _SpinWheelPainter(segments: segments),
-                  ),
-                ),
-                const Positioned(
-                  top: 0,
-                  child: Icon(
-                    Icons.arrow_drop_down_circle_rounded,
-                    size: 34,
-                    color: StorkTheme.primaryDark,
-                  ),
-                ),
-                GestureDetector(
-                  onTap: (_isSpinning || liveSpins <= 0) ? null : _spinWheel,
-                  child: Container(
-                    width: 64,
-                    height: 64,
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      gradient: LinearGradient(
-                        colors: liveSpins > 0
-                            ? const [StorkTheme.primaryDark, StorkTheme.primary]
-                            : const [Colors.grey, Colors.blueGrey],
-                      ),
-                      border: Border.all(color: Colors.white, width: 3),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withValues(alpha: 0.2),
-                          blurRadius: 8,
-                        ),
-                      ],
-                    ),
-                    child: _isSpinning
-                        ? const SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(
-                              color: Colors.white,
-                              strokeWidth: 2,
-                            ),
-                          )
-                        : Text(
-                            liveSpins > 0 ? 'SPIN' : '0 SPINS',
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 11.5,
-                              fontWeight: FontWeight.w900,
-                            ),
-                          ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 16),
-          Container(
-            width: double.infinity,
-            height: 48,
-            decoration: BoxDecoration(
-              gradient: (!_isSpinning && liveSpins > 0)
-                  ? StorkTheme.brandGradient
-                  : null,
-              borderRadius: BorderRadius.circular(14),
-            ),
-            child: ElevatedButton(
-              onPressed: (_isSpinning || liveSpins <= 0) ? null : _spinWheel,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.transparent,
-                shadowColor: Colors.transparent,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14),
-                ),
-              ),
-              child: Text(
-                liveSpins > 0
-                    ? 'Spin the Wheel ($liveSpins Attempt${liveSpins == 1 ? '' : 's'} Left)'
-                    : 'Next Daily Spin Unlocks Soon',
-              ),
-            ),
-          ),
-        ],
+          );
+        },
       ),
     );
   }
@@ -1409,9 +1505,9 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
                 borderRadius: BorderRadius.circular(14),
                 border: Border.all(color: StorkTheme.borderSubtle),
               ),
-              child: Row(
-                children: [
-                  Container(
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final costBadge = Container(
                     padding:
                         const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                     decoration: BoxDecoration(
@@ -1438,33 +1534,31 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
                         ),
                       ],
                     ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          item['title']?.toString() ?? '',
-                          style: const TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w800,
-                            color: StorkTheme.textMain,
-                          ),
+                  );
+
+                  final detailsCol = Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        item['title']?.toString() ?? '',
+                        style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w800,
+                          color: StorkTheme.textMain,
                         ),
-                        const SizedBox(height: 2),
-                        Text(
-                          item['description']?.toString() ?? '',
-                          style: const TextStyle(
-                            fontSize: 11.5,
-                            color: StorkTheme.textMuted,
-                          ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        item['description']?.toString() ?? '',
+                        style: const TextStyle(
+                          fontSize: 11.5,
+                          color: StorkTheme.textMuted,
                         ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  ElevatedButton(
+                      ),
+                    ],
+                  );
+
+                  final redeemBtn = ElevatedButton(
                     onPressed: (liveCoins >=
                                 (int.tryParse(item['coins_cost']?.toString() ??
                                         '0') ??
@@ -1490,8 +1584,35 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
                             'Redeem',
                             style: TextStyle(fontSize: 11.5),
                           ),
-                  ),
-                ],
+                  );
+
+                  if (constraints.maxWidth < 290) {
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Row(
+                          children: [
+                            costBadge,
+                            const SizedBox(width: 10),
+                            Expanded(child: detailsCol),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        redeemBtn,
+                      ],
+                    );
+                  }
+
+                  return Row(
+                    children: [
+                      costBadge,
+                      const SizedBox(width: 12),
+                      Expanded(child: detailsCol),
+                      const SizedBox(width: 8),
+                      redeemBtn,
+                    ],
+                  );
+                },
               ),
             ),
           ],
@@ -1542,45 +1663,70 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
                 final int spinsDelta =
                     int.tryParse(tx['spins_delta']?.toString() ?? '0') ?? 0;
                 final bool isPositive = coinsDelta > 0 || spinsDelta > 0;
+                final String refCode = tx['reference_code']?.toString() ?? '';
 
-                return Row(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            tx['description']?.toString() ?? '',
-                            style: const TextStyle(
-                              fontSize: 12.5,
-                              fontWeight: FontWeight.w700,
-                              color: StorkTheme.textMain,
+                return InkWell(
+                  onTap: refCode.isNotEmpty
+                      ? () => _copyReference(refCode, 'Ledger Ref')
+                      : null,
+                  borderRadius: BorderRadius.circular(8),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              tx['description']?.toString() ?? '',
+                              style: const TextStyle(
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w700,
+                                color: StorkTheme.textMain,
+                              ),
                             ),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            tx['reference_code']?.toString() ?? '',
-                            style: const TextStyle(
-                              fontSize: 10.5,
-                              color: StorkTheme.textMuted,
-                            ),
-                          ),
-                        ],
+                            if (refCode.isNotEmpty) ...[
+                              const SizedBox(height: 2),
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      refCode,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        fontSize: 10.5,
+                                        color: StorkTheme.textMuted,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 4),
+                                  const Icon(
+                                    Icons.copy_rounded,
+                                    size: 10,
+                                    color: StorkTheme.textMuted,
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ],
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      coinsDelta != 0
-                          ? '${coinsDelta > 0 ? '+' : ''}$coinsDelta Coins'
-                          : '${spinsDelta > 0 ? '+' : ''}$spinsDelta Spin(s)',
-                      style: TextStyle(
-                        fontSize: 12.5,
-                        fontWeight: FontWeight.w900,
-                        color:
-                            isPositive ? StorkTheme.success : StorkTheme.danger,
+                      const SizedBox(width: 8),
+                      Text(
+                        coinsDelta != 0
+                            ? '${coinsDelta > 0 ? '+' : ''}$coinsDelta Coins'
+                            : '${spinsDelta > 0 ? '+' : ''}$spinsDelta Spin(s)',
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w900,
+                          color: isPositive
+                              ? StorkTheme.success
+                              : StorkTheme.danger,
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 );
               },
             ),
@@ -1636,17 +1782,21 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
                   ),
                 ),
                 const SizedBox(height: 8),
-                Text(
-                  '₱${_formatMoney(available)}',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 30,
-                    fontWeight: FontWeight.w900,
+                FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    '\u20B1${_formatMoney(available)}',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 30,
+                      fontWeight: FontWeight.w900,
+                    ),
                   ),
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  'Total Credited: ₱${_formatMoney(totalEarned)}  •  Used at Checkout: ₱${_formatMoney(totalSpent)}',
+                  'Total Credited: \u20B1${_formatMoney(totalEarned)}  \u2022  Used at Checkout: \u20B1${_formatMoney(totalSpent)}',
                   style: TextStyle(
                     color: Colors.white.withValues(alpha: 0.8),
                     fontSize: 11.5,
@@ -1659,7 +1809,11 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
                   child: ElevatedButton.icon(
                     onPressed: _openTopUpModal,
                     icon: const Icon(Icons.add_card_rounded, size: 18),
-                    label: const Text('Top Up E-Wallet via GCash Screenshot'),
+                    label: const Text(
+                      'Top Up E-Wallet via GCash Screenshot',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: StorkTheme.primary,
                       foregroundColor: Colors.white,
@@ -1711,84 +1865,92 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
                           t['status']?.toString() ?? 'pending_verification';
                       final bool isApproved = status == 'approved';
                       final bool isRejected = status == 'rejected';
+                      final String topupRef =
+                          t['topup_reference']?.toString() ?? '';
 
-                      return Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  '${t['topup_reference'] ?? ''} • GCash Ref #${t['reference_number'] ?? ''}',
-                                  style: const TextStyle(
-                                    fontSize: 12.5,
-                                    fontWeight: FontWeight.w800,
-                                    color: StorkTheme.textMain,
-                                  ),
-                                ),
-                                const SizedBox(height: 2),
-                                Text(
-                                  'Sender: ${t['sender_account_name'] ?? ''}',
-                                  style: const TextStyle(
-                                    fontSize: 11.5,
-                                    color: StorkTheme.textMuted,
-                                  ),
-                                ),
-                                if (t['admin_remarks'] != null &&
-                                    t['admin_remarks']
-                                        .toString()
-                                        .isNotEmpty) ...[
-                                  const SizedBox(height: 2),
+                      return InkWell(
+                        onTap: topupRef.isNotEmpty
+                            ? () => _copyReference(topupRef, 'Top-Up Ref')
+                            : null,
+                        borderRadius: BorderRadius.circular(8),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
                                   Text(
-                                    'Admin Note: ${t['admin_remarks']}',
-                                    style: TextStyle(
-                                      fontSize: 11,
-                                      color: isRejected
-                                          ? StorkTheme.danger
-                                          : StorkTheme.textMuted,
+                                    '$topupRef \u2022 GCash Ref #${t['reference_number'] ?? ''}',
+                                    style: const TextStyle(
+                                      fontSize: 12.5,
+                                      fontWeight: FontWeight.w800,
+                                      color: StorkTheme.textMain,
                                     ),
                                   ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    'Sender: ${t['sender_account_name'] ?? ''}',
+                                    style: const TextStyle(
+                                      fontSize: 11.5,
+                                      color: StorkTheme.textMuted,
+                                    ),
+                                  ),
+                                  if (t['admin_remarks'] != null &&
+                                      t['admin_remarks']
+                                          .toString()
+                                          .isNotEmpty) ...[
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      'Admin Note: ${t['admin_remarks']}',
+                                      style: TextStyle(
+                                        fontSize: 11,
+                                        color: isRejected
+                                            ? StorkTheme.danger
+                                            : StorkTheme.textMuted,
+                                      ),
+                                    ),
+                                  ],
                                 ],
-                              ],
+                              ),
                             ),
-                          ),
-                          const SizedBox(width: 8),
-                          Column(
-                            crossAxisAlignment: CrossAxisAlignment.end,
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 8, vertical: 3),
-                                decoration: BoxDecoration(
-                                  color: isApproved
-                                      ? StorkTheme.success
-                                          .withValues(alpha: 0.14)
-                                      : (isRejected
-                                          ? StorkTheme.danger
-                                              .withValues(alpha: 0.14)
-                                          : StorkTheme.warning
-                                              .withValues(alpha: 0.16)),
-                                  borderRadius: BorderRadius.circular(10),
-                                ),
-                                child: Text(
-                                  isApproved
-                                      ? '+₱${_formatMoney(t['approved_amount'])}'
-                                      : (isRejected ? 'REJECTED' : 'PENDING'),
-                                  style: TextStyle(
-                                    fontSize: 10.5,
-                                    fontWeight: FontWeight.w900,
+                            const SizedBox(width: 8),
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.end,
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 8, vertical: 3),
+                                  decoration: BoxDecoration(
                                     color: isApproved
                                         ? StorkTheme.success
+                                            .withValues(alpha: 0.14)
                                         : (isRejected
                                             ? StorkTheme.danger
-                                            : const Color(0xFF92400E)),
+                                                .withValues(alpha: 0.14)
+                                            : StorkTheme.warning
+                                                .withValues(alpha: 0.16)),
+                                    borderRadius: BorderRadius.circular(10),
+                                  ),
+                                  child: Text(
+                                    isApproved
+                                        ? '+\u20B1${_formatMoney(t['approved_amount'])}'
+                                        : (isRejected ? 'REJECTED' : 'PENDING'),
+                                    style: TextStyle(
+                                      fontSize: 10.5,
+                                      fontWeight: FontWeight.w900,
+                                      color: isApproved
+                                          ? StorkTheme.success
+                                          : (isRejected
+                                              ? StorkTheme.danger
+                                              : const Color(0xFF92400E)),
+                                    ),
                                   ),
                                 ),
-                              ),
-                            ],
-                          ),
-                        ],
+                              ],
+                            ),
+                          ],
+                        ),
                       );
                     },
                   ),
@@ -1836,43 +1998,72 @@ class _PointsRewardsScreenState extends ConsumerState<PointsRewardsScreen>
                       final double amt =
                           double.tryParse(tx['amount']?.toString() ?? '0') ??
                               0.0;
-                      return Row(
-                        children: [
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  tx['description']?.toString() ?? '',
-                                  style: const TextStyle(
-                                    fontSize: 12.5,
-                                    fontWeight: FontWeight.w700,
-                                    color: StorkTheme.textMain,
+                      final String txRef =
+                          tx['transaction_reference']?.toString() ?? '';
+
+                      return InkWell(
+                        onTap: txRef.isNotEmpty
+                            ? () => _copyReference(txRef, 'Transaction Ref')
+                            : null,
+                        borderRadius: BorderRadius.circular(8),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    tx['description']?.toString() ?? '',
+                                    style: const TextStyle(
+                                      fontSize: 12.5,
+                                      fontWeight: FontWeight.w700,
+                                      color: StorkTheme.textMain,
+                                    ),
                                   ),
-                                ),
-                                const SizedBox(height: 2),
-                                Text(
-                                  tx['transaction_reference']?.toString() ?? '',
-                                  style: const TextStyle(
-                                    fontSize: 10.5,
-                                    color: StorkTheme.textMuted,
-                                  ),
-                                ),
-                              ],
+                                  if (txRef.isNotEmpty) ...[
+                                    const SizedBox(height: 2),
+                                    Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Flexible(
+                                          child: Text(
+                                            txRef,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(
+                                              fontSize: 10.5,
+                                              color: StorkTheme.textMuted,
+                                            ),
+                                          ),
+                                        ),
+                                        const SizedBox(width: 4),
+                                        const Icon(
+                                          Icons.copy_rounded,
+                                          size: 10,
+                                          color: StorkTheme.textMuted,
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ],
+                              ),
                             ),
-                          ),
-                          const SizedBox(width: 8),
-                          Text(
-                            '${amt >= 0 ? '+' : '-'}₱${_formatMoney(amt.abs())}',
-                            style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w900,
-                              color: amt >= 0
-                                  ? StorkTheme.success
-                                  : StorkTheme.danger,
+                            const SizedBox(width: 8),
+                            FittedBox(
+                              fit: BoxFit.scaleDown,
+                              child: Text(
+                                '${amt >= 0 ? '+' : '-'}\u20B1${_formatMoney(amt.abs())}',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w900,
+                                  color: amt >= 0
+                                      ? StorkTheme.success
+                                      : StorkTheme.danger,
+                                ),
+                              ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       );
                     },
                   ),
@@ -1945,7 +2136,7 @@ class _SpinWheelPainter extends CustomPainter {
         text: seg['label']?.toString() ?? '',
         style: TextStyle(
           color: txtColor,
-          fontSize: 10.5,
+          fontSize: 10,
           fontWeight: FontWeight.w900,
         ),
       );

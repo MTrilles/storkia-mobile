@@ -5,6 +5,8 @@ import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import '../config/api_config.dart';
 import '../config/app_theme.dart';
+import '../services/api_service.dart';
+import '../services/websocket_service.dart';
 
 typedef JsonMap = Map<String, dynamic>;
 
@@ -26,7 +28,6 @@ class _HelpCenterScreenState extends State<HelpCenterScreen>
     with WidgetsBindingObserver {
   final TextEditingController _msgController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
-  Timer? _pollTimer;
 
   bool _isLoading = true;
   bool _isSending = false;
@@ -40,16 +41,40 @@ class _HelpCenterScreenState extends State<HelpCenterScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    WebSocketService.init(widget.token);
+    WebSocketService.addListener(_onRealtimeEvent);
     _fetchMessages();
-    _pollTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+  }
+
+  void _onRealtimeEvent(BuyerRealtimeEvent event) {
+    if (!mounted) return;
+    if (event.scope == 'support_chat' ||
+        event.event == 'SupportMessageSent' ||
+        event.channel.startsWith('private-support.')) {
+      final rawMsg = event.data['payload'];
+      if (rawMsg is Map) {
+        final incoming = JsonMap.from(rawMsg);
+        final incomingId = int.tryParse(incoming['id']?.toString() ?? '0') ?? 0;
+        final exists = _messages.any(
+          (m) => (int.tryParse(m['id']?.toString() ?? '0') ?? -1) == incomingId,
+        );
+        if (!exists) {
+          setState(() {
+            _messages = [..._messages, incoming];
+          });
+          _scrollToBottom();
+          _markAsRead();
+          return;
+        }
+      }
       _fetchMessages(silent: true);
-    });
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _pollTimer?.cancel();
+    WebSocketService.removeListener(_onRealtimeEvent);
     _msgController.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -58,19 +83,59 @@ class _HelpCenterScreenState extends State<HelpCenterScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      WebSocketService.init(widget.token);
       _fetchMessages(silent: true);
     }
   }
 
+  void _showPopupToast(String message, {bool isError = true}) {
+    if (!mounted || message.trim().isEmpty) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.clearSnackBars();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            Icon(
+              isError
+                  ? Icons.error_outline_rounded
+                  : Icons.check_circle_outline_rounded,
+              color: Colors.white,
+              size: 19,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                message.trim(),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                  height: 1.3,
+                ),
+              ),
+            ),
+          ],
+        ),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 3),
+        margin: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+        backgroundColor: isError ? StorkTheme.danger : StorkTheme.success,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+        ),
+      ),
+    );
+  }
+
   Future<void> _fetchMessages({bool silent = false}) async {
     try {
-      final response = await http.get(
-        Uri.parse('$_domain/api/v1/help-center/messages'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .get(
+            Uri.parse('$_domain/api/v1/help-center/messages'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (!mounted || response.statusCode != 200) return;
       final body = json.decode(response.body);
@@ -119,13 +184,12 @@ class _HelpCenterScreenState extends State<HelpCenterScreen>
 
   Future<void> _markAsRead() async {
     try {
-      await http.patch(
-        Uri.parse('$_domain/api/v1/help-center/read'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(const Duration(seconds: 8));
+      await ApiService.httpClient
+          .patch(
+            Uri.parse('$_domain/api/v1/help-center/read'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(const Duration(seconds: 8));
     } catch (_) {}
   }
 
@@ -136,6 +200,11 @@ class _HelpCenterScreenState extends State<HelpCenterScreen>
       imageQuality: 85,
     );
     if (picked != null) {
+      final len = await picked.length();
+      if (len > 5 * 1024 * 1024) {
+        _showPopupToast('Attachment image must not exceed 5MB.', isError: true);
+        return;
+      }
       setState(() => _attachment = picked);
     }
   }
@@ -154,8 +223,7 @@ class _HelpCenterScreenState extends State<HelpCenterScreen>
         'POST',
         Uri.parse('$_domain/api/v1/help-center/messages'),
       );
-      req.headers['Authorization'] = 'Bearer ${widget.token}';
-      req.headers['Accept'] = 'application/json';
+      req.headers.addAll(ApiService.buildHeaders(widget.token));
       req.fields['message'] = text.isNotEmpty ? text : 'Sent an attachment';
       if (fileToSend != null) {
         req.files.add(
@@ -163,17 +231,38 @@ class _HelpCenterScreenState extends State<HelpCenterScreen>
         );
       }
 
-      final streamed = await req.send().timeout(ApiConfig.requestTimeout);
+      final streamed = await ApiService.httpClient
+          .send(req)
+          .timeout(ApiConfig.requestTimeout);
       final response = await http.Response.fromStream(streamed);
       if (!mounted) return;
       if (response.statusCode == 200 || response.statusCode == 201) {
-        await _fetchMessages(silent: true);
+        final body = json.decode(response.body);
+        if (body is Map && body['data'] is Map) {
+          final createdMsg = JsonMap.from(body['data'] as Map);
+          final createdId =
+              int.tryParse(createdMsg['id']?.toString() ?? '0') ?? 0;
+          final exists = _messages.any(
+            (m) =>
+                (int.tryParse(m['id']?.toString() ?? '0') ?? -1) == createdId,
+          );
+          if (!exists) {
+            setState(() {
+              _messages = [..._messages, createdMsg];
+              _conversationStatus = 'open';
+            });
+          }
+        } else {
+          await _fetchMessages(silent: true);
+        }
         _scrollToBottom();
       } else {
         _msgController.text = text;
+        _showPopupToast('Failed to send message.', isError: true);
       }
     } catch (_) {
       _msgController.text = text;
+      _showPopupToast('Network error occurred.', isError: true);
     } finally {
       if (mounted) setState(() => _isSending = false);
     }

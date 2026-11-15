@@ -9,6 +9,8 @@ import '../config/api_config.dart';
 import '../config/app_routes.dart';
 import '../config/app_theme.dart';
 import '../providers/auth_provider.dart';
+import '../services/api_service.dart';
+import '../services/websocket_service.dart';
 import 'legal_policies_screen.dart';
 
 typedef JsonMap = Map<String, dynamic>;
@@ -32,13 +34,12 @@ class IdentityVerificationScreen extends ConsumerStatefulWidget {
 class _IdentityVerificationScreenState
     extends ConsumerState<IdentityVerificationScreen>
     with WidgetsBindingObserver {
-  Timer? _autoSyncTimer;
+  Timer? _wsDebounceTimer;
   bool _isLoading = true;
   bool _isSubmitting = false;
 
   String _status = 'not_started';
   String? _rejectionReason;
-  String? _formError;
   String _selectedIdType = 'drivers_license';
   String _selectedMethod = 'upload';
   XFile? _frontFile;
@@ -57,23 +58,34 @@ class _IdentityVerificationScreenState
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _fetchVerificationStatus(silent: false);
-    _autoSyncTimer = Timer.periodic(const Duration(seconds: 6), (_) {
-      if (!_isSubmitting) {
-        _fetchVerificationStatus(silent: true);
-      }
-    });
+    WebSocketService.addListener(_onRealtimeEvent);
+  }
+
+  void _onRealtimeEvent(BuyerRealtimeEvent event) {
+    if (!mounted) return;
+    if (event.scope == 'compliance' ||
+        event.scope == 'notification' ||
+        event.scope == 'general') {
+      _wsDebounceTimer?.cancel();
+      _wsDebounceTimer = Timer(const Duration(milliseconds: 260), () {
+        if (mounted && !_isSubmitting) {
+          _fetchVerificationStatus(silent: true);
+        }
+      });
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _autoSyncTimer?.cancel();
+    _wsDebounceTimer?.cancel();
+    WebSocketService.removeListener(_onRealtimeEvent);
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
+    if (state == AppLifecycleState.resumed && !_isSubmitting) {
       _fetchVerificationStatus(silent: true);
     }
   }
@@ -83,13 +95,12 @@ class _IdentityVerificationScreenState
       setState(() => _isLoading = true);
     }
     try {
-      final response = await http.get(
-        Uri.parse('$_domain/api/v1/account/identity-verification'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .get(
+            Uri.parse('$_domain/api/v1/account/identity-verification'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (!mounted) return;
       if (response.statusCode == 200) {
@@ -127,15 +138,11 @@ class _IdentityVerificationScreenState
 
     final len = await picked.length();
     if (len > 5 * 1024 * 1024) {
-      setState(() {
-        _formError = 'ID photo must not exceed 5MB.';
-      });
       _showToast('ID photo must not exceed 5MB.');
       return;
     }
 
     setState(() {
-      _formError = null;
       _selectedMethod = camera ? 'camera' : 'upload';
       if (isFront) {
         _frontFile = picked;
@@ -147,24 +154,19 @@ class _IdentityVerificationScreenState
 
   Future<void> _submitVerification() async {
     if (_frontFile == null) {
-      setState(() {
-        _formError = 'Please provide a clear photo of the front of your ID.';
-      });
       _showToast('Please provide a clear photo of the front of your ID.');
       return;
     }
 
     setState(() {
       _isSubmitting = true;
-      _formError = null;
     });
     try {
       final req = http.MultipartRequest(
         'POST',
         Uri.parse('$_domain/api/v1/account/identity-verification'),
       );
-      req.headers['Authorization'] = 'Bearer ${widget.token}';
-      req.headers['Accept'] = 'application/json';
+      req.headers.addAll(ApiService.buildHeaders(widget.token));
       req.fields['id_type'] = _selectedIdType;
       req.fields['method'] = _selectedMethod;
 
@@ -177,7 +179,9 @@ class _IdentityVerificationScreenState
         );
       }
 
-      final streamed = await req.send().timeout(ApiConfig.requestTimeout);
+      final streamed = await ApiService.httpClient
+          .send(req)
+          .timeout(ApiConfig.requestTimeout);
       final response = await http.Response.fromStream(streamed);
       if (!mounted) return;
 
@@ -203,11 +207,9 @@ class _IdentityVerificationScreenState
             err = first.first.toString();
           }
         }
-        setState(() => _formError = err);
         _showToast(err);
       }
     } catch (_) {
-      setState(() => _formError = 'Network error occurred while uploading ID.');
       _showToast('Network error occurred while uploading ID.');
     } finally {
       if (mounted) setState(() => _isSubmitting = false);
@@ -215,11 +217,41 @@ class _IdentityVerificationScreenState
   }
 
   void _showToast(String message, {bool isError = true}) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
+    if (!mounted || message.trim().isEmpty) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.clearSnackBars();
+    messenger.showSnackBar(
       SnackBar(
-        content: Text(message),
+        content: Row(
+          children: [
+            Icon(
+              isError
+                  ? Icons.error_outline_rounded
+                  : Icons.check_circle_outline_rounded,
+              color: Colors.white,
+              size: 19,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                message.trim(),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                  height: 1.3,
+                ),
+              ),
+            ),
+          ],
+        ),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 3),
+        margin: const EdgeInsets.fromLTRB(16, 12, 16, 16),
         backgroundColor: isError ? StorkTheme.danger : StorkTheme.success,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+        ),
       ),
     );
   }
@@ -389,7 +421,6 @@ class _IdentityVerificationScreenState
                               child: InkWell(
                                 onTap: () => setState(() {
                                   _selectedIdType = item['key']!;
-                                  _formError = null;
                                 }),
                                 borderRadius: BorderRadius.circular(14),
                                 child: Container(
@@ -572,17 +603,6 @@ class _IdentityVerificationScreenState
                                   ),
                                 ),
                               ],
-                            ),
-                          ],
-                          if (_formError != null) ...[
-                            const SizedBox(height: 12),
-                            Text(
-                              _formError!,
-                              style: const TextStyle(
-                                color: StorkTheme.danger,
-                                fontSize: 12,
-                                fontWeight: FontWeight.w700,
-                              ),
                             ),
                           ],
                           const SizedBox(height: 18),

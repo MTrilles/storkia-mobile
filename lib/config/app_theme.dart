@@ -23,6 +23,17 @@ class StorkTheme {
     end: Alignment.bottomRight,
   );
 
+  static const LinearGradient heroHeaderGradient = LinearGradient(
+    begin: Alignment.topLeft,
+    end: Alignment.bottomRight,
+    colors: [
+      Color(0xFF3B1D27),
+      primaryDark,
+      primary,
+    ],
+    stops: [0.0, 0.52, 1.0],
+  );
+
   static const LinearGradient warmAccentGradient = LinearGradient(
     colors: [primary, secondary],
     begin: Alignment.centerLeft,
@@ -73,7 +84,7 @@ class StorkTheme {
         iconTheme: IconThemeData(color: primaryDark, size: 22),
         titleTextStyle: TextStyle(
           color: primaryDark,
-          fontSize: 17,
+          fontSize: 16.5,
           fontWeight: FontWeight.w800,
           letterSpacing: -0.3,
         ),
@@ -92,20 +103,20 @@ class StorkTheme {
         fillColor: surface,
         isDense: true,
         contentPadding:
-            const EdgeInsets.symmetric(horizontal: 15, vertical: 14),
+            const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
         labelStyle: const TextStyle(
           color: textMuted,
-          fontSize: 13,
+          fontSize: 12.5,
           fontWeight: FontWeight.w600,
         ),
         floatingLabelStyle: const TextStyle(
           color: primary,
-          fontSize: 13,
+          fontSize: 12.5,
           fontWeight: FontWeight.w700,
         ),
         hintStyle: TextStyle(
           color: textMuted.withValues(alpha: 0.65),
-          fontSize: 13,
+          fontSize: 12.5,
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(14),
@@ -136,12 +147,12 @@ class StorkTheme {
           disabledBackgroundColor: borderSubtle,
           disabledForegroundColor: textMuted,
           elevation: 0,
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(14),
           ),
           textStyle: const TextStyle(
-            fontSize: 14,
+            fontSize: 13.5,
             fontWeight: FontWeight.w800,
             letterSpacing: -0.1,
           ),
@@ -151,12 +162,12 @@ class StorkTheme {
         style: OutlinedButton.styleFrom(
           foregroundColor: primaryDark,
           side: const BorderSide(color: borderSubtle, width: 1.2),
-          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 13),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(14),
           ),
           textStyle: const TextStyle(
-            fontSize: 13,
+            fontSize: 12.5,
             fontWeight: FontWeight.w800,
           ),
         ),
@@ -165,7 +176,7 @@ class StorkTheme {
         style: TextButton.styleFrom(
           foregroundColor: primary,
           textStyle: const TextStyle(
-            fontSize: 13,
+            fontSize: 12.5,
             fontWeight: FontWeight.w700,
           ),
         ),
@@ -175,7 +186,7 @@ class StorkTheme {
         backgroundColor: textMain,
         contentTextStyle: const TextStyle(
           color: surface,
-          fontSize: 13,
+          fontSize: 12.5,
           fontWeight: FontWeight.w600,
         ),
         shape: RoundedRectangleBorder(

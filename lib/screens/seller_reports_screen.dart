@@ -1,9 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 import '../config/api_config.dart';
 import '../config/app_theme.dart';
+import '../services/api_service.dart';
+import '../services/websocket_service.dart';
 
 typedef JsonMap = Map<String, dynamic>;
 typedef JsonList = List<JsonMap>;
@@ -26,7 +27,7 @@ class _SellerReportsScreenState extends State<SellerReportsScreen>
     with WidgetsBindingObserver {
   bool _isLoading = true;
   JsonList _reports = [];
-  Timer? _autoSyncTimer;
+  Timer? _wsDebounceTimer;
 
   String get _domain => ApiConfig.resolveBaseDomain(widget.baseUrl);
 
@@ -35,15 +36,28 @@ class _SellerReportsScreenState extends State<SellerReportsScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _fetchReports(silent: false);
-    _autoSyncTimer = Timer.periodic(const Duration(seconds: 8), (_) {
-      _fetchReports(silent: true);
-    });
+    WebSocketService.addListener(_onRealtimeEvent);
+  }
+
+  void _onRealtimeEvent(BuyerRealtimeEvent event) {
+    if (!mounted) return;
+    if (event.scope == 'compliance' ||
+        event.scope == 'notification' ||
+        event.scope == 'general') {
+      _wsDebounceTimer?.cancel();
+      _wsDebounceTimer = Timer(const Duration(milliseconds: 260), () {
+        if (mounted) {
+          _fetchReports(silent: true);
+        }
+      });
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _autoSyncTimer?.cancel();
+    _wsDebounceTimer?.cancel();
+    WebSocketService.removeListener(_onRealtimeEvent);
     super.dispose();
   }
 
@@ -83,13 +97,12 @@ class _SellerReportsScreenState extends State<SellerReportsScreen>
       setState(() => _isLoading = true);
     }
     try {
-      final response = await http.get(
-        Uri.parse('$_domain/api/v1/seller-reports'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .get(
+            Uri.parse('$_domain/api/v1/seller-reports'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (!mounted) return;
       if (response.statusCode == 200) {

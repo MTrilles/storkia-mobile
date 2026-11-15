@@ -26,6 +26,7 @@ class AddressFormScreen extends StatefulWidget {
 
 class _AddressFormScreenState extends State<AddressFormScreen> {
   final _formKey = GlobalKey<FormState>();
+
   late TextEditingController _firstNameController;
   late TextEditingController _lastNameController;
   late TextEditingController _phoneController;
@@ -80,6 +81,7 @@ class _AddressFormScreenState extends State<AddressFormScreen> {
       _selectedBarangayCode = addr.barangayCode;
       _selectedBarangayName = addr.barangay;
     }
+
     _fetchProvinces();
   }
 
@@ -125,6 +127,7 @@ class _AddressFormScreenState extends State<AddressFormScreen> {
             ];
             _isLoadingLocations = false;
           });
+
           if (_selectedProvinceCode != null &&
               _selectedProvinceCode!.isNotEmpty) {
             await _fetchMunicipalities(
@@ -152,6 +155,7 @@ class _AddressFormScreenState extends State<AddressFormScreen> {
         _barangays = [];
       }
     });
+
     try {
       final response = await http.get(
         Uri.parse('$_domain/api/v1/addresses/municipalities/$provinceCode'),
@@ -182,6 +186,7 @@ class _AddressFormScreenState extends State<AddressFormScreen> {
                   },
             ];
           });
+
           if (preserveSelection &&
               _selectedMunicipalityCode != null &&
               _selectedMunicipalityCode!.isNotEmpty) {
@@ -206,6 +211,7 @@ class _AddressFormScreenState extends State<AddressFormScreen> {
       _isLoadingBarangays = true;
       _barangays = [];
     });
+
     try {
       final response = await http.get(
         Uri.parse('$_domain/api/v1/addresses/barangays/$municipalityCode'),
@@ -236,6 +242,7 @@ class _AddressFormScreenState extends State<AddressFormScreen> {
                       .toString(),
                 },
           ];
+
           setState(() {
             _barangays = parsed;
             if (preserveSelection &&
@@ -274,6 +281,7 @@ class _AddressFormScreenState extends State<AddressFormScreen> {
       _showError('Please select a municipality or city.');
       return;
     }
+
     final String resolvedBarangay = (_selectedBarangayName != null &&
             _selectedBarangayName!.trim().isNotEmpty)
         ? _selectedBarangayName!.trim()
@@ -284,6 +292,7 @@ class _AddressFormScreenState extends State<AddressFormScreen> {
     }
 
     setState(() => _isSubmitting = true);
+
     final isEditing = widget.address != null;
     final url = isEditing
         ? '$_domain/api/v1/addresses/${widget.address!.id}'
@@ -343,6 +352,7 @@ class _AddressFormScreenState extends State<AddressFormScreen> {
       final data = json.decode(response.body);
       if (response.statusCode == 200 || response.statusCode == 201) {
         if (data['success'] == true) {
+          HapticFeedback.mediumImpact();
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
@@ -355,6 +365,7 @@ class _AddressFormScreenState extends State<AddressFormScreen> {
           return;
         }
       }
+
       String errorMsg = data['message'] ?? 'Failed to save address.';
       if (data['errors'] != null && data['errors'] is Map) {
         final Map errors = data['errors'];
@@ -377,6 +388,7 @@ class _AddressFormScreenState extends State<AddressFormScreen> {
 
   void _showError(String message) {
     if (!mounted) return;
+    HapticFeedback.heavyImpact();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
@@ -404,8 +416,13 @@ class _AddressFormScreenState extends State<AddressFormScreen> {
     return Scaffold(
       backgroundColor: StorkTheme.surfaceSubtle,
       appBar: AppBar(
-        title:
-            Text(isEditing ? 'Edit Delivery Address' : 'New Delivery Address'),
+        title: FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerLeft,
+          child: Text(
+            isEditing ? 'Edit Delivery Address' : 'New Delivery Address',
+          ),
+        ),
       ),
       body: _isLoadingLocations
           ? const Center(
@@ -476,7 +493,7 @@ class _AddressFormScreenState extends State<AddressFormScreen> {
                     children: [
                       LayoutBuilder(
                         builder: (context, constraints) {
-                          final isCompact = constraints.maxWidth < 310;
+                          final isCompact = constraints.maxWidth < 330;
                           final firstField = TextFormField(
                             controller: _firstNameController,
                             textCapitalization: TextCapitalization.words,
@@ -797,7 +814,10 @@ class _AddressFormScreenState extends State<AddressFormScreen> {
                         ),
                       ),
                       value: _isDefault,
-                      onChanged: (val) => setState(() => _isDefault = val),
+                      onChanged: (val) {
+                        HapticFeedback.selectionClick();
+                        setState(() => _isDefault = val);
+                      },
                     ),
                   ),
                   const SizedBox(height: 24),
@@ -841,6 +861,8 @@ class _AddressFormScreenState extends State<AddressFormScreen> {
                       _isSubmitting
                           ? 'Saving...'
                           : (isEditing ? 'Update Address' : 'Save Address'),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
                 ),

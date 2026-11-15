@@ -2,11 +2,12 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:http/http.dart' as http;
 import '../config/api_config.dart';
 import '../config/app_routes.dart';
 import '../config/app_theme.dart';
 import '../providers/global_counters_provider.dart';
+import '../services/api_service.dart';
+import '../services/websocket_service.dart';
 import 'order_details_screen.dart';
 import 'points_rewards_screen.dart';
 
@@ -31,7 +32,7 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen>
     with WidgetsBindingObserver {
   bool _isLoading = true;
   List<JsonMap> _notifications = [];
-  Timer? _autoSyncTimer;
+  Timer? _wsDebounceTimer;
 
   String get _domain => ApiConfig.resolveBaseDomain(widget.baseUrl);
 
@@ -40,15 +41,30 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _fetchNotifications();
-    _autoSyncTimer = Timer.periodic(const Duration(seconds: 6), (_) {
-      _fetchNotifications(silent: true);
-    });
+    WebSocketService.addListener(_onRealtimeEvent);
+  }
+
+  void _onRealtimeEvent(BuyerRealtimeEvent event) {
+    if (!mounted) return;
+    if (event.scope == 'notification' ||
+        event.scope == 'order' ||
+        event.scope == 'shipment' ||
+        event.scope == 'return' ||
+        event.scope == 'wallet') {
+      _wsDebounceTimer?.cancel();
+      _wsDebounceTimer = Timer(const Duration(milliseconds: 250), () {
+        if (mounted) {
+          _fetchNotifications(silent: true);
+        }
+      });
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _autoSyncTimer?.cancel();
+    _wsDebounceTimer?.cancel();
+    WebSocketService.removeListener(_onRealtimeEvent);
     super.dispose();
   }
 
@@ -142,7 +158,7 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen>
     final min = dt.minute.toString().padLeft(2, '0');
     final amPm = dt.hour >= 12 ? 'PM' : 'AM';
     final formatted =
-        '${months[dt.month - 1]} ${dt.day}, ${dt.year} • $hour12:$min $amPm';
+        '${months[dt.month - 1]} ${dt.day}, ${dt.year} \u2022 $hour12:$min $amPm';
 
     final diff = DateTime.now().difference(dt);
     String rel = '';
@@ -164,13 +180,12 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen>
       setState(() => _isLoading = true);
     }
     try {
-      final response = await http.get(
-        Uri.parse('$_domain/api/v1/notifications'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .get(
+            Uri.parse('$_domain/api/v1/notifications'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (!mounted) return;
       if (response.statusCode == 200) {
@@ -216,26 +231,24 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen>
 
   Future<void> _markAsRead(String id) async {
     try {
-      await http.patch(
-        Uri.parse('$_domain/api/v1/notifications/$id/read'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      await ApiService.httpClient
+          .patch(
+            Uri.parse('$_domain/api/v1/notifications/$id/read'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
       _fetchNotifications(silent: true);
     } catch (_) {}
   }
 
   Future<void> _markAllAsRead() async {
     try {
-      await http.patch(
-        Uri.parse('$_domain/api/v1/notifications/read-all'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      await ApiService.httpClient
+          .patch(
+            Uri.parse('$_domain/api/v1/notifications/read-all'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
       _fetchNotifications(silent: true);
     } catch (_) {}
   }

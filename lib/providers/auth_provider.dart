@@ -1,10 +1,13 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../config/api_config.dart';
 import '../models/user_model.dart';
 import '../services/api_service.dart';
+import '../services/websocket_service.dart';
+
+typedef JsonMap = Map<String, dynamic>;
 
 class AuthState {
   final UserModel? user;
@@ -59,9 +62,10 @@ class AuthNotifier extends StateNotifier<AuthState> {
           storedUserStr.isNotEmpty) {
         final decoded = json.decode(storedUserStr);
         if (decoded is Map) {
-          final user = UserModel.fromJson(Map<String, dynamic>.from(decoded));
+          final user = UserModel.fromJson(JsonMap.from(decoded));
           state = AuthState(user: user, token: storedToken, isLoading: false);
-          await refreshUserProfile();
+          WebSocketService.init(storedToken, userId: user.id);
+          unawaited(refreshUserProfile());
           return;
         }
       }
@@ -74,7 +78,8 @@ class AuthNotifier extends StateNotifier<AuthState> {
     await prefs.setString('storkia_auth_token', token);
     await prefs.setString('storkia_auth_user', json.encode(user.toJson()));
     state = AuthState(user: user, token: token, isLoading: false);
-    await refreshUserProfile();
+    WebSocketService.init(token, userId: user.id);
+    unawaited(refreshUserProfile());
   }
 
   Future<void> updateUser(UserModel updatedUser) async {
@@ -92,19 +97,16 @@ class AuthNotifier extends StateNotifier<AuthState> {
     if (token == null || token.isEmpty) return;
 
     try {
-      final headers = {
-        'Authorization': 'Bearer $token',
-        'Accept': 'application/json',
-      };
+      final headers = ApiService.buildHeaders(token);
 
       final responses = await Future.wait([
-        http
+        ApiService.httpClient
             .get(Uri.parse('${ApiConfig.baseUrl}/user'), headers: headers)
             .timeout(ApiConfig.requestTimeout),
-        http
+        ApiService.httpClient
             .get(Uri.parse('${ApiConfig.baseUrl}/profile'), headers: headers)
             .timeout(ApiConfig.requestTimeout),
-        http
+        ApiService.httpClient
             .get(
               Uri.parse('${ApiConfig.baseUrl}/account/identity-verification'),
               headers: headers,
@@ -120,7 +122,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
         final rawUser =
             body is Map ? (body['data'] ?? body['user'] ?? body) : null;
         if (rawUser is Map) {
-          baseUser = UserModel.fromJson(Map<String, dynamic>.from(rawUser));
+          baseUser = UserModel.fromJson(JsonMap.from(rawUser));
         }
       }
 
@@ -137,8 +139,8 @@ class AuthNotifier extends StateNotifier<AuthState> {
         if (d is Map) {
           hasProfileResponse = true;
           final pMap = d['profile'] is Map
-              ? Map<String, dynamic>.from(d['profile'] as Map)
-              : Map<String, dynamic>.from(d);
+              ? JsonMap.from(d['profile'] as Map)
+              : JsonMap.from(d);
 
           final String uName =
               (pMap['username'] ?? d['username'] ?? '').toString().trim();
@@ -164,8 +166,8 @@ class AuthNotifier extends StateNotifier<AuthState> {
         final d = body is Map ? (body['data'] ?? body) : null;
         if (d is Map) {
           final vMap = d['verification'] is Map
-              ? Map<String, dynamic>.from(d['verification'] as Map)
-              : Map<String, dynamic>.from(d);
+              ? JsonMap.from(d['verification'] as Map)
+              : JsonMap.from(d);
           final String s =
               (vMap['status'] ?? d['status'] ?? '').toString().trim();
           if (s.isNotEmpty) {
@@ -182,12 +184,14 @@ class AuthNotifier extends StateNotifier<AuthState> {
       );
 
       state = state.copyWith(user: updated);
+      WebSocketService.init(token, userId: updated.id);
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('storkia_auth_user', json.encode(updated.toJson()));
     } catch (_) {}
   }
 
   Future<void> logout() async {
+    await WebSocketService.disconnect();
     final token = state.token;
     if (token != null && token.isNotEmpty) {
       await ApiService.logout(token);

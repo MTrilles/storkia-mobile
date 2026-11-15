@@ -2,9 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:http/http.dart' as http;
 import '../config/api_config.dart';
 import '../config/app_theme.dart';
+import '../services/api_service.dart';
+import '../services/websocket_service.dart';
 
 typedef JsonMap = Map<String, dynamic>;
 
@@ -26,7 +27,7 @@ class _MyCouponsScreenState extends State<MyCouponsScreen>
     with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   late TabController _tabController;
   final TextEditingController _codeController = TextEditingController();
-  Timer? _autoSyncTimer;
+  Timer? _wsDebounceTimer;
 
   bool _isLoading = true;
   bool _isClaimingCode = false;
@@ -43,15 +44,29 @@ class _MyCouponsScreenState extends State<MyCouponsScreen>
     WidgetsBinding.instance.addObserver(this);
     _tabController = TabController(length: 2, vsync: this);
     _fetchVouchers(silent: false);
-    _autoSyncTimer = Timer.periodic(const Duration(seconds: 6), (_) {
-      _fetchVouchers(silent: true);
-    });
+    WebSocketService.addListener(_onRealtimeEvent);
+  }
+
+  void _onRealtimeEvent(BuyerRealtimeEvent event) {
+    if (!mounted) return;
+    if (event.scope == 'voucher' ||
+        event.scope == 'wallet' ||
+        event.scope == 'order' ||
+        event.scope == 'marketplace') {
+      _wsDebounceTimer?.cancel();
+      _wsDebounceTimer = Timer(const Duration(milliseconds: 260), () {
+        if (mounted) {
+          _fetchVouchers(silent: true);
+        }
+      });
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _autoSyncTimer?.cancel();
+    _wsDebounceTimer?.cancel();
+    WebSocketService.removeListener(_onRealtimeEvent);
     _tabController.dispose();
     _codeController.dispose();
     super.dispose();
@@ -62,6 +77,46 @@ class _MyCouponsScreenState extends State<MyCouponsScreen>
     if (state == AppLifecycleState.resumed) {
       _fetchVouchers(silent: true);
     }
+  }
+
+  void _showPopupToast(String message, {bool isError = true}) {
+    if (!mounted || message.trim().isEmpty) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.clearSnackBars();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            Icon(
+              isError
+                  ? Icons.error_outline_rounded
+                  : Icons.check_circle_outline_rounded,
+              color: Colors.white,
+              size: 19,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                message.trim(),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                  height: 1.3,
+                ),
+              ),
+            ),
+          ],
+        ),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 3),
+        margin: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+        backgroundColor: isError ? StorkTheme.danger : StorkTheme.success,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+        ),
+      ),
+    );
   }
 
   String _formatMoney(dynamic raw) {
@@ -95,12 +150,9 @@ class _MyCouponsScreenState extends State<MyCouponsScreen>
       setState(() => _isLoading = true);
     }
     try {
-      final headers = {
-        'Authorization': 'Bearer ${widget.token}',
-        'Accept': 'application/json',
-      };
+      final headers = ApiService.buildHeaders(widget.token);
 
-      final response = await http
+      final response = await ApiService.httpClient
           .get(Uri.parse('$_domain/api/v1/vouchers'), headers: headers)
           .timeout(ApiConfig.requestTimeout);
 
@@ -135,9 +187,11 @@ class _MyCouponsScreenState extends State<MyCouponsScreen>
 
       if (discover.isEmpty) {
         try {
-          final activeRes = await http
-              .get(Uri.parse('$_domain/api/v1/vouchers/active'),
-                  headers: headers)
+          final activeRes = await ApiService.httpClient
+              .get(
+                Uri.parse('$_domain/api/v1/vouchers/active'),
+                headers: headers,
+              )
               .timeout(ApiConfig.requestTimeout);
           if (activeRes.statusCode == 200) {
             final activeBody = json.decode(activeRes.body);
@@ -184,14 +238,10 @@ class _MyCouponsScreenState extends State<MyCouponsScreen>
     });
 
     try {
-      final response = await http
+      final response = await ApiService.httpClient
           .post(
             Uri.parse('$_domain/api/v1/vouchers/claim'),
-            headers: {
-              'Authorization': 'Bearer ${widget.token}',
-              'Accept': 'application/json',
-              'Content-Type': 'application/json',
-            },
+            headers: ApiService.buildHeaders(widget.token, isJson: true),
             body: json.encode({'code': code}),
           )
           .timeout(ApiConfig.requestTimeout);
@@ -203,14 +253,10 @@ class _MyCouponsScreenState extends State<MyCouponsScreen>
           data is Map &&
           data['success'] == true) {
         _codeController.clear();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              data['message']?.toString() ??
-                  'Voucher "$code" added to your wallet!',
-            ),
-            backgroundColor: StorkTheme.success,
-          ),
+        _showPopupToast(
+          data['message']?.toString() ??
+              'Voucher "$code" added to your wallet!',
+          isError: false,
         );
         _fetchVouchers(silent: true);
       } else {
@@ -225,22 +271,10 @@ class _MyCouponsScreenState extends State<MyCouponsScreen>
             errMsg = first.first.toString();
           }
         }
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(errMsg),
-            backgroundColor: StorkTheme.danger,
-          ),
-        );
+        _showPopupToast(errMsg, isError: true);
       }
     } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Network error occurred.'),
-            backgroundColor: StorkTheme.danger,
-          ),
-        );
-      }
+      _showPopupToast('Network error occurred.', isError: true);
     } finally {
       if (mounted) {
         setState(() {
@@ -253,11 +287,9 @@ class _MyCouponsScreenState extends State<MyCouponsScreen>
 
   void _copyToClipboard(String code) {
     Clipboard.setData(ClipboardData(text: code));
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Voucher code "$code" copied to clipboard!'),
-        backgroundColor: StorkTheme.success,
-      ),
+    _showPopupToast(
+      'Voucher code "$code" copied to clipboard!',
+      isError: false,
     );
   }
 

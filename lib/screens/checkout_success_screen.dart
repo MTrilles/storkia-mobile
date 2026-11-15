@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../config/api_config.dart';
 import '../config/app_routes.dart';
 import '../config/app_theme.dart';
@@ -28,6 +29,26 @@ class CheckoutSuccessScreen extends StatelessWidget {
     return '$intPart.${parts[1]}';
   }
 
+  Future<void> _copyReference(
+    BuildContext context,
+    String text,
+    String label,
+  ) async {
+    final cleaned = text.trim();
+    if (cleaned.isEmpty || cleaned == 'N/A') return;
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    await Clipboard.setData(ClipboardData(text: cleaned));
+    HapticFeedback.lightImpact();
+    messenger?.clearSnackBars();
+    messenger?.showSnackBar(
+      SnackBar(
+        content: Text('Copied $label: $cleaned'),
+        backgroundColor: StorkTheme.primaryDark,
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final domain = ApiConfig.resolveBaseDomain(baseUrl);
@@ -42,7 +63,11 @@ class CheckoutSuccessScreen extends StatelessWidget {
     return Scaffold(
       backgroundColor: StorkTheme.surfaceSubtle,
       appBar: AppBar(
-        title: const Text('Order Confirmed'),
+        title: const FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerLeft,
+          child: Text('Order Confirmed'),
+        ),
         automaticallyImplyLeading: false,
       ),
       body: ListView(
@@ -51,7 +76,7 @@ class CheckoutSuccessScreen extends StatelessWidget {
           _buildCompletedStepper(),
           const SizedBox(height: 16),
           Container(
-            padding: const EdgeInsets.all(24),
+            padding: const EdgeInsets.all(22),
             decoration: BoxDecoration(
               color: StorkTheme.surface,
               borderRadius: BorderRadius.circular(24),
@@ -88,110 +113,140 @@ class CheckoutSuccessScreen extends StatelessWidget {
                   'Thank You! Your Order Has Been Placed',
                   textAlign: TextAlign.center,
                   style: TextStyle(
-                    fontSize: 20,
+                    fontSize: 19,
                     fontWeight: FontWeight.w900,
                     color: StorkTheme.primaryDark,
                   ),
                 ),
                 const SizedBox(height: 12),
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: StorkTheme.surfaceSubtle,
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: StorkTheme.borderSubtle),
-                  ),
-                  child: Column(
-                    children: [
-                      Wrap(
-                        alignment: WrapAlignment.center,
-                        spacing: 6,
-                        runSpacing: 2,
-                        children: [
-                          const Text(
-                            'Parent Order Reference:',
-                            style: TextStyle(
-                              fontSize: 12.5,
-                              color: StorkTheme.textMuted,
+                InkWell(
+                  onTap: () =>
+                      _copyReference(context, orderNumber, 'Order Reference'),
+                  borderRadius: BorderRadius.circular(16),
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: StorkTheme.surfaceSubtle,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: StorkTheme.borderSubtle),
+                    ),
+                    child: Column(
+                      children: [
+                        Wrap(
+                          alignment: WrapAlignment.center,
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          spacing: 6,
+                          runSpacing: 2,
+                          children: [
+                            const Text(
+                              'Parent Order Reference:',
+                              style: TextStyle(
+                                fontSize: 12.5,
+                                color: StorkTheme.textMuted,
+                              ),
                             ),
-                          ),
-                          Text(
-                            orderNumber,
-                            style: const TextStyle(
-                              fontSize: 12.5,
-                              fontWeight: FontWeight.w800,
-                              color: StorkTheme.primaryDark,
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  orderNumber,
+                                  style: const TextStyle(
+                                    fontSize: 12.5,
+                                    fontWeight: FontWeight.w800,
+                                    color: StorkTheme.primaryDark,
+                                  ),
+                                ),
+                                const SizedBox(width: 4),
+                                const Icon(
+                                  Icons.copy_rounded,
+                                  size: 12,
+                                  color: StorkTheme.primary,
+                                ),
+                              ],
                             ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 4),
-                      Wrap(
-                        alignment: WrapAlignment.center,
-                        spacing: 6,
-                        runSpacing: 2,
-                        children: [
-                          const Text(
-                            'Total Order Amount:',
-                            style: TextStyle(
-                              fontSize: 12.5,
-                              color: StorkTheme.textMuted,
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Wrap(
+                          alignment: WrapAlignment.center,
+                          spacing: 6,
+                          runSpacing: 2,
+                          children: [
+                            const Text(
+                              'Total Order Amount:',
+                              style: TextStyle(
+                                fontSize: 12.5,
+                                color: StorkTheme.textMuted,
+                              ),
                             ),
-                          ),
-                          Text(
-                            '₱$totalAmount ($paymentMethod)',
-                            style: const TextStyle(
-                              fontSize: 13.5,
-                              fontWeight: FontWeight.w900,
-                              color: StorkTheme.primary,
+                            Text(
+                              '\u20B1$totalAmount ($paymentMethod)',
+                              style: const TextStyle(
+                                fontSize: 13.5,
+                                fontWeight: FontWeight.w900,
+                                color: StorkTheme.primary,
+                              ),
                             ),
-                          ),
-                        ],
-                      ),
-                    ],
+                          ],
+                        ),
+                      ],
+                    ),
                   ),
                 ),
                 const SizedBox(height: 20),
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton(
-                        onPressed: () {
-                          Navigator.of(context)
-                              .popUntil((route) => route.isFirst);
-                        },
-                        child: const Text(
-                          'Continue Shopping',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final continueBtn = OutlinedButton(
+                      onPressed: () {
+                        Navigator.of(context)
+                            .popUntil((route) => route.isFirst);
+                      },
+                      child: const Text(
+                        'Continue Shopping',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: ElevatedButton(
-                        onPressed: () {
-                          Navigator.of(context)
-                              .popUntil((route) => route.isFirst);
-                          Navigator.push(
-                            context,
-                            StorkRoute.fade(
-                              OrdersScreen(
-                                baseUrl: domain,
-                                token: token,
-                              ),
+                    );
+                    final ordersBtn = ElevatedButton(
+                      onPressed: () {
+                        Navigator.of(context)
+                            .popUntil((route) => route.isFirst);
+                        Navigator.push(
+                          context,
+                          StorkRoute.fade(
+                            OrdersScreen(
+                              baseUrl: domain,
+                              token: token,
                             ),
-                          );
-                        },
-                        child: const Text(
-                          'View My Orders',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
+                          ),
+                        );
+                      },
+                      child: const Text(
+                        'View My Orders',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
-                    ),
-                  ],
+                    );
+
+                    if (constraints.maxWidth < 310) {
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          ordersBtn,
+                          const SizedBox(height: 8),
+                          continueBtn,
+                        ],
+                      );
+                    }
+                    return Row(
+                      children: [
+                        Expanded(child: continueBtn),
+                        const SizedBox(width: 10),
+                        Expanded(child: ordersBtn),
+                      ],
+                    );
+                  },
                 ),
               ],
             ),
@@ -210,7 +265,10 @@ class CheckoutSuccessScreen extends StatelessWidget {
             const SizedBox(height: 10),
             for (final rawSo in sellerOrders)
               if (rawSo is Map)
-                _buildSellerOrderCard(Map<String, dynamic>.from(rawSo)),
+                _buildSellerOrderCard(
+                  context,
+                  Map<String, dynamic>.from(rawSo),
+                ),
           ],
           const SizedBox(height: 24),
         ],
@@ -227,16 +285,21 @@ class CheckoutSuccessScreen extends StatelessWidget {
         border: Border.all(color: StorkTheme.borderSubtle),
         boxShadow: StorkTheme.softCardShadow,
       ),
-      child: Row(
-        children: [
-          _stepDot('✓', 'Cart', done: true),
-          Expanded(child: Container(height: 2, color: StorkTheme.primary)),
-          _stepDot('✓', 'Order', done: true),
-          Expanded(child: Container(height: 2, color: StorkTheme.primary)),
-          _stepDot('✓', 'Pay', done: true),
-          Expanded(child: Container(height: 2, color: StorkTheme.primary)),
-          _stepDot('4', 'Done', active: true),
-        ],
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final isCompact = constraints.maxWidth < 310;
+          return Row(
+            children: [
+              _stepDot('\u2713', 'Cart', done: true, isCompact: isCompact),
+              Expanded(child: Container(height: 2, color: StorkTheme.primary)),
+              _stepDot('\u2713', 'Order', done: true, isCompact: isCompact),
+              Expanded(child: Container(height: 2, color: StorkTheme.primary)),
+              _stepDot('\u2713', 'Pay', done: true, isCompact: isCompact),
+              Expanded(child: Container(height: 2, color: StorkTheme.primary)),
+              _stepDot('4', 'Done', active: true, isCompact: isCompact),
+            ],
+          );
+        },
       ),
     );
   }
@@ -246,13 +309,14 @@ class CheckoutSuccessScreen extends StatelessWidget {
     String label, {
     bool done = false,
     bool active = false,
+    bool isCompact = false,
   }) {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
         Container(
-          width: 22,
-          height: 22,
+          width: isCompact ? 20 : 22,
+          height: isCompact ? 20 : 22,
           alignment: Alignment.center,
           decoration: BoxDecoration(
             gradient: active ? StorkTheme.brandGradient : null,
@@ -266,7 +330,7 @@ class CheckoutSuccessScreen extends StatelessWidget {
           child: Text(
             badge,
             style: TextStyle(
-              fontSize: 10.5,
+              fontSize: 10,
               fontWeight: FontWeight.w800,
               color: active ? Colors.white : StorkTheme.primary,
             ),
@@ -275,8 +339,8 @@ class CheckoutSuccessScreen extends StatelessWidget {
         const SizedBox(width: 4),
         Text(
           label,
-          style: const TextStyle(
-            fontSize: 10.5,
+          style: TextStyle(
+            fontSize: isCompact ? 9.5 : 10.5,
             fontWeight: FontWeight.w800,
             color: StorkTheme.primaryDark,
           ),
@@ -285,7 +349,7 @@ class CheckoutSuccessScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildSellerOrderCard(JsonMap so) {
+  Widget _buildSellerOrderCard(BuildContext context, JsonMap so) {
     final sellerOrderNo = so['seller_order_number']?.toString() ?? '';
     final storeName =
         so['seller_profile']?['business_name']?.toString() ?? 'Seller Store';
@@ -319,19 +383,34 @@ class CheckoutSuccessScreen extends StatelessWidget {
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                    decoration: BoxDecoration(
-                      color: StorkTheme.brandLight.withValues(alpha: 0.45),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(
-                      sellerOrderNo,
-                      style: const TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w800,
-                        color: StorkTheme.primaryDark,
+                  GestureDetector(
+                    onTap: () => _copyReference(
+                        context, sellerOrderNo, 'Seller Order #'),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: StorkTheme.brandLight.withValues(alpha: 0.45),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            sellerOrderNo,
+                            style: const TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w800,
+                              color: StorkTheme.primaryDark,
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          const Icon(
+                            Icons.copy_rounded,
+                            size: 10,
+                            color: StorkTheme.primaryDark,
+                          ),
+                        ],
                       ),
                     ),
                   ),
@@ -407,7 +486,7 @@ class CheckoutSuccessScreen extends StatelessWidget {
                     ),
                     const SizedBox(width: 8),
                     Text(
-                      '×${rawItem['quantity']} • ₱${_formatMoney(rawItem['line_total'])}',
+                      '\u00D7${rawItem['quantity']} \u2022 \u20B1${_formatMoney(rawItem['line_total'])}',
                       style: const TextStyle(
                         fontSize: 12.5,
                         fontWeight: FontWeight.w800,
@@ -425,14 +504,14 @@ class CheckoutSuccessScreen extends StatelessWidget {
             runSpacing: 4,
             children: [
               Text(
-                'Subtotal: ₱${_formatMoney(so['subtotal_amount'])} + Ship: ₱${_formatMoney(so['shipping_fee'])}',
+                'Subtotal: \u20B1${_formatMoney(so['subtotal_amount'])} + Ship: \u20B1${_formatMoney(so['shipping_fee'])}',
                 style: const TextStyle(
                   fontSize: 11.5,
                   color: StorkTheme.textMuted,
                 ),
               ),
               Text(
-                '₱${_formatMoney(so['total_amount'])} ($payMethod)',
+                '\u20B1${_formatMoney(so['total_amount'])} ($payMethod)',
                 style: const TextStyle(
                   fontSize: 13.5,
                   fontWeight: FontWeight.w900,

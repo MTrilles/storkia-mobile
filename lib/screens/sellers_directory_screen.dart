@@ -1,11 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 import '../config/api_config.dart';
 import '../config/app_routes.dart';
 import '../config/app_theme.dart';
 import '../models/seller_profile_model.dart';
+import '../services/api_service.dart';
+import '../services/websocket_service.dart';
 import 'seller_store_screen.dart';
 
 typedef JsonMap = Map<String, dynamic>;
@@ -30,7 +31,7 @@ class SellersDirectoryScreen extends StatefulWidget {
 class _SellersDirectoryScreenState extends State<SellersDirectoryScreen>
     with WidgetsBindingObserver {
   final TextEditingController _searchController = TextEditingController();
-  Timer? _autoSyncTimer;
+  Timer? _wsDebounceTimer;
 
   bool _isLoading = true;
   List<SellerProfile> _allSellers = [];
@@ -80,26 +81,77 @@ class _SellersDirectoryScreenState extends State<SellersDirectoryScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _fetchSellers(silent: false);
-    _autoSyncTimer = Timer.periodic(const Duration(seconds: 10), (_) {
-      if (_togglingIds.isEmpty) {
-        _fetchSellers(silent: true);
-      }
-    });
+    WebSocketService.addListener(_onRealtimeEvent);
+  }
+
+  void _onRealtimeEvent(BuyerRealtimeEvent event) {
+    if (!mounted) return;
+    if (event.scope == 'catalog' ||
+        event.scope == 'marketplace' ||
+        event.scope == 'compliance') {
+      _wsDebounceTimer?.cancel();
+      _wsDebounceTimer = Timer(const Duration(milliseconds: 280), () {
+        if (mounted && _togglingIds.isEmpty) {
+          _fetchSellers(silent: true);
+        }
+      });
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _autoSyncTimer?.cancel();
+    _wsDebounceTimer?.cancel();
+    WebSocketService.removeListener(_onRealtimeEvent);
     _searchController.dispose();
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
+    if (state == AppLifecycleState.resumed && _togglingIds.isEmpty) {
       _fetchSellers(silent: true);
     }
+  }
+
+  void _showPopupToast(String message, {bool isError = false}) {
+    if (!mounted || message.trim().isEmpty) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.clearSnackBars();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            Icon(
+              isError
+                  ? Icons.error_outline_rounded
+                  : Icons.check_circle_outline_rounded,
+              color: Colors.white,
+              size: 19,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                message.trim(),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                  height: 1.3,
+                ),
+              ),
+            ),
+          ],
+        ),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 3),
+        margin: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+        backgroundColor: isError ? StorkTheme.danger : StorkTheme.success,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+        ),
+      ),
+    );
   }
 
   JsonList _extractSellersList(dynamic raw) {
@@ -131,13 +183,12 @@ class _SellersDirectoryScreenState extends State<SellersDirectoryScreen>
       setState(() => _isLoading = true);
     }
     try {
-      final response = await http.get(
-        Uri.parse('$_domain/api/v1/sellers'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .get(
+            Uri.parse('$_domain/api/v1/sellers'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (!mounted) return;
       if (response.statusCode == 200) {
@@ -180,13 +231,12 @@ class _SellersDirectoryScreenState extends State<SellersDirectoryScreen>
     });
 
     try {
-      final response = await http.post(
-        Uri.parse('$_domain/api/v1/sellers/${seller.id}/follow'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .post(
+            Uri.parse('$_domain/api/v1/sellers/${seller.id}/follow'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (!mounted) return;
       final data = json.decode(response.body);
@@ -204,13 +254,7 @@ class _SellersDirectoryScreenState extends State<SellersDirectoryScreen>
           }
         });
         if (data['message'] != null) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(data['message'].toString()),
-              backgroundColor: StorkTheme.success,
-              duration: const Duration(seconds: 2),
-            ),
-          );
+          _showPopupToast(data['message'].toString(), isError: false);
         }
       } else {
         setState(() {

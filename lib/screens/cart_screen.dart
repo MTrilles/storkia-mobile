@@ -1,13 +1,15 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:http/http.dart' as http;
 import '../config/api_config.dart';
 import '../config/app_routes.dart';
 import '../config/app_theme.dart';
 import '../models/cart_model.dart';
 import '../providers/global_counters_provider.dart';
+import '../services/api_service.dart';
+import '../services/websocket_service.dart';
 import 'checkout_screen.dart';
 import 'product_show.dart';
 
@@ -25,7 +27,7 @@ class AnimatedPrice extends ImplicitlyAnimatedWidget {
     super.key,
     required this.price,
     this.style,
-    this.prefix = '₱',
+    this.prefix = '\u20B1',
     super.duration = const Duration(milliseconds: 350),
     super.curve = Curves.easeOutCubic,
   });
@@ -85,7 +87,7 @@ class _CartScreenState extends ConsumerState<CartScreen>
     with WidgetsBindingObserver {
   bool _isLoading = true;
   bool _summaryExpanded = false;
-  Timer? _autoSyncTimer;
+  Timer? _wsDebounceTimer;
   CartItemList _cartItems = [];
   final CartGroupMap _groupedItems = {};
 
@@ -96,17 +98,28 @@ class _CartScreenState extends ConsumerState<CartScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _fetchCartItems();
-    _autoSyncTimer = Timer.periodic(const Duration(seconds: 6), (_) {
-      if (!_isLoading && !_cartItems.any((i) => i.isSyncing)) {
-        _fetchCartItems(silent: true);
-      }
-    });
+    WebSocketService.addListener(_onRealtimeEvent);
+  }
+
+  void _onRealtimeEvent(BuyerRealtimeEvent event) {
+    if (!mounted) return;
+    if (event.scope == 'cart' ||
+        event.scope == 'catalog' ||
+        event.scope == 'marketplace') {
+      _wsDebounceTimer?.cancel();
+      _wsDebounceTimer = Timer(const Duration(milliseconds: 250), () {
+        if (mounted && !_isLoading && !_cartItems.any((i) => i.isSyncing)) {
+          _fetchCartItems(silent: true);
+        }
+      });
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _autoSyncTimer?.cancel();
+    _wsDebounceTimer?.cancel();
+    WebSocketService.removeListener(_onRealtimeEvent);
     super.dispose();
   }
 
@@ -132,13 +145,12 @@ class _CartScreenState extends ConsumerState<CartScreen>
 
   Future<void> _fetchCartItems({bool silent = false}) async {
     try {
-      final response = await http.get(
-        Uri.parse('$_domain/api/v1/cart'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .get(
+            Uri.parse('$_domain/api/v1/cart'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (!mounted) return;
 
@@ -147,9 +159,11 @@ class _CartScreenState extends ConsumerState<CartScreen>
         final List<dynamic> items = _extractCartItemsList(
           data is Map ? (data['data'] ?? data) : data,
         );
+
         final SelectionMap previousSelections = {
           for (final item in _cartItems) item.id: item.isSelected
         };
+
         final CartItemList parsed = [];
         for (final e in items) {
           if (e is Map) {
@@ -160,11 +174,13 @@ class _CartScreenState extends ConsumerState<CartScreen>
             parsed.add(cartItem);
           }
         }
+
         setState(() {
           _cartItems = parsed;
           _groupCartItems();
           _isLoading = false;
         });
+
         ref.read(cartCountProvider.notifier).updateCount(_cartItems.length);
       }
     } catch (_) {
@@ -182,23 +198,19 @@ class _CartScreenState extends ConsumerState<CartScreen>
 
   CartItemList get _selectedItems =>
       _cartItems.where((i) => i.isSelected).toList();
-
   bool get _isAllSelected =>
       _cartItems.isNotEmpty && _cartItems.every((i) => i.isSelected);
-
   int get _selectedCount => _selectedItems.length;
-
   double get _retailTotal =>
       _selectedItems.fold(0.0, (sum, i) => sum + (i.activePrice * i.quantity));
-
   double get _estimatedTotal => _selectedItems.fold(
       0.0, (sum, i) => sum + (i.discountedPrice * i.quantity));
-
   double get _savingsTotal => (_retailTotal - _estimatedTotal) > 0
       ? (_retailTotal - _estimatedTotal)
       : 0.0;
 
   void _toggleAll(bool? val) {
+    HapticFeedback.selectionClick();
     setState(() {
       for (final item in _cartItems) {
         item.isSelected = val ?? false;
@@ -207,6 +219,7 @@ class _CartScreenState extends ConsumerState<CartScreen>
   }
 
   void _toggleStore(String store, bool? val) {
+    HapticFeedback.selectionClick();
     setState(() {
       for (final item in (_groupedItems[store] ?? [])) {
         item.isSelected = val ?? false;
@@ -222,6 +235,7 @@ class _CartScreenState extends ConsumerState<CartScreen>
 
   Future<void> _updateQuantity(CartItem item, int newQty) async {
     if (newQty < 1 || newQty > item.maxStock || item.isSyncing) return;
+    HapticFeedback.lightImpact();
 
     final previousQty = item.quantity;
     setState(() {
@@ -230,14 +244,10 @@ class _CartScreenState extends ConsumerState<CartScreen>
     });
 
     try {
-      final response = await http
+      final response = await ApiService.httpClient
           .put(
             Uri.parse('$_domain/api/v1/cart/${item.id}'),
-            headers: {
-              'Authorization': 'Bearer ${widget.token}',
-              'Accept': 'application/json',
-              'Content-Type': 'application/json',
-            },
+            headers: ApiService.buildHeaders(widget.token, isJson: true),
             body: json.encode({'quantity': newQty}),
           )
           .timeout(ApiConfig.requestTimeout);
@@ -298,6 +308,7 @@ class _CartScreenState extends ConsumerState<CartScreen>
     );
 
     if (confirmed != true) return;
+    HapticFeedback.mediumImpact();
 
     setState(() {
       _cartItems.remove(item);
@@ -306,13 +317,12 @@ class _CartScreenState extends ConsumerState<CartScreen>
     ref.read(cartCountProvider.notifier).updateCount(_cartItems.length);
 
     try {
-      await http.delete(
-        Uri.parse('$_domain/api/v1/cart/${item.id}'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      await ApiService.httpClient
+          .delete(
+            Uri.parse('$_domain/api/v1/cart/${item.id}'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
     } catch (_) {
       _fetchCartItems(silent: true);
     }
@@ -323,7 +333,11 @@ class _CartScreenState extends ConsumerState<CartScreen>
     return Scaffold(
       backgroundColor: StorkTheme.surfaceSubtle,
       appBar: AppBar(
-        title: Text('Shopping Cart (${_cartItems.length})'),
+        title: FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerLeft,
+          child: Text('Shopping Cart (${_cartItems.length})'),
+        ),
       ),
       body: _isLoading
           ? const Center(
@@ -359,7 +373,7 @@ class _CartScreenState extends ConsumerState<CartScreen>
 
   Widget _buildEmptyCart() {
     return Center(
-      child: Padding(
+      child: SingleChildScrollView(
         padding: const EdgeInsets.all(28),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -425,16 +439,21 @@ class _CartScreenState extends ConsumerState<CartScreen>
         border: Border.all(color: StorkTheme.borderSubtle),
         boxShadow: StorkTheme.softCardShadow,
       ),
-      child: Row(
-        children: [
-          _stepperItem('1', 'Cart', isActive: true),
-          Expanded(child: _buildStepDivider(isActive: true)),
-          _stepperItem('2', 'Order'),
-          Expanded(child: _buildStepDivider()),
-          _stepperItem('3', 'Pay'),
-          Expanded(child: _buildStepDivider()),
-          _stepperItem('4', 'Done'),
-        ],
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final isCompact = constraints.maxWidth < 310;
+          return Row(
+            children: [
+              _stepperItem('1', 'Cart', isActive: true, isCompact: isCompact),
+              Expanded(child: _buildStepDivider(isActive: true)),
+              _stepperItem('2', 'Order', isCompact: isCompact),
+              Expanded(child: _buildStepDivider()),
+              _stepperItem('3', 'Pay', isCompact: isCompact),
+              Expanded(child: _buildStepDivider()),
+              _stepperItem('4', 'Done', isCompact: isCompact),
+            ],
+          );
+        },
       ),
     );
   }
@@ -449,13 +468,18 @@ class _CartScreenState extends ConsumerState<CartScreen>
     );
   }
 
-  Widget _stepperItem(String step, String label, {bool isActive = false}) {
+  Widget _stepperItem(
+    String step,
+    String label, {
+    bool isActive = false,
+    bool isCompact = false,
+  }) {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
         Container(
-          width: 22,
-          height: 22,
+          width: isCompact ? 20 : 22,
+          height: isCompact ? 20 : 22,
           alignment: Alignment.center,
           decoration: BoxDecoration(
             gradient: isActive ? StorkTheme.brandGradient : null,
@@ -468,7 +492,7 @@ class _CartScreenState extends ConsumerState<CartScreen>
             step,
             style: TextStyle(
               color: isActive ? Colors.white : StorkTheme.textMuted,
-              fontSize: 10.5,
+              fontSize: 10,
               fontWeight: FontWeight.w800,
             ),
           ),
@@ -477,7 +501,7 @@ class _CartScreenState extends ConsumerState<CartScreen>
         Text(
           label,
           style: TextStyle(
-            fontSize: 10.5,
+            fontSize: isCompact ? 9.5 : 10.5,
             fontWeight: isActive ? FontWeight.w800 : FontWeight.w600,
             color: isActive ? StorkTheme.primaryDark : StorkTheme.textMuted,
           ),
@@ -515,7 +539,7 @@ class _CartScreenState extends ConsumerState<CartScreen>
                       'ALL ITEMS (${_cartItems.length})',
                       style: const TextStyle(
                         fontWeight: FontWeight.w800,
-                        fontSize: 13,
+                        fontSize: 12.5,
                         color: StorkTheme.primaryDark,
                       ),
                       overflow: TextOverflow.ellipsis,
@@ -525,6 +549,7 @@ class _CartScreenState extends ConsumerState<CartScreen>
               ),
             ),
           ),
+          const SizedBox(width: 6),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
             decoration: BoxDecoration(
@@ -534,7 +559,7 @@ class _CartScreenState extends ConsumerState<CartScreen>
             child: Text(
               '$_selectedCount of ${_cartItems.length} selected',
               style: const TextStyle(
-                fontSize: 11,
+                fontSize: 10.5,
                 fontWeight: FontWeight.w800,
                 color: StorkTheme.primary,
               ),
@@ -614,22 +639,30 @@ class _CartScreenState extends ConsumerState<CartScreen>
     final imgUrl = item.imageUrl.isNotEmpty
         ? ApiConfig.storageUrl(item.imageUrl, _domain)
         : '';
+    final isCompact = MediaQuery.sizeOf(context).width < 360;
+    final thumbSize = isCompact ? 64.0 : 76.0;
 
     return Padding(
-      padding: const EdgeInsets.all(12),
+      padding: EdgeInsets.all(isCompact ? 10 : 12),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Padding(
-            padding: const EdgeInsets.only(top: 18),
-            child: Checkbox(
-              value: item.isSelected,
-              onChanged: (val) =>
-                  setState(() => item.isSelected = val ?? false),
-              activeColor: StorkTheme.primary,
-              visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.only(top: isCompact ? 12 : 18),
+            child: SizedBox(
+              width: 32,
+              child: Checkbox(
+                value: item.isSelected,
+                onChanged: (val) {
+                  HapticFeedback.selectionClick();
+                  setState(() => item.isSelected = val ?? false);
+                },
+                activeColor: StorkTheme.primary,
+                visualDensity: VisualDensity.compact,
+              ),
             ),
           ),
+          const SizedBox(width: 4),
           GestureDetector(
             onTap: () {
               Navigator.push(
@@ -644,9 +677,9 @@ class _CartScreenState extends ConsumerState<CartScreen>
               ).then((_) => _fetchCartItems(silent: true));
             },
             child: Container(
-              width: 78,
-              height: 78,
-              margin: const EdgeInsets.only(right: 12),
+              width: thumbSize,
+              height: thumbSize,
+              margin: EdgeInsets.only(right: isCompact ? 10 : 12),
               decoration: BoxDecoration(
                 color: StorkTheme.surfaceSubtle,
                 borderRadius: BorderRadius.circular(14),
@@ -697,7 +730,7 @@ class _CartScreenState extends ConsumerState<CartScreen>
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
                             fontWeight: FontWeight.w800,
-                            fontSize: 13.5,
+                            fontSize: 13,
                             color: StorkTheme.textMain,
                             height: 1.25,
                           ),
@@ -732,12 +765,13 @@ class _CartScreenState extends ConsumerState<CartScreen>
                     ),
                     child: Text(
                       item.variantLabel,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
                         fontSize: 10.5,
                         fontWeight: FontWeight.w700,
                         color: StorkTheme.primaryDark,
                       ),
-                      overflow: TextOverflow.ellipsis,
                     ),
                   )
                 else
@@ -756,7 +790,7 @@ class _CartScreenState extends ConsumerState<CartScreen>
                           price: item.discountedPrice * item.quantity,
                           style: TextStyle(
                             fontWeight: FontWeight.w900,
-                            fontSize: 15,
+                            fontSize: 14.5,
                             color: item.product.discount > 0
                                 ? StorkTheme.price
                                 : StorkTheme.primary,
@@ -818,7 +852,7 @@ class _CartScreenState extends ConsumerState<CartScreen>
                                 : null,
                           ),
                           Container(
-                            width: 30,
+                            width: 28,
                             alignment: Alignment.center,
                             child: item.isSyncing
                                 ? const SizedBox(
@@ -863,6 +897,8 @@ class _CartScreenState extends ConsumerState<CartScreen>
   }
 
   Widget _buildBottomCheckoutBar() {
+    final screenHeight = MediaQuery.sizeOf(context).height;
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: BoxDecoration(
@@ -881,146 +917,154 @@ class _CartScreenState extends ConsumerState<CartScreen>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (_summaryExpanded) ...[
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'SELECTED ITEMS ($_selectedCount)',
-                    style: const TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w800,
-                      color: StorkTheme.primaryDark,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  if (_selectedItems.isEmpty)
-                    const Text(
-                      'No items selected',
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontStyle: FontStyle.italic,
-                        color: StorkTheme.textMuted,
+            if (_summaryExpanded)
+              ConstrainedBox(
+                constraints: BoxConstraints(maxHeight: screenHeight * 0.35),
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'SELECTED ITEMS ($_selectedCount)',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w800,
+                          color: StorkTheme.primaryDark,
+                        ),
                       ),
-                    )
-                  else
-                    SizedBox(
-                      height: 50,
-                      child: ListView.separated(
-                        scrollDirection: Axis.horizontal,
-                        itemCount: _selectedItems.length,
-                        separatorBuilder: (_, __) => const SizedBox(width: 8),
-                        itemBuilder: (context, index) {
-                          final sel = _selectedItems[index];
-                          final thumbUrl = sel.imageUrl.isNotEmpty
-                              ? ApiConfig.storageUrl(sel.imageUrl, _domain)
-                              : '';
-                          return Stack(
-                            clipBehavior: Clip.none,
-                            children: [
-                              Container(
-                                width: 46,
-                                height: 46,
-                                decoration: BoxDecoration(
-                                  color: StorkTheme.surfaceSubtle,
-                                  borderRadius: BorderRadius.circular(10),
-                                  border: Border.all(
-                                      color: StorkTheme.borderSubtle),
-                                ),
-                                child: thumbUrl.isNotEmpty
-                                    ? ClipRRect(
-                                        borderRadius: BorderRadius.circular(9),
-                                        child: Image.network(
-                                          thumbUrl,
-                                          fit: BoxFit.cover,
-                                        ),
-                                      )
-                                    : const Icon(
-                                        Icons.inventory_2_outlined,
-                                        size: 18,
-                                        color: StorkTheme.textMuted,
-                                      ),
-                              ),
-                              Positioned(
-                                top: -4,
-                                right: -4,
-                                child: GestureDetector(
-                                  onTap: () =>
-                                      setState(() => sel.isSelected = false),
-                                  child: Container(
-                                    width: 16,
-                                    height: 16,
-                                    decoration: const BoxDecoration(
-                                      color: StorkTheme.textMain,
-                                      shape: BoxShape.circle,
+                      const SizedBox(height: 8),
+                      if (_selectedItems.isEmpty)
+                        const Text(
+                          'No items selected',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontStyle: FontStyle.italic,
+                            color: StorkTheme.textMuted,
+                          ),
+                        )
+                      else
+                        SizedBox(
+                          height: 50,
+                          child: ListView.separated(
+                            scrollDirection: Axis.horizontal,
+                            itemCount: _selectedItems.length,
+                            separatorBuilder: (_, __) =>
+                                const SizedBox(width: 8),
+                            itemBuilder: (context, index) {
+                              final sel = _selectedItems[index];
+                              final thumbUrl = sel.imageUrl.isNotEmpty
+                                  ? ApiConfig.storageUrl(sel.imageUrl, _domain)
+                                  : '';
+                              return Stack(
+                                clipBehavior: Clip.none,
+                                children: [
+                                  Container(
+                                    width: 46,
+                                    height: 46,
+                                    decoration: BoxDecoration(
+                                      color: StorkTheme.surfaceSubtle,
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: Border.all(
+                                          color: StorkTheme.borderSubtle),
                                     ),
-                                    child: const Icon(
-                                      Icons.close_rounded,
-                                      size: 11,
-                                      color: Colors.white,
+                                    child: thumbUrl.isNotEmpty
+                                        ? ClipRRect(
+                                            borderRadius:
+                                                BorderRadius.circular(9),
+                                            child: Image.network(
+                                              thumbUrl,
+                                              fit: BoxFit.cover,
+                                            ),
+                                          )
+                                        : const Icon(
+                                            Icons.inventory_2_outlined,
+                                            size: 18,
+                                            color: StorkTheme.textMuted,
+                                          ),
+                                  ),
+                                  Positioned(
+                                    top: -4,
+                                    right: -4,
+                                    child: GestureDetector(
+                                      onTap: () => setState(
+                                          () => sel.isSelected = false),
+                                      child: Container(
+                                        width: 16,
+                                        height: 16,
+                                        decoration: const BoxDecoration(
+                                          color: StorkTheme.textMain,
+                                          shape: BoxShape.circle,
+                                        ),
+                                        child: const Icon(
+                                          Icons.close_rounded,
+                                          size: 11,
+                                          color: Colors.white,
+                                        ),
+                                      ),
                                     ),
                                   ),
-                                ),
-                              ),
-                            ],
-                          );
-                        },
-                      ),
-                    ),
-                  const SizedBox(height: 12),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text(
-                        'Retail Price:',
-                        style: TextStyle(
-                          fontSize: 12.5,
-                          color: StorkTheme.textMuted,
+                                ],
+                              );
+                            },
+                          ),
                         ),
+                      const SizedBox(height: 12),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text(
+                            'Retail Price:',
+                            style: TextStyle(
+                              fontSize: 12.5,
+                              color: StorkTheme.textMuted,
+                            ),
+                          ),
+                          AnimatedPrice(
+                            price: _retailTotal,
+                            style: const TextStyle(
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w700,
+                              color: StorkTheme.textMain,
+                            ),
+                          ),
+                        ],
                       ),
-                      AnimatedPrice(
-                        price: _retailTotal,
-                        style: const TextStyle(
-                          fontSize: 12.5,
-                          fontWeight: FontWeight.w700,
-                          color: StorkTheme.textMain,
-                        ),
+                      const SizedBox(height: 4),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text(
+                            'Promotions / Savings:',
+                            style: TextStyle(
+                              fontSize: 12.5,
+                              color: StorkTheme.textMuted,
+                            ),
+                          ),
+                          AnimatedPrice(
+                            prefix: '-\u20B1',
+                            price: _savingsTotal,
+                            style: const TextStyle(
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w800,
+                              color: StorkTheme.price,
+                            ),
+                          ),
+                        ],
                       ),
+                      const Divider(height: 20),
                     ],
                   ),
-                  const SizedBox(height: 4),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text(
-                        'Promotions / Savings:',
-                        style: TextStyle(
-                          fontSize: 12.5,
-                          color: StorkTheme.textMuted,
-                        ),
-                      ),
-                      AnimatedPrice(
-                        prefix: '-₱',
-                        price: _savingsTotal,
-                        style: const TextStyle(
-                          fontSize: 12.5,
-                          fontWeight: FontWeight.w800,
-                          color: StorkTheme.price,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const Divider(height: 20),
-                ],
+                ),
               ),
-            ],
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Expanded(
                   child: GestureDetector(
-                    onTap: () =>
-                        setState(() => _summaryExpanded = !_summaryExpanded),
+                    onTap: () {
+                      HapticFeedback.selectionClick();
+                      setState(() => _summaryExpanded = !_summaryExpanded);
+                    },
                     behavior: HitTestBehavior.opaque,
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1040,7 +1084,7 @@ class _CartScreenState extends ConsumerState<CartScreen>
                               child: AnimatedPrice(
                                 price: _estimatedTotal,
                                 style: TextStyle(
-                                  fontSize: 18,
+                                  fontSize: 17.5,
                                   fontWeight: FontWeight.w900,
                                   color: _savingsTotal > 0
                                       ? StorkTheme.price
@@ -1060,7 +1104,7 @@ class _CartScreenState extends ConsumerState<CartScreen>
                         ),
                         if (_savingsTotal > 0)
                           AnimatedPrice(
-                            prefix: 'Saved: ₱',
+                            prefix: 'Saved: \u20B1',
                             price: _savingsTotal,
                             style: const TextStyle(
                               fontSize: 11,
@@ -1072,7 +1116,7 @@ class _CartScreenState extends ConsumerState<CartScreen>
                     ),
                   ),
                 ),
-                const SizedBox(width: 12),
+                const SizedBox(width: 10),
                 Container(
                   height: 48,
                   decoration: BoxDecoration(
@@ -1084,6 +1128,7 @@ class _CartScreenState extends ConsumerState<CartScreen>
                     onPressed: _selectedCount == 0
                         ? null
                         : () {
+                            HapticFeedback.mediumImpact();
                             final selectedIds =
                                 _selectedItems.map((i) => i.id).toList();
                             Navigator.push(
@@ -1101,13 +1146,15 @@ class _CartScreenState extends ConsumerState<CartScreen>
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.transparent,
                       shadowColor: Colors.transparent,
-                      padding: const EdgeInsets.symmetric(horizontal: 20),
+                      padding: const EdgeInsets.symmetric(horizontal: 18),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(14),
                       ),
                     ),
                     child: Text(
                       'Checkout ($_selectedCount)',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: const TextStyle(fontWeight: FontWeight.w800),
                     ),
                   ),

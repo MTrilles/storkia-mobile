@@ -7,6 +7,7 @@ import '../config/app_theme.dart';
 import '../models/user_model.dart';
 import '../providers/auth_provider.dart';
 import '../providers/global_counters_provider.dart';
+import '../services/websocket_service.dart';
 import 'account_management_screen.dart';
 import 'address_selection_screen.dart';
 import 'announcements_screen.dart';
@@ -43,7 +44,7 @@ class MeScreen extends ConsumerStatefulWidget {
 
 class _MeScreenState extends ConsumerState<MeScreen>
     with WidgetsBindingObserver {
-  Timer? _autoSyncTimer;
+  Timer? _wsDebounceTimer;
 
   @override
   void initState() {
@@ -53,8 +54,15 @@ class _MeScreenState extends ConsumerState<MeScreen>
       ref.read(authProvider.notifier).refreshUserProfile();
       syncAllBuyerCounters(ref, widget.token);
     });
-    _autoSyncTimer = Timer.periodic(const Duration(seconds: 6), (_) {
+    WebSocketService.addListener(_onRealtimeEvent);
+  }
+
+  void _onRealtimeEvent(BuyerRealtimeEvent event) {
+    if (!mounted) return;
+    _wsDebounceTimer?.cancel();
+    _wsDebounceTimer = Timer(const Duration(milliseconds: 280), () {
       if (mounted) {
+        ref.read(authProvider.notifier).refreshUserProfile();
         syncAllBuyerCounters(ref, widget.token);
       }
     });
@@ -63,7 +71,8 @@ class _MeScreenState extends ConsumerState<MeScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _autoSyncTimer?.cancel();
+    _wsDebounceTimer?.cancel();
+    WebSocketService.removeListener(_onRealtimeEvent);
     super.dispose();
   }
 

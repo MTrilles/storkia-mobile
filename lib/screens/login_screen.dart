@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:http/http.dart' as http;
 import '../config/api_config.dart';
 import '../config/app_routes.dart';
 import '../config/app_theme.dart';
@@ -35,9 +35,50 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     super.dispose();
   }
 
+  void _showPopupToast(String message, {bool isError = true}) {
+    if (!mounted || message.trim().isEmpty) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.clearSnackBars();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            Icon(
+              isError
+                  ? Icons.error_outline_rounded
+                  : Icons.check_circle_outline_rounded,
+              color: Colors.white,
+              size: 19,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                message.trim(),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                  height: 1.3,
+                ),
+              ),
+            ),
+          ],
+        ),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 3),
+        margin: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+        backgroundColor: isError ? StorkTheme.danger : StorkTheme.success,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+        ),
+      ),
+    );
+  }
+
   Future<void> _handleLogin() async {
     FocusScope.of(context).unfocus();
     if (!_formKey.currentState!.validate()) return;
+    HapticFeedback.lightImpact();
 
     setState(() => _isLoading = true);
 
@@ -50,6 +91,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     setState(() => _isLoading = false);
 
     if (res['success'] == true) {
+      HapticFeedback.mediumImpact();
       final user = UserModel.fromJson(res['data']['user']);
       final token = res['data']['access_token'].toString();
 
@@ -73,11 +115,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         );
       }
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(res['message'] ?? 'Login failed.'),
-          backgroundColor: StorkTheme.danger,
-        ),
+      HapticFeedback.heavyImpact();
+      _showPopupToast(
+        res['message']?.toString() ?? 'Login failed.',
+        isError: true,
       );
     }
   }
@@ -90,8 +131,6 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     bool codeSent = false;
     bool isSubmitting = false;
     bool showPass = false;
-    String? modalError;
-    String? modalSuccess;
 
     showModalBottomSheet<void>(
       context: context,
@@ -103,365 +142,311 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       builder: (modalContext) {
         return StatefulBuilder(
           builder: (ctx, setModalState) {
-            return Padding(
-              padding: EdgeInsets.only(
-                left: 20,
-                right: 20,
-                top: 14,
-                bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
+            final mediaQuery = MediaQuery.of(ctx);
+            final bottomInset = mediaQuery.viewInsets.bottom;
+            final safeBottom = mediaQuery.viewPadding.bottom;
+
+            return ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: mediaQuery.size.height * 0.90,
               ),
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Center(
-                      child: Container(
-                        width: 42,
-                        height: 4,
-                        margin: const EdgeInsets.only(bottom: 16),
-                        decoration: BoxDecoration(
-                          color: StorkTheme.borderSubtle,
-                          borderRadius: BorderRadius.circular(4),
+              child: Padding(
+                padding: EdgeInsets.only(
+                  left: 20,
+                  right: 20,
+                  top: 14,
+                  bottom:
+                      bottomInset + (bottomInset > 0 ? 16 : safeBottom + 24),
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Center(
+                        child: Container(
+                          width: 42,
+                          height: 4,
+                          margin: const EdgeInsets.only(bottom: 16),
+                          decoration: BoxDecoration(
+                            color: StorkTheme.borderSubtle,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
                         ),
                       ),
-                    ),
-                    Row(
-                      children: [
-                        Container(
-                          width: 42,
-                          height: 42,
-                          decoration: BoxDecoration(
-                            color: StorkTheme.primary.withValues(alpha: 0.1),
-                            borderRadius: BorderRadius.circular(13),
+                      Row(
+                        children: [
+                          Container(
+                            width: 42,
+                            height: 42,
+                            decoration: BoxDecoration(
+                              color: StorkTheme.primary.withValues(alpha: 0.1),
+                              borderRadius: BorderRadius.circular(13),
+                            ),
+                            child: const Icon(
+                              Icons.lock_reset_rounded,
+                              color: StorkTheme.primary,
+                              size: 22,
+                            ),
                           ),
-                          child: const Icon(
-                            Icons.lock_reset_rounded,
-                            color: StorkTheme.primary,
-                            size: 22,
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  codeSent
+                                      ? 'Reset Your Password'
+                                      : 'Forgot Password?',
+                                  style: const TextStyle(
+                                    fontSize: 16.5,
+                                    fontWeight: FontWeight.w800,
+                                    color: StorkTheme.primaryDark,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  codeSent
+                                      ? 'Enter the reset token sent to your email.'
+                                      : 'Receive a password reset token via email.',
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: StorkTheme.textMuted,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          IconButton(
+                            onPressed: () => Navigator.pop(modalContext),
+                            icon: const Icon(Icons.close_rounded),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      TextField(
+                        controller: emailCtrl,
+                        enabled: !codeSent && !isSubmitting,
+                        keyboardType: TextInputType.emailAddress,
+                        decoration: const InputDecoration(
+                          labelText: 'Registered Email Address *',
+                          prefixIcon:
+                              Icon(Icons.mail_outline_rounded, size: 20),
+                        ),
+                      ),
+                      if (codeSent) ...[
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: tokenCtrl,
+                          decoration: const InputDecoration(
+                            labelText: 'Reset Token / Code *',
+                            prefixIcon: Icon(Icons.pin_outlined, size: 20),
                           ),
                         ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                codeSent
-                                    ? 'Reset Your Password'
-                                    : 'Forgot Password?',
-                                style: const TextStyle(
-                                  fontSize: 17,
-                                  fontWeight: FontWeight.w800,
-                                  color: StorkTheme.primaryDark,
-                                ),
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: passCtrl,
+                          obscureText: !showPass,
+                          decoration: InputDecoration(
+                            labelText:
+                                'New Password (8+ chars, upper, num, symbol) *',
+                            prefixIcon: const Icon(
+                              Icons.lock_outline_rounded,
+                              size: 20,
+                            ),
+                            suffixIcon: IconButton(
+                              icon: Icon(
+                                showPass
+                                    ? Icons.visibility_rounded
+                                    : Icons.visibility_off_rounded,
+                                size: 18,
                               ),
-                              const SizedBox(height: 2),
-                              Text(
-                                codeSent
-                                    ? 'Enter the reset token sent to your email.'
-                                    : 'Receive a password reset token via email.',
-                                style: const TextStyle(
-                                  fontSize: 12,
-                                  color: StorkTheme.textMuted,
-                                ),
-                              ),
-                            ],
+                              onPressed: () =>
+                                  setModalState(() => showPass = !showPass),
+                            ),
                           ),
                         ),
-                        IconButton(
-                          onPressed: () => Navigator.pop(modalContext),
-                          icon: const Icon(Icons.close_rounded),
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: confirmCtrl,
+                          obscureText: !showPass,
+                          decoration: const InputDecoration(
+                            labelText: 'Confirm New Password *',
+                            prefixIcon:
+                                Icon(Icons.verified_user_outlined, size: 20),
+                          ),
                         ),
                       ],
-                    ),
-                    const SizedBox(height: 16),
-                    TextField(
-                      controller: emailCtrl,
-                      enabled: !codeSent && !isSubmitting,
-                      keyboardType: TextInputType.emailAddress,
-                      decoration: const InputDecoration(
-                        labelText: 'Registered Email Address *',
-                        prefixIcon: Icon(Icons.mail_outline_rounded, size: 20),
-                      ),
-                    ),
-                    if (codeSent) ...[
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: tokenCtrl,
-                        decoration: const InputDecoration(
-                          labelText: 'Reset Token / Code *',
-                          prefixIcon: Icon(Icons.pin_outlined, size: 20),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: passCtrl,
-                        obscureText: !showPass,
-                        decoration: InputDecoration(
-                          labelText:
-                              'New Password (8+ chars, upper, num, symbol) *',
-                          prefixIcon:
-                              const Icon(Icons.lock_outline_rounded, size: 20),
-                          suffixIcon: IconButton(
-                            icon: Icon(
-                              showPass
-                                  ? Icons.visibility_rounded
-                                  : Icons.visibility_off_rounded,
-                              size: 18,
-                            ),
-                            onPressed: () =>
-                                setModalState(() => showPass = !showPass),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: confirmCtrl,
-                        obscureText: !showPass,
-                        decoration: const InputDecoration(
-                          labelText: 'Confirm New Password *',
-                          prefixIcon:
-                              Icon(Icons.verified_user_outlined, size: 20),
-                        ),
-                      ),
-                    ],
-                    if (modalError != null) ...[
-                      const SizedBox(height: 12),
-                      Container(
-                        padding: const EdgeInsets.all(10),
-                        decoration: BoxDecoration(
-                          color: StorkTheme.danger.withValues(alpha: 0.08),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                            color: StorkTheme.danger.withValues(alpha: 0.3),
-                          ),
-                        ),
-                        child: Row(
-                          children: [
-                            const Icon(
-                              Icons.error_outline_rounded,
-                              size: 17,
-                              color: StorkTheme.danger,
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                modalError!,
-                                style: const TextStyle(
-                                  color: StorkTheme.danger,
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                    if (modalSuccess != null) ...[
-                      const SizedBox(height: 12),
-                      Container(
-                        padding: const EdgeInsets.all(10),
-                        decoration: BoxDecoration(
-                          color: StorkTheme.success.withValues(alpha: 0.08),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                            color: StorkTheme.success.withValues(alpha: 0.3),
-                          ),
-                        ),
-                        child: Row(
-                          children: [
-                            const Icon(
-                              Icons.check_circle_outline_rounded,
-                              size: 17,
-                              color: StorkTheme.success,
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                modalSuccess!,
-                                style: const TextStyle(
-                                  color: StorkTheme.success,
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                    const SizedBox(height: 18),
-                    SizedBox(
-                      width: double.infinity,
-                      height: 50,
-                      child: ElevatedButton(
-                        onPressed: isSubmitting
-                            ? null
-                            : () async {
-                                final email = emailCtrl.text.trim();
-                                if (email.isEmpty || !email.contains('@')) {
-                                  setModalState(() {
-                                    modalError =
-                                        'Please enter a valid email address.';
-                                  });
-                                  return;
-                                }
-
-                                if (!codeSent) {
-                                  setModalState(() {
-                                    isSubmitting = true;
-                                    modalError = null;
-                                    modalSuccess = null;
-                                  });
-                                  try {
-                                    final response = await http
-                                        .post(
-                                          Uri.parse(
-                                              '${ApiConfig.baseUrl}/forgot-password'),
-                                          headers: {
-                                            'Accept': 'application/json',
-                                            'Content-Type': 'application/json',
-                                          },
-                                          body: json.encode({'email': email}),
-                                        )
-                                        .timeout(ApiConfig.requestTimeout);
-
-                                    final data = json.decode(response.body);
-                                    if (response.statusCode == 200 &&
-                                        (data['success'] == true ||
-                                            data['status'] != null)) {
-                                      setModalState(() {
-                                        codeSent = true;
-                                        modalSuccess = data['message']
-                                                ?.toString() ??
-                                            'Password reset instructions sent to your email.';
-                                      });
-                                    } else {
-                                      setModalState(() {
-                                        modalError =
-                                            data['message']?.toString() ??
-                                                'Unable to send reset link.';
-                                      });
-                                    }
-                                  } catch (_) {
-                                    setModalState(() {
-                                      modalError = 'Network error occurred.';
-                                    });
-                                  } finally {
-                                    if (modalContext.mounted) {
-                                      setModalState(() => isSubmitting = false);
-                                    }
-                                  }
-                                } else {
-                                  if (tokenCtrl.text.trim().isEmpty) {
-                                    setModalState(() {
-                                      modalError =
-                                          'Please enter the reset token from your email.';
-                                    });
-                                    return;
-                                  }
-                                  if (passCtrl.text.length < 8) {
-                                    setModalState(() {
-                                      modalError =
-                                          'Password must be at least 8 characters.';
-                                    });
-                                    return;
-                                  }
-                                  if (passCtrl.text != confirmCtrl.text) {
-                                    setModalState(() {
-                                      modalError =
-                                          'Password confirmation does not match.';
-                                    });
+                      const SizedBox(height: 18),
+                      SizedBox(
+                        width: double.infinity,
+                        height: 50,
+                        child: ElevatedButton(
+                          onPressed: isSubmitting
+                              ? null
+                              : () async {
+                                  final email = emailCtrl.text.trim();
+                                  if (email.isEmpty || !email.contains('@')) {
+                                    _showPopupToast(
+                                      'Please enter a valid email address.',
+                                      isError: true,
+                                    );
                                     return;
                                   }
 
-                                  setModalState(() {
-                                    isSubmitting = true;
-                                    modalError = null;
-                                  });
-                                  try {
-                                    final response = await http
-                                        .post(
-                                          Uri.parse(
-                                              '${ApiConfig.baseUrl}/reset-password'),
-                                          headers: {
-                                            'Accept': 'application/json',
-                                            'Content-Type': 'application/json',
-                                          },
-                                          body: json.encode({
-                                            'email': email,
-                                            'token': tokenCtrl.text.trim(),
-                                            'password': passCtrl.text,
-                                            'password_confirmation':
-                                                confirmCtrl.text,
-                                          }),
-                                        )
-                                        .timeout(ApiConfig.requestTimeout);
+                                  if (!codeSent) {
+                                    setModalState(() => isSubmitting = true);
+                                    try {
+                                      final response = await ApiService
+                                          .httpClient
+                                          .post(
+                                            Uri.parse(
+                                                '${ApiConfig.baseUrl}/forgot-password'),
+                                            headers: {
+                                              'Accept': 'application/json',
+                                              'Content-Type':
+                                                  'application/json',
+                                            },
+                                            body: json.encode({'email': email}),
+                                          )
+                                          .timeout(ApiConfig.requestTimeout);
 
-                                    final data = json.decode(response.body);
-                                    if (response.statusCode == 200 &&
-                                        (data['success'] == true ||
-                                            data['status'] != null)) {
-                                      if (modalContext.mounted) {
-                                        Navigator.pop(modalContext);
-                                      }
-                                      if (mounted) {
-                                        ScaffoldMessenger.of(context)
-                                            .showSnackBar(
-                                          SnackBar(
-                                            content: Text(
-                                              data['message']?.toString() ??
-                                                  'Password reset successfully! You may now sign in.',
-                                            ),
-                                            backgroundColor: StorkTheme.success,
-                                          ),
+                                      final data = json.decode(response.body);
+                                      if (response.statusCode == 200 &&
+                                          (data['success'] == true ||
+                                              data['status'] != null)) {
+                                        setModalState(() {
+                                          codeSent = true;
+                                        });
+                                        _showPopupToast(
+                                          data['message']?.toString() ??
+                                              'Password reset instructions sent to your email.',
+                                          isError: false,
+                                        );
+                                      } else {
+                                        _showPopupToast(
+                                          data['message']?.toString() ??
+                                              'Unable to send reset link.',
+                                          isError: true,
                                         );
                                       }
-                                    } else {
-                                      setModalState(() {
-                                        modalError = data['message']
-                                                ?.toString() ??
-                                            'Invalid or expired reset token.';
-                                      });
+                                    } catch (_) {
+                                      _showPopupToast(
+                                        'Network error occurred.',
+                                        isError: true,
+                                      );
+                                    } finally {
+                                      if (modalContext.mounted) {
+                                        setModalState(
+                                            () => isSubmitting = false);
+                                      }
                                     }
-                                  } catch (_) {
-                                    setModalState(() {
-                                      modalError = 'Network error occurred.';
-                                    });
-                                  } finally {
-                                    if (modalContext.mounted) {
-                                      setModalState(() => isSubmitting = false);
+                                  } else {
+                                    if (tokenCtrl.text.trim().isEmpty) {
+                                      _showPopupToast(
+                                        'Please enter the reset token from your email.',
+                                        isError: true,
+                                      );
+                                      return;
+                                    }
+                                    if (passCtrl.text.length < 8) {
+                                      _showPopupToast(
+                                        'Password must be at least 8 characters.',
+                                        isError: true,
+                                      );
+                                      return;
+                                    }
+                                    if (passCtrl.text != confirmCtrl.text) {
+                                      _showPopupToast(
+                                        'Password confirmation does not match.',
+                                        isError: true,
+                                      );
+                                      return;
+                                    }
+
+                                    setModalState(() => isSubmitting = true);
+                                    try {
+                                      final response = await ApiService
+                                          .httpClient
+                                          .post(
+                                            Uri.parse(
+                                                '${ApiConfig.baseUrl}/reset-password'),
+                                            headers: {
+                                              'Accept': 'application/json',
+                                              'Content-Type':
+                                                  'application/json',
+                                            },
+                                            body: json.encode({
+                                              'email': email,
+                                              'token': tokenCtrl.text.trim(),
+                                              'password': passCtrl.text,
+                                              'password_confirmation':
+                                                  confirmCtrl.text,
+                                            }),
+                                          )
+                                          .timeout(ApiConfig.requestTimeout);
+
+                                      final data = json.decode(response.body);
+                                      if (response.statusCode == 200 &&
+                                          (data['success'] == true ||
+                                              data['status'] != null)) {
+                                        if (modalContext.mounted) {
+                                          Navigator.pop(modalContext);
+                                        }
+                                        _showPopupToast(
+                                          data['message']?.toString() ??
+                                              'Password reset successfully! You may now sign in.',
+                                          isError: false,
+                                        );
+                                      } else {
+                                        _showPopupToast(
+                                          data['message']?.toString() ??
+                                              'Invalid or expired reset token.',
+                                          isError: true,
+                                        );
+                                      }
+                                    } catch (_) {
+                                      _showPopupToast(
+                                        'Network error occurred.',
+                                        isError: true,
+                                      );
+                                    } finally {
+                                      if (modalContext.mounted) {
+                                        setModalState(
+                                            () => isSubmitting = false);
+                                      }
                                     }
                                   }
-                                }
-                              },
-                        child: isSubmitting
-                            ? const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(
-                                  color: Colors.white,
-                                  strokeWidth: 2,
+                                },
+                          child: isSubmitting
+                              ? const SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                    color: Colors.white,
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : Text(
+                                  codeSent
+                                      ? 'Reset Password'
+                                      : 'Send Reset Instructions',
                                 ),
-                              )
-                            : Text(codeSent
-                                ? 'Reset Password'
-                                : 'Send Reset Instructions'),
-                      ),
-                    ),
-                    if (!codeSent)
-                      Center(
-                        child: TextButton(
-                          onPressed: () => setModalState(() => codeSent = true),
-                          child: const Text(
-                            'Already have a reset token?',
-                            style: TextStyle(fontSize: 12),
-                          ),
                         ),
                       ),
-                  ],
+                      if (!codeSent)
+                        Center(
+                          child: TextButton(
+                            onPressed: () =>
+                                setModalState(() => codeSent = true),
+                            child: const Text(
+                              'Already have a reset token?',
+                              style: TextStyle(fontSize: 12),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
                 ),
               ),
             );
@@ -512,6 +497,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.sizeOf(context).width;
+    final isCompactWidth = screenWidth < 350;
+
     return Scaffold(
       backgroundColor: StorkTheme.surface,
       body: Column(
@@ -527,7 +515,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             child: SafeArea(
               bottom: false,
               child: Padding(
-                padding: const EdgeInsets.fromLTRB(24, 16, 24, 20),
+                padding: EdgeInsets.fromLTRB(
+                  isCompactWidth ? 16 : 24,
+                  14,
+                  isCompactWidth ? 16 : 24,
+                  18,
+                ),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -535,7 +528,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       'Welcome Back',
                       textAlign: TextAlign.center,
                       style: TextStyle(
-                        fontSize: 23,
+                        fontSize: 22,
                         fontWeight: FontWeight.w900,
                         color: Colors.white,
                         letterSpacing: -0.4,
@@ -546,7 +539,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       'Sign in to your Storkia Buyer account to shop verified stores, track parcels, and earn Coins.',
                       textAlign: TextAlign.center,
                       style: TextStyle(
-                        fontSize: 12.5,
+                        fontSize: 12,
                         color: Colors.white.withValues(alpha: 0.9),
                         height: 1.35,
                       ),
@@ -562,8 +555,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
               child: LayoutBuilder(
                 builder: (context, constraints) {
                   return SingleChildScrollView(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 24,
+                    padding: EdgeInsets.symmetric(
+                      horizontal: isCompactWidth ? 16 : 24,
                       vertical: 20,
                     ),
                     child: ConstrainedBox(
@@ -587,11 +580,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                       child: Padding(
                                         padding: const EdgeInsets.only(
                                           top: 4,
-                                          bottom: 22,
+                                          bottom: 20,
                                         ),
                                         child: Image.asset(
                                           'assets/pink-storkia-maximized.webp',
-                                          height: 58,
+                                          height: 54,
                                           fit: BoxFit.contain,
                                           errorBuilder: (_, __, ___) =>
                                               const Row(
@@ -642,7 +635,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                         return null;
                                       },
                                     ),
-                                    const SizedBox(height: 18),
+                                    const SizedBox(height: 16),
                                     _buildFieldLabel('PASSWORD'),
                                     const SizedBox(height: 8),
                                     TextFormField(
@@ -701,7 +694,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                         ),
                                       ),
                                     ),
-                                    const SizedBox(height: 20),
+                                    const SizedBox(height: 18),
                                     Container(
                                       width: double.infinity,
                                       height: 52,
@@ -746,12 +739,17 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                                 mainAxisAlignment:
                                                     MainAxisAlignment.center,
                                                 children: [
-                                                  Text(
-                                                    'Sign In to Storkia',
-                                                    style: TextStyle(
-                                                      fontSize: 15,
-                                                      fontWeight:
-                                                          FontWeight.w800,
+                                                  Flexible(
+                                                    child: Text(
+                                                      'Sign In to Storkia',
+                                                      maxLines: 1,
+                                                      overflow:
+                                                          TextOverflow.ellipsis,
+                                                      style: TextStyle(
+                                                        fontSize: 15,
+                                                        fontWeight:
+                                                            FontWeight.w800,
+                                                      ),
                                                     ),
                                                   ),
                                                   SizedBox(width: 8),
@@ -763,11 +761,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                               ),
                                       ),
                                     ),
-                                    const SizedBox(height: 18),
+                                    const SizedBox(height: 16),
                                     Container(
                                       width: double.infinity,
                                       padding: const EdgeInsets.symmetric(
-                                        horizontal: 16,
+                                        horizontal: 14,
                                         vertical: 14,
                                       ),
                                       decoration: BoxDecoration(
@@ -802,7 +800,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                               );
                                             },
                                             child: const Text(
-                                              'Create a Buyer Account →',
+                                              'Create a Buyer Account \u2192',
                                               style: TextStyle(
                                                 fontSize: 13,
                                                 fontWeight: FontWeight.w800,
@@ -823,7 +821,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                     const Divider(height: 1),
                                     const SizedBox(height: 12),
                                     const Text(
-                                      'By signing in, you agree to Storkia’s official policies:',
+                                      'By signing in, you agree to Storkia\u2019s official policies:',
                                       textAlign: TextAlign.center,
                                       style: TextStyle(
                                         fontSize: 11,
@@ -843,7 +841,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                           0,
                                         ),
                                         const Text(
-                                          '•',
+                                          '\u2022',
                                           style: TextStyle(
                                             fontSize: 11,
                                             color: StorkTheme.textMuted,
@@ -854,7 +852,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                           1,
                                         ),
                                         const Text(
-                                          '•',
+                                          '\u2022',
                                           style: TextStyle(
                                             fontSize: 11,
                                             color: StorkTheme.textMuted,

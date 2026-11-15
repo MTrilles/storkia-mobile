@@ -42,6 +42,15 @@ class _AccountManagementScreenState
     _currentUser = widget.user;
   }
 
+  Future<void> _copyToClipboard(String text, String label) async {
+    final cleaned = text.trim();
+    if (cleaned.isEmpty || cleaned == 'Not set') return;
+    await Clipboard.setData(ClipboardData(text: cleaned));
+    HapticFeedback.lightImpact();
+    if (!mounted) return;
+    _showSnackBar('Copied $label: $cleaned', isError: false);
+  }
+
   String _extractApiError(dynamic data, String fallback) {
     if (data is Map) {
       if (data['errors'] is Map && (data['errors'] as Map).isNotEmpty) {
@@ -109,7 +118,7 @@ class _AccountManagementScreenState
                   Text(
                     title,
                     style: TextStyle(
-                      fontSize: 17,
+                      fontSize: 16.5,
                       fontWeight: FontWeight.w800,
                       color: accentColor == StorkTheme.danger
                           ? StorkTheme.danger
@@ -185,138 +194,153 @@ class _AccountManagementScreenState
       builder: (modalContext) {
         return StatefulBuilder(
           builder: (context, setModalState) {
-            return Padding(
-              padding: EdgeInsets.only(
-                bottom: MediaQuery.of(context).viewInsets.bottom + 24,
-                top: 14,
-                left: 20,
-                right: 20,
+            final mediaQuery = MediaQuery.of(context);
+            final bottomInset = mediaQuery.viewInsets.bottom;
+            final safeBottom = mediaQuery.viewPadding.bottom;
+
+            return ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: mediaQuery.size.height * 0.90,
               ),
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _buildSheetHeader(
-                      icon: Icons.badge_outlined,
-                      title: 'Update Full Name',
-                      subtitle:
-                          'Make sure this matches the legal name on your government ID.',
-                    ),
-                    const SizedBox(height: 18),
-                    TextField(
-                      controller: firstNameController,
-                      textCapitalization: TextCapitalization.words,
-                      decoration: const InputDecoration(
-                        labelText: 'First Name on ID *',
-                        prefixIcon:
-                            Icon(Icons.person_outline_rounded, size: 20),
+              child: Padding(
+                padding: EdgeInsets.only(
+                  bottom:
+                      bottomInset + (bottomInset > 0 ? 16 : safeBottom + 24),
+                  top: 14,
+                  left: 20,
+                  right: 20,
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _buildSheetHeader(
+                        icon: Icons.badge_outlined,
+                        title: 'Update Full Name',
+                        subtitle:
+                            'Make sure this matches the legal name on your government ID.',
                       ),
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: lastNameController,
-                      textCapitalization: TextCapitalization.words,
-                      decoration: const InputDecoration(
-                        labelText: 'Last Name on ID *',
-                        prefixIcon:
-                            Icon(Icons.person_outline_rounded, size: 20),
+                      const SizedBox(height: 18),
+                      TextField(
+                        controller: firstNameController,
+                        textCapitalization: TextCapitalization.words,
+                        decoration: const InputDecoration(
+                          labelText: 'First Name on ID *',
+                          prefixIcon:
+                              Icon(Icons.person_outline_rounded, size: 20),
+                        ),
                       ),
-                    ),
-                    if (modalError != null) _buildModalErrorBanner(modalError!),
-                    const SizedBox(height: 20),
-                    SizedBox(
-                      width: double.infinity,
-                      height: 50,
-                      child: ElevatedButton(
-                        onPressed: isSubmitting
-                            ? null
-                            : () async {
-                                final fName = firstNameController.text.trim();
-                                final lName = lastNameController.text.trim();
-                                final nameRegex = RegExp(r'^[A-Za-z\s]+$');
-                                if (fName.isEmpty || lName.isEmpty) {
-                                  setModalState(() {
-                                    modalError =
-                                        'Both first name and last name are required.';
-                                  });
-                                  return;
-                                }
-                                if (!nameRegex.hasMatch(fName) ||
-                                    !nameRegex.hasMatch(lName)) {
-                                  setModalState(() {
-                                    modalError =
-                                        'Names may only contain letters and spaces.';
-                                  });
-                                  return;
-                                }
-                                setModalState(() {
-                                  isSubmitting = true;
-                                  modalError = null;
-                                });
-                                try {
-                                  final response = await http
-                                      .patch(
-                                        Uri.parse(
-                                            '$_domain/api/v1/account/name'),
-                                        headers: {
-                                          'Authorization':
-                                              'Bearer ${widget.token}',
-                                          'Accept': 'application/json',
-                                          'Content-Type': 'application/json',
-                                        },
-                                        body: json.encode({
-                                          'first_name': fName,
-                                          'last_name': lName,
-                                        }),
-                                      )
-                                      .timeout(ApiConfig.requestTimeout);
-                                  final data = json.decode(response.body);
-                                  if (response.statusCode == 200 &&
-                                      data['success'] == true) {
-                                    final updated =
-                                        UserModel.fromJson(data['data']);
-                                    if (mounted) {
-                                      setState(() => _currentUser = updated);
-                                    }
-                                    ref
-                                        .read(authProvider.notifier)
-                                        .updateUser(updated);
-                                    if (modalContext.mounted) {
-                                      Navigator.pop(modalContext);
-                                      _showSnackBar(
-                                          'Name updated successfully!',
-                                          isError: false);
-                                    }
-                                  } else {
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: lastNameController,
+                        textCapitalization: TextCapitalization.words,
+                        decoration: const InputDecoration(
+                          labelText: 'Last Name on ID *',
+                          prefixIcon:
+                              Icon(Icons.person_outline_rounded, size: 20),
+                        ),
+                      ),
+                      if (modalError != null)
+                        _buildModalErrorBanner(modalError!),
+                      const SizedBox(height: 20),
+                      SizedBox(
+                        width: double.infinity,
+                        height: 50,
+                        child: ElevatedButton(
+                          onPressed: isSubmitting
+                              ? null
+                              : () async {
+                                  final fName = firstNameController.text.trim();
+                                  final lName = lastNameController.text.trim();
+                                  final nameRegex = RegExp(r'^[A-Za-z\s]+$');
+                                  if (fName.isEmpty || lName.isEmpty) {
                                     setModalState(() {
-                                      modalError = _extractApiError(
-                                          data, 'Failed to update name.');
+                                      modalError =
+                                          'Both first name and last name are required.';
                                     });
+                                    return;
                                   }
-                                } catch (_) {
+                                  if (!nameRegex.hasMatch(fName) ||
+                                      !nameRegex.hasMatch(lName)) {
+                                    setModalState(() {
+                                      modalError =
+                                          'Names may only contain letters and spaces.';
+                                    });
+                                    return;
+                                  }
+
                                   setModalState(() {
-                                    modalError = 'Network error occurred.';
+                                    isSubmitting = true;
+                                    modalError = null;
                                   });
-                                } finally {
-                                  if (modalContext.mounted) {
-                                    setModalState(() => isSubmitting = false);
+
+                                  try {
+                                    final response = await http
+                                        .patch(
+                                          Uri.parse(
+                                              '$_domain/api/v1/account/name'),
+                                          headers: {
+                                            'Authorization':
+                                                'Bearer ${widget.token}',
+                                            'Accept': 'application/json',
+                                            'Content-Type': 'application/json',
+                                          },
+                                          body: json.encode({
+                                            'first_name': fName,
+                                            'last_name': lName,
+                                          }),
+                                        )
+                                        .timeout(ApiConfig.requestTimeout);
+
+                                    final data = json.decode(response.body);
+                                    if (response.statusCode == 200 &&
+                                        data['success'] == true) {
+                                      HapticFeedback.mediumImpact();
+                                      final updated =
+                                          UserModel.fromJson(data['data']);
+                                      if (mounted) {
+                                        setState(() => _currentUser = updated);
+                                      }
+                                      ref
+                                          .read(authProvider.notifier)
+                                          .updateUser(updated);
+                                      if (modalContext.mounted) {
+                                        Navigator.pop(modalContext);
+                                        _showSnackBar(
+                                            'Name updated successfully!',
+                                            isError: false);
+                                      }
+                                    } else {
+                                      setModalState(() {
+                                        modalError = _extractApiError(
+                                            data, 'Failed to update name.');
+                                      });
+                                    }
+                                  } catch (_) {
+                                    setModalState(() {
+                                      modalError = 'Network error occurred.';
+                                    });
+                                  } finally {
+                                    if (modalContext.mounted) {
+                                      setModalState(() => isSubmitting = false);
+                                    }
                                   }
-                                }
-                              },
-                        child: isSubmitting
-                            ? const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(
-                                  color: Colors.white,
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : const Text('Save Changes'),
+                                },
+                          child: isSubmitting
+                              ? const SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                    color: Colors.white,
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Text('Save Changes'),
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             );
@@ -346,130 +370,145 @@ class _AccountManagementScreenState
       builder: (modalContext) {
         return StatefulBuilder(
           builder: (context, setModalState) {
-            return Padding(
-              padding: EdgeInsets.only(
-                bottom: MediaQuery.of(context).viewInsets.bottom + 24,
-                top: 14,
-                left: 20,
-                right: 20,
+            final mediaQuery = MediaQuery.of(context);
+            final bottomInset = mediaQuery.viewInsets.bottom;
+            final safeBottom = mediaQuery.viewPadding.bottom;
+
+            return ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: mediaQuery.size.height * 0.90,
               ),
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _buildSheetHeader(
-                      icon: Icons.phone_iphone_rounded,
-                      title: 'Update Phone Number',
-                      subtitle:
-                          'Enter a valid Philippine mobile number (09XXXXXXXXX or 9XXXXXXXXX).',
-                    ),
-                    const SizedBox(height: 18),
-                    TextField(
-                      controller: phoneController,
-                      keyboardType: TextInputType.phone,
-                      inputFormatters: [
-                        FilteringTextInputFormatter.digitsOnly,
-                        LengthLimitingTextInputFormatter(11),
-                      ],
-                      onChanged: (_) {
-                        if (modalError != null) {
-                          setModalState(() => modalError = null);
-                        }
-                      },
-                      decoration: const InputDecoration(
-                        labelText: 'Mobile Number *',
-                        prefixText: '+63 ',
-                        hintText: '09171234567 or 9171234567',
-                        prefixIcon: Icon(Icons.call_outlined, size: 20),
+              child: Padding(
+                padding: EdgeInsets.only(
+                  bottom:
+                      bottomInset + (bottomInset > 0 ? 16 : safeBottom + 24),
+                  top: 14,
+                  left: 20,
+                  right: 20,
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _buildSheetHeader(
+                        icon: Icons.phone_iphone_rounded,
+                        title: 'Update Phone Number',
+                        subtitle:
+                            'Enter a valid Philippine mobile number (09XXXXXXXXX or 9XXXXXXXXX).',
                       ),
-                    ),
-                    if (modalError != null) _buildModalErrorBanner(modalError!),
-                    const SizedBox(height: 20),
-                    SizedBox(
-                      width: double.infinity,
-                      height: 50,
-                      child: ElevatedButton(
-                        onPressed: isSubmitting
-                            ? null
-                            : () async {
-                                final rawDigits = phoneController.text
-                                    .trim()
-                                    .replaceAll(RegExp(r'\D'), '');
-                                if (!RegExp(r'^0?9\d{9}$')
-                                    .hasMatch(rawDigits)) {
-                                  setModalState(() {
-                                    modalError =
-                                        'Please enter a valid 11-digit (09XXXXXXXXX) or 10-digit (9XXXXXXXXX) Philippine mobile number.';
-                                  });
-                                  return;
-                                }
-                                setModalState(() {
-                                  isSubmitting = true;
-                                  modalError = null;
-                                });
-                                try {
-                                  final response = await http
-                                      .patch(
-                                        Uri.parse(
-                                            '$_domain/api/v1/account/phone'),
-                                        headers: {
-                                          'Authorization':
-                                              'Bearer ${widget.token}',
-                                          'Accept': 'application/json',
-                                          'Content-Type': 'application/json',
-                                        },
-                                        body: json.encode({
-                                          'contact_no': rawDigits,
-                                        }),
-                                      )
-                                      .timeout(ApiConfig.requestTimeout);
-                                  final data = json.decode(response.body);
-                                  if (response.statusCode == 200 &&
-                                      data['success'] == true) {
-                                    final updated =
-                                        UserModel.fromJson(data['data']);
-                                    if (mounted) {
-                                      setState(() => _currentUser = updated);
-                                    }
-                                    ref
-                                        .read(authProvider.notifier)
-                                        .updateUser(updated);
-                                    if (modalContext.mounted) {
-                                      Navigator.pop(modalContext);
-                                      _showSnackBar(
-                                          'Phone number updated successfully!',
-                                          isError: false);
-                                    }
-                                  } else {
+                      const SizedBox(height: 18),
+                      TextField(
+                        controller: phoneController,
+                        keyboardType: TextInputType.phone,
+                        inputFormatters: [
+                          FilteringTextInputFormatter.digitsOnly,
+                          LengthLimitingTextInputFormatter(11),
+                        ],
+                        onChanged: (_) {
+                          if (modalError != null) {
+                            setModalState(() => modalError = null);
+                          }
+                        },
+                        decoration: const InputDecoration(
+                          labelText: 'Mobile Number *',
+                          prefixText: '+63 ',
+                          hintText: '09171234567 or 9171234567',
+                          prefixIcon: Icon(Icons.call_outlined, size: 20),
+                        ),
+                      ),
+                      if (modalError != null)
+                        _buildModalErrorBanner(modalError!),
+                      const SizedBox(height: 20),
+                      SizedBox(
+                        width: double.infinity,
+                        height: 50,
+                        child: ElevatedButton(
+                          onPressed: isSubmitting
+                              ? null
+                              : () async {
+                                  final rawDigits = phoneController.text
+                                      .trim()
+                                      .replaceAll(RegExp(r'\D'), '');
+                                  if (!RegExp(r'^0?9\d{9}$')
+                                      .hasMatch(rawDigits)) {
                                     setModalState(() {
-                                      modalError = _extractApiError(data,
-                                          'Failed to update phone number.');
+                                      modalError =
+                                          'Please enter a valid 11-digit (09XXXXXXXXX) or 10-digit (9XXXXXXXXX) Philippine mobile number.';
                                     });
+                                    return;
                                   }
-                                } catch (_) {
+
                                   setModalState(() {
-                                    modalError = 'Network error occurred.';
+                                    isSubmitting = true;
+                                    modalError = null;
                                   });
-                                } finally {
-                                  if (modalContext.mounted) {
-                                    setModalState(() => isSubmitting = false);
+
+                                  try {
+                                    final response = await http
+                                        .patch(
+                                          Uri.parse(
+                                              '$_domain/api/v1/account/phone'),
+                                          headers: {
+                                            'Authorization':
+                                                'Bearer ${widget.token}',
+                                            'Accept': 'application/json',
+                                            'Content-Type': 'application/json',
+                                          },
+                                          body: json.encode({
+                                            'contact_no': rawDigits,
+                                          }),
+                                        )
+                                        .timeout(ApiConfig.requestTimeout);
+
+                                    final data = json.decode(response.body);
+                                    if (response.statusCode == 200 &&
+                                        data['success'] == true) {
+                                      HapticFeedback.mediumImpact();
+                                      final updated =
+                                          UserModel.fromJson(data['data']);
+                                      if (mounted) {
+                                        setState(() => _currentUser = updated);
+                                      }
+                                      ref
+                                          .read(authProvider.notifier)
+                                          .updateUser(updated);
+                                      if (modalContext.mounted) {
+                                        Navigator.pop(modalContext);
+                                        _showSnackBar(
+                                            'Phone number updated successfully!',
+                                            isError: false);
+                                      }
+                                    } else {
+                                      setModalState(() {
+                                        modalError = _extractApiError(data,
+                                            'Failed to update phone number.');
+                                      });
+                                    }
+                                  } catch (_) {
+                                    setModalState(() {
+                                      modalError = 'Network error occurred.';
+                                    });
+                                  } finally {
+                                    if (modalContext.mounted) {
+                                      setModalState(() => isSubmitting = false);
+                                    }
                                   }
-                                }
-                              },
-                        child: isSubmitting
-                            ? const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(
-                                  color: Colors.white,
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : const Text('Update Phone Number'),
+                                },
+                          child: isSubmitting
+                              ? const SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                    color: Colors.white,
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Text('Update Phone Number'),
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             );
@@ -498,6 +537,10 @@ class _AccountManagementScreenState
       builder: (modalContext) {
         return StatefulBuilder(
           builder: (context, setModalState) {
+            final mediaQuery = MediaQuery.of(context);
+            final bottomInset = mediaQuery.viewInsets.bottom;
+            final safeBottom = mediaQuery.viewPadding.bottom;
+
             void startTimer(int seconds) {
               cooldownTimer?.cancel();
               setModalState(() => resendCooldown = seconds);
@@ -523,10 +566,12 @@ class _AccountManagementScreenState
                 });
                 return;
               }
+
               setModalState(() {
                 isSubmitting = true;
                 modalError = null;
               });
+
               try {
                 final response = await http
                     .post(
@@ -542,6 +587,7 @@ class _AccountManagementScreenState
                       }),
                     )
                     .timeout(ApiConfig.requestTimeout);
+
                 final data = json.decode(response.body);
                 if (response.statusCode == 200 && data['success'] == true) {
                   setModalState(() {
@@ -570,194 +616,209 @@ class _AccountManagementScreenState
               }
             }
 
-            return Padding(
-              padding: EdgeInsets.only(
-                bottom: MediaQuery.of(context).viewInsets.bottom + 24,
-                top: 14,
-                left: 20,
-                right: 20,
+            return ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: mediaQuery.size.height * 0.90,
               ),
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _buildSheetHeader(
-                      icon: Icons.mark_email_read_outlined,
-                      title: otpSent
-                          ? 'Verify New Email OTP'
-                          : 'Change Email Address',
-                      subtitle: otpSent
-                          ? 'Enter the 6-digit verification code sent to ${emailCtrl.text.trim()}'
-                          : 'We will send a 6-digit security code to verify your new email address.',
-                    ),
-                    const SizedBox(height: 18),
-                    if (!otpSent) ...[
-                      TextField(
-                        controller: emailCtrl,
-                        keyboardType: TextInputType.emailAddress,
-                        decoration: const InputDecoration(
-                          labelText: 'New Email Address *',
-                          hintText: 'name@example.com',
-                          prefixIcon: Icon(Icons.email_outlined, size: 20),
-                        ),
+              child: Padding(
+                padding: EdgeInsets.only(
+                  bottom:
+                      bottomInset + (bottomInset > 0 ? 16 : safeBottom + 24),
+                  top: 14,
+                  left: 20,
+                  right: 20,
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _buildSheetHeader(
+                        icon: Icons.mark_email_read_outlined,
+                        title: otpSent
+                            ? 'Verify New Email OTP'
+                            : 'Change Email Address',
+                        subtitle: otpSent
+                            ? 'Enter the 6-digit verification code sent to ${emailCtrl.text.trim()}'
+                            : 'We will send a 6-digit security code to verify your new email address.',
                       ),
-                      if (modalError != null)
-                        _buildModalErrorBanner(modalError!),
-                      const SizedBox(height: 20),
-                      SizedBox(
-                        width: double.infinity,
-                        height: 50,
-                        child: ElevatedButton(
-                          onPressed: isSubmitting ? null : sendEmailOtpRequest,
-                          child: isSubmitting
-                              ? const SizedBox(
-                                  width: 20,
-                                  height: 20,
-                                  child: CircularProgressIndicator(
-                                    color: Colors.white,
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : const Text('Send OTP to New Email'),
+                      const SizedBox(height: 18),
+                      if (!otpSent) ...[
+                        TextField(
+                          controller: emailCtrl,
+                          keyboardType: TextInputType.emailAddress,
+                          decoration: const InputDecoration(
+                            labelText: 'New Email Address *',
+                            hintText: 'name@example.com',
+                            prefixIcon: Icon(Icons.email_outlined, size: 20),
+                          ),
                         ),
-                      ),
-                    ] else ...[
-                      TextField(
-                        controller: otpCtrl,
-                        keyboardType: TextInputType.number,
-                        inputFormatters: [
-                          FilteringTextInputFormatter.digitsOnly,
-                          LengthLimitingTextInputFormatter(6),
-                        ],
-                        decoration: const InputDecoration(
-                          labelText: '6-Digit Verification Code *',
-                          counterText: '',
-                          prefixIcon: Icon(Icons.pin_outlined, size: 20),
+                        if (modalError != null)
+                          _buildModalErrorBanner(modalError!),
+                        const SizedBox(height: 20),
+                        SizedBox(
+                          width: double.infinity,
+                          height: 50,
+                          child: ElevatedButton(
+                            onPressed:
+                                isSubmitting ? null : sendEmailOtpRequest,
+                            child: isSubmitting
+                                ? const SizedBox(
+                                    width: 20,
+                                    height: 20,
+                                    child: CircularProgressIndicator(
+                                      color: Colors.white,
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Text('Send OTP to New Email'),
+                          ),
                         ),
-                      ),
-                      if (modalError != null)
-                        _buildModalErrorBanner(modalError!),
-                      const SizedBox(height: 20),
-                      SizedBox(
-                        width: double.infinity,
-                        height: 50,
-                        child: ElevatedButton(
-                          onPressed: isSubmitting
-                              ? null
-                              : () async {
-                                  if (otpCtrl.text.trim().length < 6) {
-                                    setModalState(() {
-                                      modalError =
-                                          'Please enter the 6-digit verification code.';
-                                    });
-                                    return;
-                                  }
-                                  setModalState(() {
-                                    isSubmitting = true;
-                                    modalError = null;
-                                  });
-                                  try {
-                                    final response = await http
-                                        .post(
-                                          Uri.parse(
-                                              '$_domain/api/v1/account/email/verify-otp'),
-                                          headers: {
-                                            'Authorization':
-                                                'Bearer ${widget.token}',
-                                            'Accept': 'application/json',
-                                            'Content-Type': 'application/json',
-                                          },
-                                          body: json.encode({
-                                            'code': otpCtrl.text.trim(),
-                                            'email': emailCtrl.text.trim(),
-                                            'new_email': emailCtrl.text.trim(),
-                                          }),
-                                        )
-                                        .timeout(ApiConfig.requestTimeout);
-                                    final data = json.decode(response.body);
-                                    if (response.statusCode == 200 &&
-                                        data['success'] == true) {
-                                      cooldownTimer?.cancel();
-                                      if (data['data'] is Map) {
-                                        final updated = UserModel.fromJson(
-                                            Map<String, dynamic>.from(
-                                                data['data']));
-                                        setState(() => _currentUser = updated);
-                                        ref
-                                            .read(authProvider.notifier)
-                                            .updateUser(updated);
-                                      } else {
-                                        ref
-                                            .read(authProvider.notifier)
-                                            .refreshUserProfile();
-                                      }
-                                      if (modalContext.mounted) {
-                                        Navigator.pop(modalContext);
-                                        _showSnackBar(
-                                          'Email address updated successfully!',
-                                          isError: false,
-                                        );
-                                      }
-                                    } else {
-                                      setModalState(() {
-                                        modalError = _extractApiError(
-                                            data, 'Invalid OTP code.');
-                                      });
-                                    }
-                                  } catch (_) {
-                                    setModalState(() {
-                                      modalError = 'Network error occurred.';
-                                    });
-                                  } finally {
-                                    if (modalContext.mounted) {
-                                      setModalState(() => isSubmitting = false);
-                                    }
-                                  }
-                                },
-                          child: isSubmitting
-                              ? const SizedBox(
-                                  width: 20,
-                                  height: 20,
-                                  child: CircularProgressIndicator(
-                                    color: Colors.white,
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : const Text('Verify & Update Email'),
+                      ] else ...[
+                        TextField(
+                          controller: otpCtrl,
+                          keyboardType: TextInputType.number,
+                          inputFormatters: [
+                            FilteringTextInputFormatter.digitsOnly,
+                            LengthLimitingTextInputFormatter(6),
+                          ],
+                          decoration: const InputDecoration(
+                            labelText: '6-Digit Verification Code *',
+                            counterText: '',
+                            prefixIcon: Icon(Icons.pin_outlined, size: 20),
+                          ),
                         ),
-                      ),
-                      const SizedBox(height: 8),
-                      Wrap(
-                        alignment: WrapAlignment.spaceBetween,
-                        spacing: 8,
-                        children: [
-                          TextButton(
+                        if (modalError != null)
+                          _buildModalErrorBanner(modalError!),
+                        const SizedBox(height: 20),
+                        SizedBox(
+                          width: double.infinity,
+                          height: 50,
+                          child: ElevatedButton(
                             onPressed: isSubmitting
                                 ? null
-                                : () {
+                                : () async {
+                                    if (otpCtrl.text.trim().length < 6) {
+                                      setModalState(() {
+                                        modalError =
+                                            'Please enter the 6-digit verification code.';
+                                      });
+                                      return;
+                                    }
+
                                     setModalState(() {
-                                      otpSent = false;
-                                      otpCtrl.clear();
+                                      isSubmitting = true;
                                       modalError = null;
                                     });
+
+                                    try {
+                                      final response = await http
+                                          .post(
+                                            Uri.parse(
+                                                '$_domain/api/v1/account/email/verify-otp'),
+                                            headers: {
+                                              'Authorization':
+                                                  'Bearer ${widget.token}',
+                                              'Accept': 'application/json',
+                                              'Content-Type':
+                                                  'application/json',
+                                            },
+                                            body: json.encode({
+                                              'code': otpCtrl.text.trim(),
+                                              'email': emailCtrl.text.trim(),
+                                              'new_email':
+                                                  emailCtrl.text.trim(),
+                                            }),
+                                          )
+                                          .timeout(ApiConfig.requestTimeout);
+
+                                      final data = json.decode(response.body);
+                                      if (response.statusCode == 200 &&
+                                          data['success'] == true) {
+                                        HapticFeedback.mediumImpact();
+                                        cooldownTimer?.cancel();
+                                        if (data['data'] is Map) {
+                                          final updated = UserModel.fromJson(
+                                              Map<String, dynamic>.from(
+                                                  data['data']));
+                                          setState(
+                                              () => _currentUser = updated);
+                                          ref
+                                              .read(authProvider.notifier)
+                                              .updateUser(updated);
+                                        } else {
+                                          ref
+                                              .read(authProvider.notifier)
+                                              .refreshUserProfile();
+                                        }
+                                        if (modalContext.mounted) {
+                                          Navigator.pop(modalContext);
+                                          _showSnackBar(
+                                            'Email address updated successfully!',
+                                            isError: false,
+                                          );
+                                        }
+                                      } else {
+                                        setModalState(() {
+                                          modalError = _extractApiError(
+                                              data, 'Invalid OTP code.');
+                                        });
+                                      }
+                                    } catch (_) {
+                                      setModalState(() {
+                                        modalError = 'Network error occurred.';
+                                      });
+                                    } finally {
+                                      if (modalContext.mounted) {
+                                        setModalState(
+                                            () => isSubmitting = false);
+                                      }
+                                    }
                                   },
-                            child: const Text('Change Email'),
+                            child: isSubmitting
+                                ? const SizedBox(
+                                    width: 20,
+                                    height: 20,
+                                    child: CircularProgressIndicator(
+                                      color: Colors.white,
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Text('Verify & Update Email'),
                           ),
-                          TextButton(
-                            onPressed: (resendCooldown > 0 || isSubmitting)
-                                ? null
-                                : sendEmailOtpRequest,
-                            child: Text(
-                              resendCooldown > 0
-                                  ? 'Resend in ${resendCooldown}s'
-                                  : 'Resend Code',
+                        ),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          alignment: WrapAlignment.spaceBetween,
+                          spacing: 8,
+                          children: [
+                            TextButton(
+                              onPressed: isSubmitting
+                                  ? null
+                                  : () {
+                                      setModalState(() {
+                                        otpSent = false;
+                                        otpCtrl.clear();
+                                        modalError = null;
+                                      });
+                                    },
+                              child: const Text('Change Email'),
                             ),
-                          ),
-                        ],
-                      ),
+                            TextButton(
+                              onPressed: (resendCooldown > 0 || isSubmitting)
+                                  ? null
+                                  : sendEmailOtpRequest,
+                              child: Text(
+                                resendCooldown > 0
+                                    ? 'Resend in ${resendCooldown}s'
+                                    : 'Resend Code',
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
                     ],
-                  ],
+                  ),
                 ),
               ),
             );
@@ -775,6 +836,7 @@ class _AccountManagementScreenState
         child: CircularProgressIndicator(color: StorkTheme.primary),
       ),
     );
+
     try {
       final response = await http.post(
         Uri.parse('$_domain/api/v1/account/password/request-otp'),
@@ -783,8 +845,10 @@ class _AccountManagementScreenState
           'Accept': 'application/json',
         },
       ).timeout(ApiConfig.requestTimeout);
+
       if (mounted) Navigator.pop(context);
       final data = json.decode(response.body);
+
       if (response.statusCode == 200 && data['success'] == true) {
         final int cooldown =
             int.tryParse(data['cooldown']?.toString() ?? '60') ?? 60;
@@ -816,6 +880,10 @@ class _AccountManagementScreenState
       builder: (modalContext) {
         return StatefulBuilder(
           builder: (context, setModalState) {
+            final mediaQuery = MediaQuery.of(context);
+            final bottomInset = mediaQuery.viewInsets.bottom;
+            final safeBottom = mediaQuery.viewPadding.bottom;
+
             void startTimer(int seconds) {
               cooldownTimer?.cancel();
               setModalState(() => resendCooldown = seconds);
@@ -874,128 +942,139 @@ class _AccountManagementScreenState
               }
             }
 
-            return Padding(
-              padding: EdgeInsets.only(
-                bottom: MediaQuery.of(context).viewInsets.bottom + 24,
-                top: 14,
-                left: 20,
-                right: 20,
+            return ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: mediaQuery.size.height * 0.90,
               ),
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _buildSheetHeader(
-                      icon: Icons.shield_outlined,
-                      title: 'Enter 6-Digit Security OTP',
-                      subtitle:
-                          'We sent a verification code to ${_currentUser.email}',
-                    ),
-                    const SizedBox(height: 18),
-                    TextField(
-                      controller: otpController,
-                      keyboardType: TextInputType.number,
-                      inputFormatters: [
-                        FilteringTextInputFormatter.digitsOnly,
-                        LengthLimitingTextInputFormatter(6),
-                      ],
-                      decoration: const InputDecoration(
-                        labelText: '6-Digit Code *',
-                        counterText: '',
-                        prefixIcon: Icon(Icons.lock_clock_outlined, size: 20),
+              child: Padding(
+                padding: EdgeInsets.only(
+                  bottom:
+                      bottomInset + (bottomInset > 0 ? 16 : safeBottom + 24),
+                  top: 14,
+                  left: 20,
+                  right: 20,
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _buildSheetHeader(
+                        icon: Icons.shield_outlined,
+                        title: 'Enter 6-Digit Security OTP',
+                        subtitle:
+                            'We sent a verification code to ${_currentUser.email}',
                       ),
-                    ),
-                    if (modalError != null) _buildModalErrorBanner(modalError!),
-                    const SizedBox(height: 20),
-                    SizedBox(
-                      width: double.infinity,
-                      height: 50,
-                      child: ElevatedButton(
-                        onPressed: isSubmitting
-                            ? null
-                            : () async {
-                                if (otpController.text.trim().length < 6) {
-                                  setModalState(() {
-                                    modalError =
-                                        'Please enter the 6-digit verification code.';
-                                  });
-                                  return;
-                                }
-                                setModalState(() {
-                                  isSubmitting = true;
-                                  modalError = null;
-                                });
-                                try {
-                                  final response = await http
-                                      .post(
-                                        Uri.parse(
-                                            '$_domain/api/v1/account/password/verify-otp'),
-                                        headers: {
-                                          'Authorization':
-                                              'Bearer ${widget.token}',
-                                          'Accept': 'application/json',
-                                          'Content-Type': 'application/json',
-                                        },
-                                        body: json.encode({
-                                          'code': otpController.text.trim(),
-                                        }),
-                                      )
-                                      .timeout(ApiConfig.requestTimeout);
-                                  final data = json.decode(response.body);
-                                  if (response.statusCode == 200 &&
-                                      data['success'] == true) {
-                                    cooldownTimer?.cancel();
-                                    final unlockToken =
-                                        data['unlock_token']?.toString() ?? '';
-                                    if (modalContext.mounted) {
-                                      Navigator.pop(modalContext);
-                                    }
-                                    if (mounted) {
-                                      _showNewPasswordModal(unlockToken);
-                                    }
-                                  } else {
-                                    setModalState(() {
-                                      modalError = _extractApiError(
-                                          data, 'Invalid verification code.');
-                                    });
-                                  }
-                                } catch (_) {
-                                  setModalState(() {
-                                    modalError = 'Network error occurred.';
-                                  });
-                                } finally {
-                                  if (modalContext.mounted) {
-                                    setModalState(() => isSubmitting = false);
-                                  }
-                                }
-                              },
-                        child: isSubmitting
-                            ? const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(
-                                  color: Colors.white,
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : const Text('Verify Code'),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Center(
-                      child: TextButton(
-                        onPressed: (resendCooldown > 0 || isSubmitting)
-                            ? null
-                            : resendPasswordOtp,
-                        child: Text(
-                          resendCooldown > 0
-                              ? 'Resend code in ${resendCooldown}s'
-                              : 'Resend Verification Code',
+                      const SizedBox(height: 18),
+                      TextField(
+                        controller: otpController,
+                        keyboardType: TextInputType.number,
+                        inputFormatters: [
+                          FilteringTextInputFormatter.digitsOnly,
+                          LengthLimitingTextInputFormatter(6),
+                        ],
+                        decoration: const InputDecoration(
+                          labelText: '6-Digit Code *',
+                          counterText: '',
+                          prefixIcon: Icon(Icons.lock_clock_outlined, size: 20),
                         ),
                       ),
-                    ),
-                  ],
+                      if (modalError != null)
+                        _buildModalErrorBanner(modalError!),
+                      const SizedBox(height: 20),
+                      SizedBox(
+                        width: double.infinity,
+                        height: 50,
+                        child: ElevatedButton(
+                          onPressed: isSubmitting
+                              ? null
+                              : () async {
+                                  if (otpController.text.trim().length < 6) {
+                                    setModalState(() {
+                                      modalError =
+                                          'Please enter the 6-digit verification code.';
+                                    });
+                                    return;
+                                  }
+
+                                  setModalState(() {
+                                    isSubmitting = true;
+                                    modalError = null;
+                                  });
+
+                                  try {
+                                    final response = await http
+                                        .post(
+                                          Uri.parse(
+                                              '$_domain/api/v1/account/password/verify-otp'),
+                                          headers: {
+                                            'Authorization':
+                                                'Bearer ${widget.token}',
+                                            'Accept': 'application/json',
+                                            'Content-Type': 'application/json',
+                                          },
+                                          body: json.encode({
+                                            'code': otpController.text.trim(),
+                                          }),
+                                        )
+                                        .timeout(ApiConfig.requestTimeout);
+
+                                    final data = json.decode(response.body);
+                                    if (response.statusCode == 200 &&
+                                        data['success'] == true) {
+                                      cooldownTimer?.cancel();
+                                      final unlockToken =
+                                          data['unlock_token']?.toString() ??
+                                              '';
+                                      if (modalContext.mounted) {
+                                        Navigator.pop(modalContext);
+                                      }
+                                      if (mounted) {
+                                        _showNewPasswordModal(unlockToken);
+                                      }
+                                    } else {
+                                      setModalState(() {
+                                        modalError = _extractApiError(
+                                            data, 'Invalid verification code.');
+                                      });
+                                    }
+                                  } catch (_) {
+                                    setModalState(() {
+                                      modalError = 'Network error occurred.';
+                                    });
+                                  } finally {
+                                    if (modalContext.mounted) {
+                                      setModalState(() => isSubmitting = false);
+                                    }
+                                  }
+                                },
+                          child: isSubmitting
+                              ? const SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                    color: Colors.white,
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Text('Verify Code'),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Center(
+                        child: TextButton(
+                          onPressed: (resendCooldown > 0 || isSubmitting)
+                              ? null
+                              : resendPasswordOtp,
+                          child: Text(
+                            resendCooldown > 0
+                                ? 'Resend code in ${resendCooldown}s'
+                                : 'Resend Verification Code',
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             );
@@ -1023,6 +1102,10 @@ class _AccountManagementScreenState
       builder: (modalContext) {
         return StatefulBuilder(
           builder: (context, setModalState) {
+            final mediaQuery = MediaQuery.of(context);
+            final bottomInset = mediaQuery.viewInsets.bottom;
+            final safeBottom = mediaQuery.viewPadding.bottom;
+
             final pass = newPasswordController.text;
             final bool hasMinLength = pass.length >= 8;
             final bool hasUpper = RegExp(r'[A-Z]').hasMatch(pass);
@@ -1070,178 +1153,192 @@ class _AccountManagementScreenState
               );
             }
 
-            return Padding(
-              padding: EdgeInsets.only(
-                bottom: MediaQuery.of(context).viewInsets.bottom + 24,
-                top: 14,
-                left: 20,
-                right: 20,
+            return ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: mediaQuery.size.height * 0.90,
               ),
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _buildSheetHeader(
-                      icon: Icons.key_rounded,
-                      title: 'Set New Password',
-                      subtitle:
-                          'Create a strong password that meets all 4 security criteria below.',
-                    ),
-                    const SizedBox(height: 18),
-                    TextField(
-                      controller: newPasswordController,
-                      obscureText: !showNew,
-                      onChanged: (_) => setModalState(() => modalError = null),
-                      decoration: InputDecoration(
-                        labelText: 'New Password *',
-                        prefixIcon:
-                            const Icon(Icons.lock_outline_rounded, size: 20),
-                        suffixIcon: IconButton(
-                          icon: Icon(
-                            showNew
-                                ? Icons.visibility_rounded
-                                : Icons.visibility_off_rounded,
-                            size: 18,
+              child: Padding(
+                padding: EdgeInsets.only(
+                  bottom:
+                      bottomInset + (bottomInset > 0 ? 16 : safeBottom + 24),
+                  top: 14,
+                  left: 20,
+                  right: 20,
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _buildSheetHeader(
+                        icon: Icons.key_rounded,
+                        title: 'Set New Password',
+                        subtitle:
+                            'Create a strong password that meets all 4 security criteria below.',
+                      ),
+                      const SizedBox(height: 18),
+                      TextField(
+                        controller: newPasswordController,
+                        obscureText: !showNew,
+                        onChanged: (_) =>
+                            setModalState(() => modalError = null),
+                        decoration: InputDecoration(
+                          labelText: 'New Password *',
+                          prefixIcon:
+                              const Icon(Icons.lock_outline_rounded, size: 20),
+                          suffixIcon: IconButton(
+                            icon: Icon(
+                              showNew
+                                  ? Icons.visibility_rounded
+                                  : Icons.visibility_off_rounded,
+                              size: 18,
+                            ),
+                            onPressed: () =>
+                                setModalState(() => showNew = !showNew),
                           ),
-                          onPressed: () =>
-                              setModalState(() => showNew = !showNew),
                         ),
                       ),
-                    ),
-                    const SizedBox(height: 12),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: [
-                        buildReqItem('8+ characters', hasMinLength),
-                        buildReqItem('1 uppercase', hasUpper),
-                        buildReqItem('1 number', hasNumber),
-                        buildReqItem('1 special symbol', hasSymbol),
-                      ],
-                    ),
-                    const SizedBox(height: 14),
-                    TextField(
-                      controller: confirmPasswordController,
-                      obscureText: !showConfirm,
-                      onChanged: (_) => setModalState(() => modalError = null),
-                      decoration: InputDecoration(
-                        labelText: 'Confirm New Password *',
-                        prefixIcon:
-                            const Icon(Icons.verified_user_outlined, size: 20),
-                        suffixIcon: IconButton(
-                          icon: Icon(
-                            showConfirm
-                                ? Icons.visibility_rounded
-                                : Icons.visibility_off_rounded,
-                            size: 18,
+                      const SizedBox(height: 12),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          buildReqItem('8+ characters', hasMinLength),
+                          buildReqItem('1 uppercase', hasUpper),
+                          buildReqItem('1 number', hasNumber),
+                          buildReqItem('1 special symbol', hasSymbol),
+                        ],
+                      ),
+                      const SizedBox(height: 14),
+                      TextField(
+                        controller: confirmPasswordController,
+                        obscureText: !showConfirm,
+                        onChanged: (_) =>
+                            setModalState(() => modalError = null),
+                        decoration: InputDecoration(
+                          labelText: 'Confirm New Password *',
+                          prefixIcon: const Icon(Icons.verified_user_outlined,
+                              size: 20),
+                          suffixIcon: IconButton(
+                            icon: Icon(
+                              showConfirm
+                                  ? Icons.visibility_rounded
+                                  : Icons.visibility_off_rounded,
+                              size: 18,
+                            ),
+                            onPressed: () =>
+                                setModalState(() => showConfirm = !showConfirm),
                           ),
-                          onPressed: () =>
-                              setModalState(() => showConfirm = !showConfirm),
                         ),
                       ),
-                    ),
-                    if (modalError != null) _buildModalErrorBanner(modalError!),
-                    const SizedBox(height: 20),
-                    SizedBox(
-                      width: double.infinity,
-                      height: 50,
-                      child: ElevatedButton(
-                        onPressed: isSubmitting
-                            ? null
-                            : () async {
-                                if (!allMet) {
-                                  setModalState(() {
-                                    modalError =
-                                        'Please satisfy all 4 password requirements.';
-                                  });
-                                  return;
-                                }
-                                if (newPasswordController.text !=
-                                    confirmPasswordController.text) {
-                                  setModalState(() {
-                                    modalError =
-                                        'Password confirmation does not match.';
-                                  });
-                                  return;
-                                }
-                                setModalState(() {
-                                  isSubmitting = true;
-                                  modalError = null;
-                                });
-                                try {
-                                  final response = await http
-                                      .patch(
-                                        Uri.parse(
-                                            '$_domain/api/v1/account/password'),
-                                        headers: {
-                                          'Authorization':
-                                              'Bearer ${widget.token}',
-                                          'Accept': 'application/json',
-                                          'Content-Type': 'application/json',
-                                        },
-                                        body: json.encode({
-                                          'unlock_token': unlockToken,
-                                          'password':
-                                              newPasswordController.text,
-                                          'password_confirmation':
-                                              confirmPasswordController.text,
-                                        }),
-                                      )
-                                      .timeout(ApiConfig.requestTimeout);
-                                  final data = json.decode(response.body);
-                                  if (response.statusCode == 200 &&
-                                      data['success'] == true) {
-                                    if (data['data'] is Map) {
-                                      final updated = UserModel.fromJson(
-                                          Map<String, dynamic>.from(
-                                              data['data']));
-                                      if (mounted) {
-                                        setState(() => _currentUser = updated);
-                                      }
-                                      ref
-                                          .read(authProvider.notifier)
-                                          .updateUser(updated);
-                                    } else {
-                                      ref
-                                          .read(authProvider.notifier)
-                                          .refreshUserProfile();
-                                    }
-                                    if (modalContext.mounted) {
-                                      Navigator.pop(modalContext);
-                                      _showSnackBar(
-                                          'Password updated successfully!',
-                                          isError: false);
-                                    }
-                                  } else {
+                      if (modalError != null)
+                        _buildModalErrorBanner(modalError!),
+                      const SizedBox(height: 20),
+                      SizedBox(
+                        width: double.infinity,
+                        height: 50,
+                        child: ElevatedButton(
+                          onPressed: isSubmitting
+                              ? null
+                              : () async {
+                                  if (!allMet) {
                                     setModalState(() {
-                                      modalError = _extractApiError(
-                                          data, 'Failed to update password.');
+                                      modalError =
+                                          'Please satisfy all 4 password requirements.';
                                     });
+                                    return;
                                   }
-                                } catch (_) {
+                                  if (newPasswordController.text !=
+                                      confirmPasswordController.text) {
+                                    setModalState(() {
+                                      modalError =
+                                          'Password confirmation does not match.';
+                                    });
+                                    return;
+                                  }
+
                                   setModalState(() {
-                                    modalError = 'Network error occurred.';
+                                    isSubmitting = true;
+                                    modalError = null;
                                   });
-                                } finally {
-                                  if (modalContext.mounted) {
-                                    setModalState(() => isSubmitting = false);
+
+                                  try {
+                                    final response = await http
+                                        .patch(
+                                          Uri.parse(
+                                              '$_domain/api/v1/account/password'),
+                                          headers: {
+                                            'Authorization':
+                                                'Bearer ${widget.token}',
+                                            'Accept': 'application/json',
+                                            'Content-Type': 'application/json',
+                                          },
+                                          body: json.encode({
+                                            'unlock_token': unlockToken,
+                                            'password':
+                                                newPasswordController.text,
+                                            'password_confirmation':
+                                                confirmPasswordController.text,
+                                          }),
+                                        )
+                                        .timeout(ApiConfig.requestTimeout);
+
+                                    final data = json.decode(response.body);
+                                    if (response.statusCode == 200 &&
+                                        data['success'] == true) {
+                                      HapticFeedback.mediumImpact();
+                                      if (data['data'] is Map) {
+                                        final updated = UserModel.fromJson(
+                                            Map<String, dynamic>.from(
+                                                data['data']));
+                                        if (mounted) {
+                                          setState(
+                                              () => _currentUser = updated);
+                                        }
+                                        ref
+                                            .read(authProvider.notifier)
+                                            .updateUser(updated);
+                                      } else {
+                                        ref
+                                            .read(authProvider.notifier)
+                                            .refreshUserProfile();
+                                      }
+                                      if (modalContext.mounted) {
+                                        Navigator.pop(modalContext);
+                                        _showSnackBar(
+                                            'Password updated successfully!',
+                                            isError: false);
+                                      }
+                                    } else {
+                                      setModalState(() {
+                                        modalError = _extractApiError(
+                                            data, 'Failed to update password.');
+                                      });
+                                    }
+                                  } catch (_) {
+                                    setModalState(() {
+                                      modalError = 'Network error occurred.';
+                                    });
+                                  } finally {
+                                    if (modalContext.mounted) {
+                                      setModalState(() => isSubmitting = false);
+                                    }
                                   }
-                                }
-                              },
-                        child: isSubmitting
-                            ? const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(
-                                  color: Colors.white,
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : const Text('Update Password'),
+                                },
+                          child: isSubmitting
+                              ? const SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                    color: Colors.white,
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Text('Update Password'),
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             );
@@ -1324,33 +1421,35 @@ class _AccountManagementScreenState
               ),
             ],
           ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              for (final b in blockers)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        '• ',
-                        style: TextStyle(
-                          fontWeight: FontWeight.w900,
-                          color: StorkTheme.danger,
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                for (final b in blockers)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          '\u2022 ',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w900,
+                            color: StorkTheme.danger,
+                          ),
                         ),
-                      ),
-                      Expanded(
-                        child: Text(
-                          b,
-                          style: const TextStyle(fontSize: 13, height: 1.35),
+                        Expanded(
+                          child: Text(
+                            b,
+                            style: const TextStyle(fontSize: 13, height: 1.35),
+                          ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
-                ),
-            ],
+              ],
+            ),
           ),
           actions: [
             ElevatedButton(
@@ -1379,149 +1478,164 @@ class _AccountManagementScreenState
       builder: (modalContext) {
         return StatefulBuilder(
           builder: (ctx, setModalState) {
-            return Padding(
-              padding: EdgeInsets.only(
-                left: 20,
-                right: 20,
-                top: 14,
-                bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
+            final mediaQuery = MediaQuery.of(ctx);
+            final bottomInset = mediaQuery.viewInsets.bottom;
+            final safeBottom = mediaQuery.viewPadding.bottom;
+
+            return ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: mediaQuery.size.height * 0.90,
               ),
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _buildSheetHeader(
-                      icon: Icons.person_off_outlined,
-                      title: 'Delete / Archive Your Account',
-                      subtitle:
-                          'Archiving your account immediately signs you out on all devices and deactivates sign-in.',
-                      accentColor: StorkTheme.danger,
-                    ),
-                    const SizedBox(height: 18),
-                    DropdownButtonFormField<String>(
-                      initialValue: selectedReason,
-                      isExpanded: true,
-                      decoration: const InputDecoration(
-                        labelText: 'Reason for leaving *',
+              child: Padding(
+                padding: EdgeInsets.only(
+                  left: 20,
+                  right: 20,
+                  top: 14,
+                  bottom:
+                      bottomInset + (bottomInset > 0 ? 16 : safeBottom + 24),
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _buildSheetHeader(
+                        icon: Icons.person_off_outlined,
+                        title: 'Delete / Archive Your Account',
+                        subtitle:
+                            'Archiving your account immediately signs you out on all devices and deactivates sign-in.',
+                        accentColor: StorkTheme.danger,
                       ),
-                      items: reasonsMap.entries
-                          .map((e) => DropdownMenuItem<String>(
-                                value: e.key,
-                                child: Text(
-                                  e.value,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(fontSize: 13),
-                                ),
-                              ))
-                          .toList(),
-                      onChanged: (v) {
-                        if (v != null) {
-                          setModalState(() => selectedReason = v);
-                        }
-                      },
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: noteCtrl,
-                      maxLines: 2,
-                      decoration: const InputDecoration(
-                        labelText: 'Additional feedback (Optional)',
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: passCtrl,
-                      obscureText: true,
-                      decoration: const InputDecoration(
-                        labelText: 'Confirm Current Password *',
-                        prefixIcon: Icon(Icons.lock_outline_rounded, size: 20),
-                      ),
-                    ),
-                    if (modalError != null) _buildModalErrorBanner(modalError!),
-                    const SizedBox(height: 20),
-                    SizedBox(
-                      width: double.infinity,
-                      height: 50,
-                      child: ElevatedButton(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: StorkTheme.danger,
+                      const SizedBox(height: 18),
+                      DropdownButtonFormField<String>(
+                        initialValue: selectedReason,
+                        isExpanded: true,
+                        decoration: const InputDecoration(
+                          labelText: 'Reason for leaving *',
                         ),
-                        onPressed: isDeleting
-                            ? null
-                            : () async {
-                                if (passCtrl.text.isEmpty) {
-                                  setModalState(() {
-                                    modalError =
-                                        'Please enter your current password.';
-                                  });
-                                  return;
-                                }
-                                setModalState(() {
-                                  isDeleting = true;
-                                  modalError = null;
-                                });
-                                try {
-                                  final response = await http
-                                      .post(
-                                        Uri.parse(
-                                            '$_domain/api/v1/account/delete'),
-                                        headers: {
-                                          'Authorization':
-                                              'Bearer ${widget.token}',
-                                          'Accept': 'application/json',
-                                          'Content-Type': 'application/json',
-                                        },
-                                        body: json.encode({
-                                          'reason': selectedReason,
-                                          'note': noteCtrl.text.trim(),
-                                          'password': passCtrl.text,
-                                        }),
-                                      )
-                                      .timeout(ApiConfig.requestTimeout);
-                                  final data = json.decode(response.body);
-                                  if (response.statusCode == 200 &&
-                                      data is Map &&
-                                      data['success'] == true) {
-                                    await ref
-                                        .read(authProvider.notifier)
-                                        .logout();
-                                    if (!mounted) return;
-                                    Navigator.of(context).pushAndRemoveUntil(
-                                      MaterialPageRoute(
-                                        builder: (_) => const LoginScreen(),
-                                      ),
-                                      (route) => false,
-                                    );
-                                  } else {
-                                    setModalState(() {
-                                      modalError = _extractApiError(
-                                          data, 'Unable to delete account.');
-                                    });
-                                  }
-                                } catch (_) {
-                                  setModalState(() {
-                                    modalError = 'Network error occurred.';
-                                  });
-                                } finally {
-                                  if (modalContext.mounted) {
-                                    setModalState(() => isDeleting = false);
-                                  }
-                                }
-                              },
-                        child: isDeleting
-                            ? const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(
-                                  color: Colors.white,
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : const Text('Confirm Account Deletion'),
+                        items: reasonsMap.entries
+                            .map((e) => DropdownMenuItem<String>(
+                                  value: e.key,
+                                  child: Text(
+                                    e.value,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(fontSize: 13),
+                                  ),
+                                ))
+                            .toList(),
+                        onChanged: (v) {
+                          if (v != null) {
+                            setModalState(() => selectedReason = v);
+                          }
+                        },
                       ),
-                    ),
-                  ],
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: noteCtrl,
+                        maxLines: 2,
+                        decoration: const InputDecoration(
+                          labelText: 'Additional feedback (Optional)',
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: passCtrl,
+                        obscureText: true,
+                        decoration: const InputDecoration(
+                          labelText: 'Confirm Current Password *',
+                          prefixIcon:
+                              Icon(Icons.lock_outline_rounded, size: 20),
+                        ),
+                      ),
+                      if (modalError != null)
+                        _buildModalErrorBanner(modalError!),
+                      const SizedBox(height: 20),
+                      SizedBox(
+                        width: double.infinity,
+                        height: 50,
+                        child: ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: StorkTheme.danger,
+                          ),
+                          onPressed: isDeleting
+                              ? null
+                              : () async {
+                                  if (passCtrl.text.isEmpty) {
+                                    setModalState(() {
+                                      modalError =
+                                          'Please enter your current password.';
+                                    });
+                                    return;
+                                  }
+
+                                  setModalState(() {
+                                    isDeleting = true;
+                                    modalError = null;
+                                  });
+
+                                  try {
+                                    final response = await http
+                                        .post(
+                                          Uri.parse(
+                                              '$_domain/api/v1/account/delete'),
+                                          headers: {
+                                            'Authorization':
+                                                'Bearer ${widget.token}',
+                                            'Accept': 'application/json',
+                                            'Content-Type': 'application/json',
+                                          },
+                                          body: json.encode({
+                                            'reason': selectedReason,
+                                            'note': noteCtrl.text.trim(),
+                                            'password': passCtrl.text,
+                                          }),
+                                        )
+                                        .timeout(ApiConfig.requestTimeout);
+
+                                    final data = json.decode(response.body);
+                                    if (response.statusCode == 200 &&
+                                        data is Map &&
+                                        data['success'] == true) {
+                                      await ref
+                                          .read(authProvider.notifier)
+                                          .logout();
+                                      if (!mounted) return;
+                                      Navigator.of(context).pushAndRemoveUntil(
+                                        MaterialPageRoute(
+                                          builder: (_) => const LoginScreen(),
+                                        ),
+                                        (route) => false,
+                                      );
+                                    } else {
+                                      setModalState(() {
+                                        modalError = _extractApiError(
+                                            data, 'Unable to delete account.');
+                                      });
+                                    }
+                                  } catch (_) {
+                                    setModalState(() {
+                                      modalError = 'Network error occurred.';
+                                    });
+                                  } finally {
+                                    if (modalContext.mounted) {
+                                      setModalState(() => isDeleting = false);
+                                    }
+                                  }
+                                },
+                          child: isDeleting
+                              ? const SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                    color: Colors.white,
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Text('Confirm Account Deletion'),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             );
@@ -1563,9 +1677,11 @@ class _AccountManagementScreenState
     required String value,
     Widget? badge,
     required VoidCallback onTap,
+    VoidCallback? onLongPress,
   }) {
     return InkWell(
       onTap: onTap,
+      onLongPress: onLongPress,
       borderRadius: BorderRadius.circular(18),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
@@ -1585,24 +1701,22 @@ class _AccountManagementScreenState
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Row(
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 4,
+                    crossAxisAlignment: WrapCrossAlignment.center,
                     children: [
-                      Flexible(
-                        child: Text(
-                          label,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                            color: StorkTheme.textMuted,
-                          ),
+                      Text(
+                        label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: StorkTheme.textMuted,
                         ),
                       ),
-                      if (badge != null) ...[
-                        const SizedBox(width: 6),
-                        badge,
-                      ],
+                      if (badge != null) badge,
                     ],
                   ),
                   const SizedBox(height: 3),
@@ -1611,7 +1725,7 @@ class _AccountManagementScreenState
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
-                      fontSize: 14.5,
+                      fontSize: 14,
                       fontWeight: FontWeight.w800,
                       color: StorkTheme.textMain,
                     ),
@@ -1652,7 +1766,11 @@ class _AccountManagementScreenState
     return Scaffold(
       backgroundColor: StorkTheme.surfaceSubtle,
       appBar: AppBar(
-        title: const Text('Account & Security'),
+        title: const FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerLeft,
+          child: Text('Account & Security'),
+        ),
       ),
       body: ListView(
         padding: const EdgeInsets.all(16),
@@ -1713,13 +1831,30 @@ class _AccountManagementScreenState
                         ),
                       ),
                       const SizedBox(height: 2),
-                      Text(
-                        _currentUser.email,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Colors.white.withValues(alpha: 0.85),
+                      GestureDetector(
+                        onTap: () =>
+                            _copyToClipboard(_currentUser.email, 'Email'),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Flexible(
+                              child: Text(
+                                _currentUser.email,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.white.withValues(alpha: 0.85),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            Icon(
+                              Icons.copy_rounded,
+                              size: 11,
+                              color: Colors.white.withValues(alpha: 0.7),
+                            ),
+                          ],
                         ),
                       ),
                       const SizedBox(height: 8),
@@ -1802,6 +1937,7 @@ class _AccountManagementScreenState
                   label: 'Phone Number',
                   value: contactNoText,
                   onTap: _showUpdatePhoneModal,
+                  onLongPress: () => _copyToClipboard(contactNoText, 'Phone'),
                 ),
                 const Divider(height: 1, indent: 72),
                 _buildSettingTile(
@@ -1826,6 +1962,8 @@ class _AccountManagementScreenState
                     ),
                   ),
                   onTap: _showChangeEmailModal,
+                  onLongPress: () =>
+                      _copyToClipboard(_currentUser.email, 'Email'),
                 ),
               ],
             ),
@@ -1865,7 +2003,7 @@ class _AccountManagementScreenState
                       : StorkTheme.primary,
                   label: 'Identity Verification (Government ID)',
                   value: _currentUser.isIdentityVerified
-                      ? 'Verified ✓'
+                      ? 'Verified \u2713'
                       : 'Status: ${_currentUser.identityVerificationStatus.toUpperCase()}',
                   onTap: () {
                     Navigator.push(

@@ -6,10 +6,34 @@ import '../models/cart_model.dart';
 import '../models/chat_models.dart';
 
 typedef JsonMap = Map<String, dynamic>;
+typedef SellerCacheMap = Map<int, JsonMap>;
 
 class ApiService {
-  static Map<int, JsonMap> _sellerByUserIdCache = {};
-  static Map<int, JsonMap> _sellerByProfileIdCache = {};
+  static final http.Client httpClient = http.Client();
+  static String? socketId;
+
+  static SellerCacheMap _sellerByUserIdCache = {};
+  static SellerCacheMap _sellerByProfileIdCache = {};
+  static DateTime? _sellerCacheLoadedAt;
+
+  static Map<String, String> buildHeaders(
+    String? token, {
+    bool isJson = false,
+  }) {
+    final headers = <String, String>{
+      'Accept': 'application/json',
+      'Accept-Encoding': 'gzip',
+      'Connection': 'keep-alive',
+      if (isJson) 'Content-Type': 'application/json',
+    };
+    if (token != null && token.trim().isNotEmpty) {
+      headers['Authorization'] = 'Bearer ${token.trim()}';
+    }
+    if (socketId != null && socketId!.isNotEmpty) {
+      headers['X-Socket-ID'] = socketId!;
+    }
+    return headers;
+  }
 
   static String _extractError(dynamic data, String fallback) {
     if (data is Map) {
@@ -32,13 +56,10 @@ class ApiService {
 
   static Future<JsonMap> sendOtp(String email) async {
     try {
-      final response = await http
+      final response = await httpClient
           .post(
             Uri.parse('${ApiConfig.baseUrl}/send-otp'),
-            headers: {
-              'Content-Type': 'application/json',
-              'Accept': 'application/json',
-            },
+            headers: buildHeaders(null, isJson: true),
             body: jsonEncode({'email': email}),
           )
           .timeout(ApiConfig.requestTimeout);
@@ -67,13 +88,10 @@ class ApiService {
 
   static Future<JsonMap> verifyOtp(String email, String code) async {
     try {
-      final response = await http
+      final response = await httpClient
           .post(
             Uri.parse('${ApiConfig.baseUrl}/verify-otp'),
-            headers: {
-              'Content-Type': 'application/json',
-              'Accept': 'application/json',
-            },
+            headers: buildHeaders(null, isJson: true),
             body: jsonEncode({'email': email, 'code': code}),
           )
           .timeout(ApiConfig.requestTimeout);
@@ -105,13 +123,10 @@ class ApiService {
     required String password,
   }) async {
     try {
-      final response = await http
+      final response = await httpClient
           .post(
             Uri.parse('${ApiConfig.baseUrl}/login'),
-            headers: {
-              'Content-Type': 'application/json',
-              'Accept': 'application/json',
-            },
+            headers: buildHeaders(null, isJson: true),
             body: jsonEncode({
               'email': email,
               'password': password,
@@ -147,19 +162,15 @@ class ApiService {
 
   static Future<bool> logout(String token) async {
     try {
-      final response = await http.post(
-        Uri.parse('${ApiConfig.baseUrl}/logout'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
-      ).timeout(const Duration(seconds: 8));
-
+      final response = await httpClient
+          .post(
+            Uri.parse('${ApiConfig.baseUrl}/logout'),
+            headers: buildHeaders(token, isJson: true),
+          )
+          .timeout(const Duration(seconds: 8));
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove('storkia_auth_token');
       await prefs.remove('storkia_auth_user');
-
       return response.statusCode == 200;
     } catch (_) {
       final prefs = await SharedPreferences.getInstance();
@@ -181,13 +192,10 @@ class ApiService {
     required String passwordConfirmation,
   }) async {
     try {
-      final response = await http
+      final response = await httpClient
           .post(
             Uri.parse('${ApiConfig.baseUrl}/register'),
-            headers: {
-              'Content-Type': 'application/json',
-              'Accept': 'application/json',
-            },
+            headers: buildHeaders(null, isJson: true),
             body: jsonEncode({
               'first_name': firstName,
               'last_name': lastName,
@@ -221,14 +229,12 @@ class ApiService {
 
   static Future<JsonMap> getSanctionStatus(String token) async {
     try {
-      final response = await http.get(
-        Uri.parse('${ApiConfig.baseUrl}/account/sanction'),
-        headers: {
-          'Accept': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
-      ).timeout(ApiConfig.requestTimeout);
-
+      final response = await httpClient
+          .get(
+            Uri.parse('${ApiConfig.baseUrl}/account/sanction'),
+            headers: buildHeaders(token),
+          )
+          .timeout(ApiConfig.requestTimeout);
       final data = jsonDecode(response.body);
       if (response.statusCode == 200 && data['success'] == true) {
         return {'success': true, 'data': data['data']};
@@ -252,20 +258,17 @@ class ApiService {
         'POST',
         Uri.parse('${ApiConfig.baseUrl}/account/sanction/appeal'),
       );
-      request.headers['Authorization'] = 'Bearer $token';
-      request.headers['Accept'] = 'application/json';
+      request.headers.addAll(buildHeaders(token));
       request.fields['appeal_explanation'] = explanation;
-
       if (photoPath != null && photoPath.isNotEmpty) {
         request.files.add(
           await http.MultipartFile.fromPath('supporting_photo', photoPath),
         );
       }
-
-      final streamed = await request.send().timeout(ApiConfig.requestTimeout);
+      final streamed =
+          await httpClient.send(request).timeout(ApiConfig.requestTimeout);
       final response = await http.Response.fromStream(streamed);
       final data = jsonDecode(response.body);
-
       if (response.statusCode == 200 && data['success'] == true) {
         return {'success': true, 'data': data};
       }
@@ -298,14 +301,12 @@ class ApiService {
         url += '&seller_id=$sellerId';
       }
 
-      final response = await http.get(
-        Uri.parse(url),
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await httpClient
+          .get(
+            Uri.parse(url),
+            headers: buildHeaders(token, isJson: true),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       final data = jsonDecode(response.body);
       if (response.statusCode == 200) {
@@ -326,14 +327,12 @@ class ApiService {
 
   static Future<JsonMap> getCartItems(String token) async {
     try {
-      final response = await http.get(
-        Uri.parse('${ApiConfig.baseUrl}/cart'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await httpClient
+          .get(
+            Uri.parse('${ApiConfig.baseUrl}/cart'),
+            headers: buildHeaders(token, isJson: true),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       final data = jsonDecode(response.body);
       if (response.statusCode == 200) {
@@ -341,7 +340,7 @@ class ApiService {
             data['data'] is List ? data['data'] as List<dynamic> : <dynamic>[];
         final List<CartItem> cartItems = [
           for (final e in items)
-            if (e is Map) CartItem.fromJson(Map<String, dynamic>.from(e)),
+            if (e is Map) CartItem.fromJson(JsonMap.from(e)),
         ];
         return {'success': true, 'data': cartItems};
       } else {
@@ -363,14 +362,10 @@ class ApiService {
     String? subVariant,
   }) async {
     try {
-      final response = await http
+      final response = await httpClient
           .post(
             Uri.parse('${ApiConfig.baseUrl}/cart'),
-            headers: {
-              'Content-Type': 'application/json',
-              'Accept': 'application/json',
-              'Authorization': 'Bearer $token',
-            },
+            headers: buildHeaders(token, isJson: true),
             body: jsonEncode({
               'product_id': productId,
               'quantity': quantity,
@@ -397,18 +392,13 @@ class ApiService {
   static Future<JsonMap> updateCartQuantity(
       String token, int cartId, int quantity) async {
     try {
-      final response = await http
+      final response = await httpClient
           .put(
             Uri.parse('${ApiConfig.baseUrl}/cart/$cartId'),
-            headers: {
-              'Content-Type': 'application/json',
-              'Accept': 'application/json',
-              'Authorization': 'Bearer $token',
-            },
+            headers: buildHeaders(token, isJson: true),
             body: jsonEncode({'quantity': quantity}),
           )
           .timeout(ApiConfig.requestTimeout);
-
       final data = jsonDecode(response.body);
       if (response.statusCode == 200) {
         return {'success': true, 'data': data};
@@ -425,15 +415,12 @@ class ApiService {
 
   static Future<JsonMap> removeCartItem(String token, int cartId) async {
     try {
-      final response = await http.delete(
-        Uri.parse('${ApiConfig.baseUrl}/cart/$cartId'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
-      ).timeout(ApiConfig.requestTimeout);
-
+      final response = await httpClient
+          .delete(
+            Uri.parse('${ApiConfig.baseUrl}/cart/$cartId'),
+            headers: buildHeaders(token, isJson: true),
+          )
+          .timeout(ApiConfig.requestTimeout);
       final data = jsonDecode(response.body);
       if (response.statusCode == 200) {
         return {'success': true, 'data': data};
@@ -449,14 +436,20 @@ class ApiService {
   }
 
   static Future<void> _ensureSellerDirectoryCache(String token) async {
+    final now = DateTime.now();
+    if (_sellerByUserIdCache.isNotEmpty &&
+        _sellerCacheLoadedAt != null &&
+        now.difference(_sellerCacheLoadedAt!).inMinutes < 10) {
+      return;
+    }
+
     try {
-      final response = await http.get(
-        Uri.parse('${ApiConfig.baseUrl}/sellers'),
-        headers: {
-          'Accept': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
-      ).timeout(const Duration(seconds: 8));
+      final response = await httpClient
+          .get(
+            Uri.parse('${ApiConfig.baseUrl}/sellers'),
+            headers: buildHeaders(token),
+          )
+          .timeout(const Duration(seconds: 8));
 
       if (response.statusCode == 200) {
         final body = jsonDecode(response.body);
@@ -473,11 +466,11 @@ class ApiService {
             }
           }
         }
-        final Map<int, JsonMap> byUser = {};
-        final Map<int, JsonMap> byProfile = {};
+        final SellerCacheMap byUser = {};
+        final SellerCacheMap byProfile = {};
         for (final item in rawSellers) {
           if (item is Map) {
-            final map = Map<String, dynamic>.from(item);
+            final map = JsonMap.from(item);
             final int uid =
                 int.tryParse(map['user_id']?.toString() ?? '0') ?? 0;
             final int pid = int.tryParse(map['id']?.toString() ?? '0') ?? 0;
@@ -488,6 +481,7 @@ class ApiService {
         if (byUser.isNotEmpty) {
           _sellerByUserIdCache = byUser;
           _sellerByProfileIdCache = byProfile;
+          _sellerCacheLoadedAt = now;
         }
       }
     } catch (_) {}
@@ -499,17 +493,18 @@ class ApiService {
       if (contactId != null) {
         url += '?contact=$contactId';
       }
-      final response = await http.get(
-        Uri.parse(url),
-        headers: {
-          'Accept': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+
+      final response = await httpClient
+          .get(
+            Uri.parse(url),
+            headers: buildHeaders(token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         List<dynamic> rawList = [];
+
         if (data is Map && data['success'] == true && data['data'] != null) {
           final d = data['data'];
           if (d is List) {
@@ -529,7 +524,7 @@ class ApiService {
 
         List<ChatContact> contacts = [
           for (final e in rawList)
-            if (e is Map) ChatContact.fromJson(Map<String, dynamic>.from(e)),
+            if (e is Map) ChatContact.fromJson(JsonMap.from(e)),
         ];
 
         final bool needsSellerLookup = contacts.any((c) =>
@@ -594,13 +589,12 @@ class ApiService {
 
   static Future<JsonMap> fetchUnreadMessageCount(String token) async {
     try {
-      final response = await http.get(
-        Uri.parse('${ApiConfig.baseUrl}/messages/contacts'),
-        headers: {
-          'Accept': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await httpClient
+          .get(
+            Uri.parse('${ApiConfig.baseUrl}/messages/contacts'),
+            headers: buildHeaders(token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -633,13 +627,12 @@ class ApiService {
 
   static Future<JsonMap> fetchMessages(String token, int contactId) async {
     try {
-      final response = await http.get(
-        Uri.parse('${ApiConfig.baseUrl}/messages/fetch/$contactId'),
-        headers: {
-          'Accept': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await httpClient
+          .get(
+            Uri.parse('${ApiConfig.baseUrl}/messages/fetch/$contactId'),
+            headers: buildHeaders(token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -657,11 +650,11 @@ class ApiService {
               rawList = d.values.toList();
             }
             if (d['contact'] is Map) {
-              contactInfo = Map<String, dynamic>.from(d['contact'] as Map);
+              contactInfo = JsonMap.from(d['contact'] as Map);
             }
           }
           if (data['contact'] is Map) {
-            contactInfo = Map<String, dynamic>.from(data['contact'] as Map);
+            contactInfo = JsonMap.from(data['contact'] as Map);
           }
         } else if (data is List) {
           rawList = data;
@@ -669,7 +662,7 @@ class ApiService {
 
         final List<ChatMessage> messages = [
           for (final e in rawList)
-            if (e is Map) ChatMessage.fromJson(Map<String, dynamic>.from(e)),
+            if (e is Map) ChatMessage.fromJson(JsonMap.from(e)),
         ];
 
         return {
@@ -698,8 +691,7 @@ class ApiService {
           'POST',
           Uri.parse('${ApiConfig.baseUrl}/messages'),
         );
-        req.headers['Authorization'] = 'Bearer $token';
-        req.headers['Accept'] = 'application/json';
+        req.headers.addAll(buildHeaders(token));
         req.fields['receiver_id'] = '$receiverId';
         req.fields['message'] =
             message.isNotEmpty ? message : 'Sent an attachment';
@@ -709,17 +701,14 @@ class ApiService {
         req.files.add(
           await http.MultipartFile.fromPath('attachment', attachmentPath),
         );
-        final streamed = await req.send().timeout(ApiConfig.requestTimeout);
+        final streamed =
+            await httpClient.send(req).timeout(ApiConfig.requestTimeout);
         response = await http.Response.fromStream(streamed);
       } else {
-        response = await http
+        response = await httpClient
             .post(
               Uri.parse('${ApiConfig.baseUrl}/messages'),
-              headers: {
-                'Content-Type': 'application/json',
-                'Accept': 'application/json',
-                'Authorization': 'Bearer $token',
-              },
+              headers: buildHeaders(token, isJson: true),
               body: jsonEncode({
                 'receiver_id': receiverId,
                 'message': message,
@@ -734,9 +723,9 @@ class ApiService {
         JsonMap? msgData;
         if (data is Map) {
           if (data['data'] is Map) {
-            msgData = Map<String, dynamic>.from(data['data'] as Map);
+            msgData = JsonMap.from(data['data'] as Map);
           } else {
-            msgData = Map<String, dynamic>.from(data);
+            msgData = JsonMap.from(data);
           }
         }
         if (msgData != null && !msgData.containsKey('error')) {
@@ -754,13 +743,12 @@ class ApiService {
 
   static Future<void> markAsRead(String token, int contactId) async {
     try {
-      await http.patch(
-        Uri.parse('${ApiConfig.baseUrl}/messages/$contactId/read'),
-        headers: {
-          'Accept': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
-      ).timeout(const Duration(seconds: 10));
+      await httpClient
+          .patch(
+            Uri.parse('${ApiConfig.baseUrl}/messages/$contactId/read'),
+            headers: buildHeaders(token),
+          )
+          .timeout(const Duration(seconds: 10));
     } catch (_) {}
   }
 }

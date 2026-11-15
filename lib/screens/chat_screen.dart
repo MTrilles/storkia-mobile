@@ -1,11 +1,14 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import '../config/api_config.dart';
 import '../config/app_theme.dart';
 import '../models/chat_models.dart';
 import '../services/api_service.dart';
 import '../services/websocket_service.dart';
+
+typedef JsonMap = Map<String, dynamic>;
 
 class ChatScreen extends StatefulWidget {
   final ChatContact contact;
@@ -32,7 +35,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   bool isSending = false;
   bool isFetching = true;
   XFile? _attachment;
-  Timer? _pollingTimer;
 
   @override
   void initState() {
@@ -40,10 +42,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _contact = widget.contact;
     _fetchMessages();
+    WebSocketService.init(widget.token, userId: widget.authUserId);
     WebSocketService.listenToChat(widget.authUserId, _handleRealTimeMessage);
-    _pollingTimer = Timer.periodic(const Duration(seconds: 3), (_) {
-      _fetchMessagesSilently();
-    });
   }
 
   @override
@@ -54,19 +54,26 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   void _handleRealTimeMessage(dynamic event) {
-    if (event is Map && event['message'] is Map) {
-      final msg = ChatMessage.fromJson(
-          Map<String, dynamic>.from(event['message'] as Map));
-      if (msg.userId == _contact.id) {
-        if (mounted) {
-          setState(() {
-            messages.add(msg);
-          });
-          _scrollToBottom();
-          ApiService.markAsRead(widget.token, _contact.id);
+    if (!mounted) return;
+    if (event is Map) {
+      final rawMsg = event['payload'] ?? event['message'] ?? event;
+      if (rawMsg is Map) {
+        final msg = ChatMessage.fromJson(JsonMap.from(rawMsg));
+        if (msg.userId == _contact.id) {
+          final exists = messages.any((m) => m.id == msg.id);
+          if (!exists) {
+            HapticFeedback.lightImpact();
+            setState(() {
+              messages.add(msg);
+            });
+            _scrollToBottom();
+            ApiService.markAsRead(widget.token, _contact.id);
+          }
+          return;
         }
       }
     }
+    _fetchMessagesSilently();
   }
 
   Future<void> _fetchMessages() async {
@@ -88,6 +95,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         );
       }
     });
+
     if (res['success'] == true) {
       setState(() {
         messages = List<ChatMessage>.from(res['data'] ?? []);
@@ -133,7 +141,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       source: ImageSource.gallery,
       imageQuality: 85,
     );
-    if (picked != null) {
+    if (picked != null && mounted) {
+      HapticFeedback.selectionClick();
       setState(() => _attachment = picked);
     }
   }
@@ -142,9 +151,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final text = _msgController.text.trim();
     if ((text.isEmpty && _attachment == null) || isSending) return;
 
+    HapticFeedback.lightImpact();
     setState(() => isSending = true);
     final backup = text;
     final fileToSend = _attachment;
+
     _msgController.clear();
     setState(() => _attachment = null);
 
@@ -189,7 +200,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _pollingTimer?.cancel();
+    WebSocketService.removeChatListener(_handleRealTimeMessage);
     _msgController.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -206,6 +217,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     return Scaffold(
       backgroundColor: StorkTheme.surfaceSubtle,
       appBar: AppBar(
+        titleSpacing: 8,
         title: Row(
           children: [
             Container(
@@ -246,7 +258,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                       color: StorkTheme.primaryDark,
-                      fontSize: 15.5,
+                      fontSize: 15,
                       fontWeight: FontWeight.w800,
                     ),
                   ),
@@ -263,7 +275,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                       const SizedBox(width: 5),
                       const Flexible(
                         child: Text(
-                          'Official Store • Active now',
+                          'Official Store \u2022 Active now',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
@@ -290,7 +302,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                   )
                 : messages.isEmpty
                     ? Center(
-                        child: Padding(
+                        child: SingleChildScrollView(
                           padding: const EdgeInsets.all(28),
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
@@ -385,7 +397,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
               ),
             ),
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
             decoration: const BoxDecoration(
               color: StorkTheme.surface,
               border: Border(top: BorderSide(color: StorkTheme.borderSubtle)),
@@ -395,6 +407,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
               child: Row(
                 children: [
                   IconButton(
+                    visualDensity: VisualDensity.compact,
                     onPressed: _pickAttachment,
                     icon: const Icon(
                       Icons.photo_library_outlined,
@@ -447,6 +460,72 @@ class _ChatBubble extends StatelessWidget {
 
   const _ChatBubble({required this.msg, required this.isMe});
 
+  void _openFullScreenImage(BuildContext context, String imageUrl) {
+    HapticFeedback.selectionClick();
+    showDialog<void>(
+      context: context,
+      useSafeArea: false,
+      builder: (dialogContext) {
+        return Dialog(
+          backgroundColor: Colors.black.withValues(alpha: 0.92),
+          insetPadding: EdgeInsets.zero,
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              InteractiveViewer(
+                minScale: 0.6,
+                maxScale: 4.0,
+                child: Image.network(
+                  imageUrl,
+                  fit: BoxFit.contain,
+                  width: double.infinity,
+                  height: double.infinity,
+                  errorBuilder: (_, __, ___) => const Center(
+                    child: Icon(
+                      Icons.broken_image_outlined,
+                      color: Colors.white70,
+                      size: 48,
+                    ),
+                  ),
+                ),
+              ),
+              Positioned(
+                top: MediaQuery.of(dialogContext).padding.top + 12,
+                right: 16,
+                child: IconButton(
+                  style: IconButton.styleFrom(
+                    backgroundColor: Colors.white.withValues(alpha: 0.18),
+                  ),
+                  icon: const Icon(
+                    Icons.close_rounded,
+                    color: Colors.white,
+                    size: 26,
+                  ),
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _copyMessageText(BuildContext context) async {
+    final text = msg.message.trim();
+    if (text.isEmpty) return;
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    await Clipboard.setData(ClipboardData(text: text));
+    HapticFeedback.lightImpact();
+    messenger?.clearSnackBars();
+    messenger?.showSnackBar(
+      const SnackBar(
+        content: Text('Message copied to clipboard'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final String attachmentUrl =
@@ -462,81 +541,97 @@ class _ChatBubble extends StatelessWidget {
           crossAxisAlignment:
               isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
           children: [
-            Container(
-              constraints: BoxConstraints(
-                maxWidth: MediaQuery.sizeOf(context).width * 0.76,
-              ),
-              padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 11),
-              decoration: BoxDecoration(
-                gradient: isMe ? StorkTheme.brandGradient : null,
-                color: isMe ? null : StorkTheme.surface,
-                borderRadius: BorderRadius.circular(20).copyWith(
-                  bottomRight: isMe ? const Radius.circular(4) : null,
-                  bottomLeft: !isMe ? const Radius.circular(4) : null,
+            GestureDetector(
+              onLongPress: () => _copyMessageText(context),
+              child: Container(
+                constraints: BoxConstraints(
+                  maxWidth: MediaQuery.sizeOf(context).width * 0.78,
                 ),
-                border:
-                    !isMe ? Border.all(color: StorkTheme.borderSubtle) : null,
-                boxShadow: !isMe ? StorkTheme.softCardShadow : null,
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  if (msg.product != null) ...[
-                    Container(
-                      margin: const EdgeInsets.only(bottom: 8),
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: isMe
-                            ? Colors.black.withValues(alpha: 0.16)
-                            : StorkTheme.surfaceSubtle,
-                        borderRadius: BorderRadius.circular(12),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 15, vertical: 11),
+                decoration: BoxDecoration(
+                  gradient: isMe ? StorkTheme.brandGradient : null,
+                  color: isMe ? null : StorkTheme.surface,
+                  borderRadius: BorderRadius.circular(20).copyWith(
+                    bottomRight: isMe ? const Radius.circular(4) : null,
+                    bottomLeft: !isMe ? const Radius.circular(4) : null,
+                  ),
+                  border:
+                      !isMe ? Border.all(color: StorkTheme.borderSubtle) : null,
+                  boxShadow: !isMe ? StorkTheme.softCardShadow : null,
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (msg.product != null) ...[
+                      Container(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: isMe
+                              ? Colors.black.withValues(alpha: 0.16)
+                              : StorkTheme.surfaceSubtle,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.inventory_2_outlined,
+                              size: 14,
+                              color:
+                                  isMe ? Colors.white : StorkTheme.primaryDark,
+                            ),
+                            const SizedBox(width: 6),
+                            Flexible(
+                              child: Text(
+                                'Product Inquiry: ${msg.product!['name'] ?? ''}',
+                                style: TextStyle(
+                                  fontSize: 11.5,
+                                  fontWeight: FontWeight.w800,
+                                  color: isMe
+                                      ? Colors.white
+                                      : StorkTheme.primaryDark,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            Icons.inventory_2_outlined,
-                            size: 14,
-                            color: isMe ? Colors.white : StorkTheme.primaryDark,
-                          ),
-                          const SizedBox(width: 6),
-                          Flexible(
-                            child: Text(
-                              'Product Inquiry: ${msg.product!['name'] ?? ''}',
-                              style: TextStyle(
-                                fontSize: 11.5,
-                                fontWeight: FontWeight.w800,
-                                color: isMe
-                                    ? Colors.white
-                                    : StorkTheme.primaryDark,
+                    ],
+                    if (attachmentUrl.isNotEmpty) ...[
+                      GestureDetector(
+                        onTap: () =>
+                            _openFullScreenImage(context, attachmentUrl),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(12),
+                          child: Image.network(
+                            attachmentUrl,
+                            height: 155,
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) => const Padding(
+                              padding: EdgeInsets.all(16),
+                              child: Icon(
+                                Icons.broken_image_outlined,
+                                color: StorkTheme.textMuted,
                               ),
                             ),
                           ),
-                        ],
+                        ),
                       ),
-                    ),
+                      if (msg.message.isNotEmpty) const SizedBox(height: 6),
+                    ],
+                    if (msg.message.isNotEmpty)
+                      Text(
+                        msg.message,
+                        style: TextStyle(
+                          color: isMe ? Colors.white : StorkTheme.textMain,
+                          fontSize: 14,
+                          height: 1.38,
+                        ),
+                      ),
                   ],
-                  if (attachmentUrl.isNotEmpty) ...[
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(12),
-                      child: Image.network(
-                        attachmentUrl,
-                        height: 150,
-                        fit: BoxFit.cover,
-                      ),
-                    ),
-                    if (msg.message.isNotEmpty) const SizedBox(height: 6),
-                  ],
-                  if (msg.message.isNotEmpty)
-                    Text(
-                      msg.message,
-                      style: TextStyle(
-                        color: isMe ? Colors.white : StorkTheme.textMain,
-                        fontSize: 14,
-                        height: 1.38,
-                      ),
-                    ),
-                ],
+                ),
               ),
             ),
             const SizedBox(height: 4),

@@ -27,17 +27,28 @@ class _MessagesScreenState extends State<MessagesScreen>
     with WidgetsBindingObserver {
   List<ChatContact> contacts = [];
   bool isLoading = true;
-  Timer? _pollingTimer;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _loadData();
+    WebSocketService.addListener(_onRealtimeEvent);
+  }
 
-    _pollingTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+  void _onRealtimeEvent(BuyerRealtimeEvent event) {
+    if (!mounted) return;
+    if (event.scope == 'chat' ||
+        event.event == 'MessageSent' ||
+        event.channel.startsWith('private-chat.')) {
       _fetchContactsSilently();
-    });
+    }
+  }
+
+  void _onIncomingChatPayload(dynamic payload) {
+    if (mounted) {
+      _fetchContactsSilently();
+    }
   }
 
   @override
@@ -49,10 +60,8 @@ class _MessagesScreenState extends State<MessagesScreen>
 
   Future<void> _loadData() async {
     try {
-      WebSocketService.init(widget.token);
-      WebSocketService.listenToChat(widget.authUserId, (event) {
-        _fetchContactsSilently();
-      });
+      WebSocketService.init(widget.token, userId: widget.authUserId);
+      WebSocketService.listenToChat(widget.authUserId, _onIncomingChatPayload);
     } catch (_) {}
 
     await _fetchContacts();
@@ -142,8 +151,8 @@ class _MessagesScreenState extends State<MessagesScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _pollingTimer?.cancel();
-    WebSocketService.disconnect();
+    WebSocketService.removeListener(_onRealtimeEvent);
+    WebSocketService.removeChatListener(_onIncomingChatPayload);
     super.dispose();
   }
 

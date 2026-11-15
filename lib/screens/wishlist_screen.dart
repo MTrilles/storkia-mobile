@@ -8,6 +8,7 @@ import '../models/product_model.dart';
 import '../providers/global_counters_provider.dart';
 import '../providers/wishlist_provider.dart';
 import '../services/api_service.dart';
+import '../services/websocket_service.dart';
 import 'cart_screen.dart';
 import 'product_show.dart';
 
@@ -27,7 +28,7 @@ class WishlistScreen extends ConsumerStatefulWidget {
 
 class _WishlistScreenState extends ConsumerState<WishlistScreen>
     with WidgetsBindingObserver {
-  Timer? _autoSyncTimer;
+  Timer? _wsDebounceTimer;
   int? _addingProductId;
   String _selectedFilter = 'all';
 
@@ -42,17 +43,30 @@ class _WishlistScreenState extends ConsumerState<WishlistScreen>
           .read(wishlistProvider.notifier)
           .fetchWishlist(_domain, widget.token, silent: false);
     });
-    _autoSyncTimer = Timer.periodic(const Duration(seconds: 8), (_) {
-      ref
-          .read(wishlistProvider.notifier)
-          .fetchWishlist(_domain, widget.token, silent: true);
-    });
+    WebSocketService.addListener(_onRealtimeEvent);
+  }
+
+  void _onRealtimeEvent(BuyerRealtimeEvent event) {
+    if (!mounted) return;
+    if (event.scope == 'catalog' ||
+        event.scope == 'marketplace' ||
+        event.scope == 'order') {
+      _wsDebounceTimer?.cancel();
+      _wsDebounceTimer = Timer(const Duration(milliseconds: 280), () {
+        if (mounted) {
+          ref
+              .read(wishlistProvider.notifier)
+              .fetchWishlist(_domain, widget.token, silent: true);
+        }
+      });
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _autoSyncTimer?.cancel();
+    _wsDebounceTimer?.cancel();
+    WebSocketService.removeListener(_onRealtimeEvent);
     super.dispose();
   }
 
@@ -63,6 +77,46 @@ class _WishlistScreenState extends ConsumerState<WishlistScreen>
           .read(wishlistProvider.notifier)
           .fetchWishlist(_domain, widget.token, silent: true);
     }
+  }
+
+  void _showPopupToast(String message, {bool isError = false}) {
+    if (!mounted || message.trim().isEmpty) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.clearSnackBars();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            Icon(
+              isError
+                  ? Icons.error_outline_rounded
+                  : Icons.check_circle_outline_rounded,
+              color: Colors.white,
+              size: 19,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                message.trim(),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                  height: 1.3,
+                ),
+              ),
+            ),
+          ],
+        ),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 3),
+        margin: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+        backgroundColor: isError ? StorkTheme.danger : StorkTheme.success,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+        ),
+      ),
+    );
   }
 
   String _formatMoney(double amount) {
@@ -122,32 +176,14 @@ class _WishlistScreenState extends ConsumerState<WishlistScreen>
 
     if (res['success'] == true) {
       ref.read(cartCountProvider.notifier).fetchCartCount(widget.token);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Added "${product.name}" to your cart!'),
-          backgroundColor: StorkTheme.success,
-          action: SnackBarAction(
-            label: 'VIEW CART',
-            textColor: Colors.white,
-            onPressed: () {
-              Navigator.push(
-                context,
-                StorkRoute.fade(
-                  CartScreen(baseUrl: _domain, token: widget.token),
-                ),
-              );
-            },
-          ),
-        ),
+      _showPopupToast(
+        'Added "${product.name}" to your cart!',
+        isError: false,
       );
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            res['message']?.toString() ?? 'Unable to add item to cart.',
-          ),
-          backgroundColor: StorkTheme.danger,
-        ),
+      _showPopupToast(
+        res['message']?.toString() ?? 'Unable to add item to cart.',
+        isError: true,
       );
     }
   }
@@ -158,12 +194,9 @@ class _WishlistScreenState extends ConsumerState<WishlistScreen>
         .removeFromWishlist(_domain, widget.token, product.id);
     if (!mounted) return;
     if (removed) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Removed "${product.name}" from your wishlist.'),
-          backgroundColor: StorkTheme.textMain,
-          duration: const Duration(seconds: 2),
-        ),
+      _showPopupToast(
+        'Removed "${product.name}" from your wishlist.',
+        isError: false,
       );
     }
   }

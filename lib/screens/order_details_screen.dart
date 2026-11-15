@@ -10,6 +10,8 @@ import '../config/api_config.dart';
 import '../config/app_routes.dart';
 import '../config/app_theme.dart';
 import '../providers/global_counters_provider.dart';
+import '../services/api_service.dart';
+import '../services/websocket_service.dart';
 import 'cart_screen.dart';
 import 'identity_verification_screen.dart';
 import 'leave_review_screen.dart';
@@ -17,6 +19,7 @@ import 'leave_review_screen.dart';
 typedef JsonMap = Map<String, dynamic>;
 typedef StringMap = Map<String, String>;
 typedef XFileList = List<XFile>;
+typedef JsonMapList = List<JsonMap>;
 
 class OrderDetailsScreen extends ConsumerStatefulWidget {
   final int orderId;
@@ -37,7 +40,8 @@ class OrderDetailsScreen extends ConsumerStatefulWidget {
 class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
     with WidgetsBindingObserver {
   bool _isLoading = true;
-  Timer? _autoSyncTimer;
+  Timer? _wsDebounceTimer;
+  int? _subscribedShipmentId;
 
   JsonMap? _orderData;
   JsonMap? _liveTrackingData;
@@ -57,21 +61,118 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _fetchAllOrderData();
-    _autoSyncTimer = Timer.periodic(const Duration(seconds: 5), (_) {
-      _fetchAllOrderData(silent: true);
-    });
+    WebSocketService.subscribeOrderChannel(widget.orderId);
+    WebSocketService.addListener(_onRealtimeEvent);
+  }
+
+  void _ensureShipmentChannelSubscribed(int? shipmentId) {
+    if (shipmentId == null || shipmentId <= 0) return;
+    if (_subscribedShipmentId != shipmentId) {
+      if (_subscribedShipmentId != null) {
+        WebSocketService.unsubscribeShipmentChannel(_subscribedShipmentId!);
+      }
+      _subscribedShipmentId = shipmentId;
+      WebSocketService.subscribeShipmentChannel(shipmentId);
+    }
+  }
+
+  void _onRealtimeEvent(BuyerRealtimeEvent event) {
+    if (!mounted) return;
+    final data = event.data;
+    final eventOrderId = int.tryParse(
+      (data['seller_order_id'] ?? data['order_id'] ?? '').toString(),
+    );
+    final eventShipmentId = int.tryParse(
+      (data['shipment_id'] ?? '').toString(),
+    );
+
+    if (eventOrderId != null &&
+        eventOrderId > 0 &&
+        eventOrderId != widget.orderId) {
+      return;
+    }
+
+    if (eventShipmentId != null &&
+        eventShipmentId > 0 &&
+        _subscribedShipmentId != null &&
+        eventShipmentId != _subscribedShipmentId) {
+      return;
+    }
+
+    if (event.scope == 'driver_location' || event.scope == 'location') {
+      final lat = double.tryParse(data['latitude']?.toString() ?? '');
+      final lng = double.tryParse(data['longitude']?.toString() ?? '');
+      if (lat != null && lng != null && _liveTrackingData != null) {
+        final currentTrack = JsonMap.from(_liveTrackingData!);
+        final driverMap = currentTrack['driver'] is Map
+            ? JsonMap.from(currentTrack['driver'] as Map)
+            : <String, dynamic>{};
+        driverMap['latitude'] = lat;
+        driverMap['longitude'] = lng;
+        if (data['accuracy'] != null) {
+          driverMap['accuracy'] = data['accuracy'];
+        }
+        currentTrack['driver'] = driverMap;
+        currentTrack['is_live_active'] = true;
+        setState(() {
+          _liveTrackingData = currentTrack;
+        });
+      }
+      _fetchLiveTrackingSilently();
+      return;
+    }
+
+    if (event.scope == 'delivery_chat') {
+      if (data['message'] is Map) {
+        final msg = JsonMap.from(data['message'] as Map);
+        if (msg['sender_type']?.toString() == 'rider') {
+          setState(() {
+            _unreadDeliveryChatCount += 1;
+          });
+        }
+      }
+      return;
+    }
+
+    if (event.scope == 'order' ||
+        event.scope == 'shipment' ||
+        event.scope == 'delivery' ||
+        event.scope == 'pickup' ||
+        event.scope == 'return' ||
+        event.scope == 'return_shipment' ||
+        event.scope == 'wallet' ||
+        event.scope == 'notification' ||
+        event.channel == 'private-order.${widget.orderId}' ||
+        (_subscribedShipmentId != null &&
+            event.channel == 'private-shipment.$_subscribedShipmentId')) {
+      _wsDebounceTimer?.cancel();
+      _wsDebounceTimer = Timer(const Duration(milliseconds: 250), () {
+        if (mounted) {
+          _fetchAllOrderData(silent: true);
+        }
+      });
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _autoSyncTimer?.cancel();
+    _wsDebounceTimer?.cancel();
+    WebSocketService.removeListener(_onRealtimeEvent);
+    WebSocketService.unsubscribeOrderChannel(widget.orderId);
+    if (_subscribedShipmentId != null) {
+      WebSocketService.unsubscribeShipmentChannel(_subscribedShipmentId!);
+    }
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      WebSocketService.subscribeOrderChannel(widget.orderId);
+      if (_subscribedShipmentId != null) {
+        WebSocketService.subscribeShipmentChannel(_subscribedShipmentId!);
+      }
       _fetchAllOrderData(silent: true);
     }
   }
@@ -105,13 +206,12 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
       setState(() => _isLoading = true);
     }
     try {
-      final response = await http.get(
-        Uri.parse('$_domain/api/v1/orders/${widget.orderId}'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .get(
+            Uri.parse('$_domain/api/v1/orders/${widget.orderId}'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (!mounted) return;
 
@@ -119,6 +219,12 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
         final data = json.decode(response.body);
         if (data is Map && data['success'] == true && data['data'] is Map) {
           final orderMap = JsonMap.from(data['data'] as Map);
+          final shipMap = orderMap['shipment'] is Map
+              ? JsonMap.from(orderMap['shipment'] as Map)
+              : null;
+          final shipId = int.tryParse(shipMap?['id']?.toString() ?? '');
+          _ensureShipmentChannelSubscribed(shipId);
+
           setState(() {
             _orderData = orderMap;
             if (data['cancellation_quota'] is Map) {
@@ -145,19 +251,21 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
 
   Future<void> _fetchLiveTrackingSilently() async {
     try {
-      final response = await http.get(
-        Uri.parse('$_domain/api/v1/orders/${widget.orderId}/live-tracking'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .get(
+            Uri.parse('$_domain/api/v1/orders/${widget.orderId}/live-tracking'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (!mounted || response.statusCode != 200) return;
       final body = json.decode(response.body);
       if (body is Map && body['success'] == true && body['data'] is Map) {
+        final trackMap = JsonMap.from(body['data'] as Map);
+        final shipId = int.tryParse(trackMap['shipment_id']?.toString() ?? '');
+        _ensureShipmentChannelSubscribed(shipId);
         setState(() {
-          _liveTrackingData = JsonMap.from(body['data'] as Map);
+          _liveTrackingData = trackMap;
         });
       }
     } catch (_) {}
@@ -166,13 +274,12 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
   Future<void> _openOrderInvoiceModal() async {
     _showLoadingDialog();
     try {
-      final response = await http.get(
-        Uri.parse('$_domain/api/v1/orders/${widget.orderId}/invoice'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .get(
+            Uri.parse('$_domain/api/v1/orders/${widget.orderId}/invoice'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (!mounted) return;
       Navigator.pop(context);
@@ -280,7 +387,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                             children: [
                               Expanded(
                                 child: Text(
-                                  '${raw['product_name']}${raw['variant'] != null ? ' (${raw['variant']})' : ''} × ${raw['quantity']}',
+                                  '${raw['product_name']}${raw['variant'] != null ? ' (${raw['variant']})' : ''} \u00D7 ${raw['quantity']}',
                                   style: const TextStyle(
                                     fontSize: 12.5,
                                     fontWeight: FontWeight.w600,
@@ -289,7 +396,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                               ),
                               const SizedBox(width: 8),
                               Text(
-                                '₱${_formatMoney(raw['line_total'])}',
+                                '\u20B1${_formatMoney(raw['line_total'])}',
                                 style: const TextStyle(
                                   fontSize: 12.5,
                                   fontWeight: FontWeight.w800,
@@ -300,21 +407,21 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                         ),
                     const Divider(height: 24),
                     _buildInfoRow('Original Merchandise Subtotal:',
-                        '₱${_formatMoney(inv['original_subtotal'])}'),
+                        '\u20B1${_formatMoney(inv['original_subtotal'])}'),
                     if ((double.tryParse(
                                 inv['store_voucher_discount']?.toString() ??
                                     '0') ??
                             0) >
                         0)
                       _buildInfoRow('Store & Bundle Discount:',
-                          '-₱${_formatMoney(inv['store_voucher_discount'])}'),
+                          '-\u20B1${_formatMoney(inv['store_voucher_discount'])}'),
                     if ((double.tryParse(
                                 inv['platform_voucher_discount']?.toString() ??
                                     '0') ??
                             0) >
                         0)
                       _buildInfoRow('Platform Voucher Discount:',
-                          '-₱${_formatMoney(inv['platform_voucher_discount'])}'),
+                          '-\u20B1${_formatMoney(inv['platform_voucher_discount'])}'),
                     if ((double.tryParse(
                                 inv['coins_discount_amount']?.toString() ??
                                     '0') ??
@@ -322,21 +429,21 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                         0)
                       _buildInfoRow(
                           'Storkia Coins (${inv['coins_used']} Coins):',
-                          '-₱${_formatMoney(inv['coins_discount_amount'])}'),
+                          '-\u20B1${_formatMoney(inv['coins_discount_amount'])}'),
                     _buildInfoRow('Net Merchandise Subtotal:',
-                        '₱${_formatMoney(inv['net_subtotal'])}'),
+                        '\u20B1${_formatMoney(inv['net_subtotal'])}'),
                     if ((double.tryParse(
                                 inv['shipping_voucher_discount']?.toString() ??
                                     '0') ??
                             0) >
                         0) ...[
                       _buildInfoRow('Original Shipping Fee:',
-                          '₱${_formatMoney(inv['original_shipping_fee'])}'),
+                          '\u20B1${_formatMoney(inv['original_shipping_fee'])}'),
                       _buildInfoRow('Shipping Voucher Discount:',
-                          '-₱${_formatMoney(inv['shipping_voucher_discount'])}'),
+                          '-\u20B1${_formatMoney(inv['shipping_voucher_discount'])}'),
                     ],
                     _buildInfoRow('Net Shipping Fee:',
-                        '₱${_formatMoney(inv['net_shipping_fee'])}'),
+                        '\u20B1${_formatMoney(inv['net_shipping_fee'])}'),
                     const Divider(height: 20),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -350,7 +457,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                           ),
                         ),
                         Text(
-                          '₱${_formatMoney(inv['total_amount'])}',
+                          '\u20B1${_formatMoney(inv['total_amount'])}',
                           style: const TextStyle(
                             fontSize: 18,
                             fontWeight: FontWeight.w900,
@@ -429,13 +536,13 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
 
     _showLoadingDialog();
     try {
-      final response = await http.post(
-        Uri.parse('$_domain/api/v1/orders/${widget.orderId}/confirm-receipt'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .post(
+            Uri.parse(
+                '$_domain/api/v1/orders/${widget.orderId}/confirm-receipt'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (!mounted) return;
       Navigator.pop(context);
@@ -465,13 +572,12 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
   Future<void> _switchFlaggedOrderToCod() async {
     _showLoadingDialog();
     try {
-      final response = await http.post(
-        Uri.parse('$_domain/api/v1/orders/${widget.orderId}/switch-to-cod'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .post(
+            Uri.parse('$_domain/api/v1/orders/${widget.orderId}/switch-to-cod'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (!mounted) return;
       Navigator.pop(context);
@@ -503,14 +609,13 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
   Future<void> _cancelFlaggedPaymentOrder() async {
     _showLoadingDialog();
     try {
-      final response = await http.post(
-        Uri.parse(
-            '$_domain/api/v1/orders/${widget.orderId}/cancel-flagged-payment'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .post(
+            Uri.parse(
+                '$_domain/api/v1/orders/${widget.orderId}/cancel-flagged-payment'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (!mounted) return;
       Navigator.pop(context);
@@ -547,7 +652,6 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
     String selectedReason = reasons.first;
     final notesController = TextEditingController();
     bool isSubmitting = false;
-    String? modalError;
 
     await showModalBottomSheet(
       context: context,
@@ -654,17 +758,6 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                         fillColor: StorkTheme.surfaceSubtle,
                       ),
                     ),
-                    if (modalError != null) ...[
-                      const SizedBox(height: 10),
-                      Text(
-                        modalError!,
-                        style: const TextStyle(
-                          color: StorkTheme.danger,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                    ],
                     const SizedBox(height: 16),
                     Row(
                       children: [
@@ -683,22 +776,17 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                             onPressed: isSubmitting
                                 ? null
                                 : () async {
-                                    setModalState(() {
-                                      isSubmitting = true;
-                                      modalError = null;
-                                    });
+                                    setModalState(() => isSubmitting = true);
                                     try {
-                                      final response = await http
+                                      final response = await ApiService
+                                          .httpClient
                                           .post(
                                             Uri.parse(
                                                 '$_domain/api/v1/orders/${widget.orderId}/cancel'),
-                                            headers: {
-                                              'Authorization':
-                                                  'Bearer ${widget.token}',
-                                              'Accept': 'application/json',
-                                              'Content-Type':
-                                                  'application/json',
-                                            },
+                                            headers: ApiService.buildHeaders(
+                                              widget.token,
+                                              isJson: true,
+                                            ),
                                             body: json.encode({
                                               'cancel_reason': selectedReason,
                                               'cancel_notes':
@@ -737,11 +825,10 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                                             err = first.first.toString();
                                           }
                                         }
-                                        setModalState(() => modalError = err);
+                                        _showError(err);
                                       }
                                     } catch (_) {
-                                      setModalState(() => modalError =
-                                          'Network error occurred.');
+                                      _showError('Network error occurred.');
                                     } finally {
                                       if (modalContext.mounted) {
                                         setModalState(
@@ -776,7 +863,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
   Future<void> _openReturnRefundModal() async {
     _showLoadingDialog();
 
-    List<JsonMap> reasonCatalog = [
+    JsonMapList reasonCatalog = [
       {
         'key': 'damaged_item',
         'label': 'Damaged or defective item',
@@ -827,13 +914,12 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
     String? blockerMessage;
 
     try {
-      final res = await http.get(
-        Uri.parse('$_domain/api/v1/orders/${widget.orderId}/return'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final res = await ApiService.httpClient
+          .get(
+            Uri.parse('$_domain/api/v1/orders/${widget.orderId}/return'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (mounted) Navigator.pop(context);
 
@@ -942,7 +1028,6 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
     final accountPhoneCtrl = TextEditingController(text: defaultAccountNumber);
     final reasonCtrl = TextEditingController();
     XFileList evidenceFiles = <XFile>[];
-    String? formError;
     bool isSubmitting = false;
 
     await showModalBottomSheet(
@@ -1024,7 +1109,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                         children: [
                           const Flexible(
                             child: Text(
-                              '✓ Valid Government ID Verified',
+                              '\u2713 Valid Government ID Verified',
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: TextStyle(
@@ -1036,7 +1121,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                           ),
                           const SizedBox(width: 8),
                           Text(
-                            'Refundable: ₱${_formatMoney(_orderData?['total_amount'])}',
+                            'Refundable: \u20B1${_formatMoney(_orderData?['total_amount'])}',
                             style: const TextStyle(
                               fontSize: 11.5,
                               fontWeight: FontWeight.w800,
@@ -1079,7 +1164,6 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                                   match['resolution']?.toString() ??
                                       'return_refund';
                             }
-                            formError = null;
                           });
                         }
                       },
@@ -1299,11 +1383,6 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                       controller: reasonCtrl,
                       maxLines: 3,
                       maxLength: 1000,
-                      onChanged: (_) {
-                        if (formError != null) {
-                          setModalState(() => formError = null);
-                        }
-                      },
                       decoration: const InputDecoration(
                         labelText: 'Describe the Issue (10+ characters) *',
                         counterText: '',
@@ -1318,25 +1397,22 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                         );
                         if (picked.isNotEmpty) {
                           if (picked.length > 5) {
-                            setModalState(() {
-                              formError =
-                                  'You may upload a maximum of 5 evidence photos.';
-                            });
+                            _showError(
+                              'You may upload a maximum of 5 evidence photos.',
+                            );
                             return;
                           }
                           for (final f in picked) {
                             final len = await f.length();
                             if (len > 5 * 1024 * 1024) {
-                              setModalState(() {
-                                formError =
-                                    'Each evidence photo must not exceed 5MB.';
-                              });
+                              _showError(
+                                'Each evidence photo must not exceed 5MB.',
+                              );
                               return;
                             }
                           }
                           setModalState(() {
                             evidenceFiles = picked;
-                            formError = null;
                           });
                         }
                       },
@@ -1366,17 +1442,6 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                         ],
                       ),
                     ],
-                    if (formError != null) ...[
-                      const SizedBox(height: 10),
-                      Text(
-                        formError!,
-                        style: const TextStyle(
-                          color: StorkTheme.danger,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                    ],
                     const SizedBox(height: 16),
                     SizedBox(
                       width: double.infinity,
@@ -1390,10 +1455,9 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                             : () async {
                                 final reasonText = reasonCtrl.text.trim();
                                 if (reasonText.length < 10) {
-                                  setModalState(() {
-                                    formError =
-                                        'Please provide at least 10 characters explaining the issue.';
-                                  });
+                                  _showError(
+                                    'Please provide at least 10 characters explaining the issue.',
+                                  );
                                   return;
                                 }
 
@@ -1405,10 +1469,9 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                                   resolvedAccountName =
                                       accountNameCtrl.text.trim();
                                   if (resolvedAccountName.isEmpty) {
-                                    setModalState(() {
-                                      formError =
-                                          'Please enter your GCash account holder name.';
-                                    });
+                                    _showError(
+                                      'Please enter your GCash account holder name.',
+                                    );
                                     return;
                                   }
 
@@ -1417,10 +1480,9 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                                       .replaceAll(RegExp(r'\D'), '');
                                   if (!RegExp(r'^0?9\d{9}$')
                                       .hasMatch(rawDigits)) {
-                                    setModalState(() {
-                                      formError =
-                                          'Enter a valid 11-digit (09XXXXXXXXX) or 10-digit (9XXXXXXXXX) GCash number.';
-                                    });
+                                    _showError(
+                                      'Enter a valid 11-digit (09XXXXXXXXX) or 10-digit (9XXXXXXXXX) GCash number.',
+                                    );
                                     return;
                                   }
                                   normalizedGcashPhone =
@@ -1439,17 +1501,13 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
 
                                 if (evidenceFiles.isEmpty ||
                                     evidenceFiles.length > 5) {
-                                  setModalState(() {
-                                    formError =
-                                        'Please attach between 1 and 5 evidence photos.';
-                                  });
+                                  _showError(
+                                    'Please attach between 1 and 5 evidence photos.',
+                                  );
                                   return;
                                 }
 
-                                setModalState(() {
-                                  isSubmitting = true;
-                                  formError = null;
-                                });
+                                setModalState(() => isSubmitting = true);
 
                                 try {
                                   final req = http.MultipartRequest(
@@ -1457,9 +1515,9 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                                     Uri.parse(
                                         '$_domain/api/v1/orders/${widget.orderId}/return'),
                                   );
-                                  req.headers['Authorization'] =
-                                      'Bearer ${widget.token}';
-                                  req.headers['Accept'] = 'application/json';
+                                  req.headers.addAll(
+                                    ApiService.buildHeaders(widget.token),
+                                  );
 
                                   req.fields['reason_category'] =
                                       selectedCategoryKey;
@@ -1483,8 +1541,8 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                                     );
                                   }
 
-                                  final streamed = await req
-                                      .send()
+                                  final streamed = await ApiService.httpClient
+                                      .send(req)
                                       .timeout(ApiConfig.requestTimeout);
                                   final res =
                                       await http.Response.fromStream(streamed);
@@ -1517,11 +1575,10 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                                         err = first.first.toString();
                                       }
                                     }
-                                    setModalState(() => formError = err);
+                                    _showError(err);
                                   }
                                 } catch (_) {
-                                  setModalState(() =>
-                                      formError = 'Network error occurred.');
+                                  _showError('Network error occurred.');
                                 } finally {
                                   if (modalContext.mounted) {
                                     setModalState(() => isSubmitting = false);
@@ -1553,7 +1610,6 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
   Future<void> _openEscalateReturnDialog(int? returnRequestId) async {
     final noteCtrl = TextEditingController();
     bool isSubmitting = false;
-    String? modalError;
 
     await showModalBottomSheet<void>(
       context: context,
@@ -1618,17 +1674,6 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                         fillColor: StorkTheme.surfaceSubtle,
                       ),
                     ),
-                    if (modalError != null) ...[
-                      const SizedBox(height: 8),
-                      Text(
-                        modalError!,
-                        style: const TextStyle(
-                          color: StorkTheme.danger,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                    ],
                     const SizedBox(height: 16),
                     SizedBox(
                       width: double.infinity,
@@ -1640,10 +1685,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                         onPressed: isSubmitting
                             ? null
                             : () async {
-                                setModalState(() {
-                                  isSubmitting = true;
-                                  modalError = null;
-                                });
+                                setModalState(() => isSubmitting = true);
                                 try {
                                   final Uri uri = returnRequestId != null &&
                                           returnRequestId > 0
@@ -1652,15 +1694,13 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                                       : Uri.parse(
                                           '$_domain/api/v1/orders/${widget.orderId}/escalate-dispute');
 
-                                  final response = await http
+                                  final response = await ApiService.httpClient
                                       .post(
                                         uri,
-                                        headers: {
-                                          'Authorization':
-                                              'Bearer ${widget.token}',
-                                          'Accept': 'application/json',
-                                          'Content-Type': 'application/json',
-                                        },
+                                        headers: ApiService.buildHeaders(
+                                          widget.token,
+                                          isJson: true,
+                                        ),
                                         body: json.encode({
                                           'escalation_note':
                                               noteCtrl.text.trim(),
@@ -1681,17 +1721,15 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                                     );
                                     _fetchAllOrderData(silent: true);
                                   } else {
-                                    setModalState(() {
-                                      modalError = data is Map
+                                    _showError(
+                                      data is Map
                                           ? (data['message']?.toString() ??
                                               'Unable to escalate request.')
-                                          : 'Unable to escalate request.';
-                                    });
+                                          : 'Unable to escalate request.',
+                                    );
                                   }
                                 } catch (_) {
-                                  setModalState(() {
-                                    modalError = 'Network error occurred.';
-                                  });
+                                  _showError('Network error occurred.');
                                 } finally {
                                   if (modalContext.mounted) {
                                     setModalState(() => isSubmitting = false);
@@ -1723,13 +1761,12 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
   Future<void> _buyAgain() async {
     _showLoadingDialog();
     try {
-      final response = await http.post(
-        Uri.parse('$_domain/api/v1/orders/${widget.orderId}/buy-again'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .post(
+            Uri.parse('$_domain/api/v1/orders/${widget.orderId}/buy-again'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (!mounted) return;
       Navigator.pop(context);
@@ -1832,25 +1869,54 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
     );
   }
 
-  void _showSuccess(String message) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
+  void _showPopupToast(String message, {required bool isError}) {
+    if (!mounted || message.trim().isEmpty) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.clearSnackBars();
+    messenger.showSnackBar(
       SnackBar(
-        content: Text(message),
-        backgroundColor: StorkTheme.success,
+        content: Row(
+          children: [
+            Icon(
+              isError
+                  ? Icons.error_outline_rounded
+                  : Icons.check_circle_outline_rounded,
+              color: Colors.white,
+              size: 19,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                message.trim(),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                  height: 1.3,
+                ),
+              ),
+            ),
+          ],
+        ),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 3),
+        margin: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+        backgroundColor: isError ? StorkTheme.danger : StorkTheme.success,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+        ),
       ),
     );
+  }
+
+  void _showSuccess(String message) {
+    _showPopupToast(message, isError: false);
   }
 
   void _showError(String message) {
     if (!mounted) return;
     setState(() => _isLoading = false);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: StorkTheme.danger,
-      ),
-    );
+    _showPopupToast(message, isError: true);
   }
 
   @override
@@ -2195,7 +2261,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                           ),
                         ),
                         Text(
-                          '${driver['vehicle_type'] ?? 'Vehicle'} • Plate: ${driver['plate_number'] ?? 'N/A'}',
+                          '${driver['vehicle_type'] ?? 'Vehicle'} \u2022 Plate: ${driver['plate_number'] ?? 'N/A'}',
                           style: const TextStyle(
                             fontSize: 11.5,
                             color: StorkTheme.textMuted,
@@ -2235,7 +2301,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
             ),
           ] else
             Text(
-              'Sorting Hub: ${track['sorting_hub']?['name'] ?? 'Partner Hub'} → ${track['destination']?['address'] ?? ''}',
+              'Sorting Hub: ${track['sorting_hub']?['name'] ?? 'Partner Hub'} \u2192 ${track['destination']?['address'] ?? ''}',
               style: const TextStyle(
                 fontSize: 12,
                 color: StorkTheme.textMuted,
@@ -2272,7 +2338,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
         children: [
           Text(
             isRated
-                ? 'ORDER COMPLETED & RATED (${serviceRating?['overall_average_rating'] ?? '5.0'} ★)'
+                ? 'ORDER COMPLETED & RATED (${serviceRating?['overall_average_rating'] ?? '5.0'} \u2605)'
                 : 'NEXT STEP: RATE YOUR ORDER (+UP TO 10 COINS PER ITEM)',
             style: TextStyle(
               fontSize: 10.5,
@@ -2409,7 +2475,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
             children: [
               const Expanded(
                 child: Text(
-                  'Package Delivered — Confirm or Request Return',
+                  'Package Delivered \u2014 Confirm or Request Return',
                   style: TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.w800,
@@ -2428,7 +2494,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                 ),
                 child: Text(
                   _isIdentityVerified
-                      ? 'Valid ID Verified ✓'
+                      ? 'Valid ID Verified \u2713'
                       : 'Valid ID Required for Refund',
                   style: TextStyle(
                     fontSize: 10,
@@ -2594,7 +2660,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
           ),
           const SizedBox(height: 6),
           Text(
-            'Resolution: $resolutionLabel${reasonCategory.isNotEmpty ? ' • $reasonCategory' : ''}',
+            'Resolution: $resolutionLabel${reasonCategory.isNotEmpty ? ' \u2022 $reasonCategory' : ''}',
             style: const TextStyle(
               fontSize: 11.5,
               fontWeight: FontWeight.w700,
@@ -2614,7 +2680,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
           ],
           const SizedBox(height: 6),
           Text(
-            'Refund Amount: ₱${_formatMoney(formattedReturn?['refund_amount'] ?? extra?['refund_amount'] ?? _orderData!['total_amount'])} (${(formattedReturn?['refund_payout_method'] ?? extra?['refund_method'] ?? 'WALLET').toString() == 'WALLET' ? 'Instant Storkia E-Wallet' : 'GCash Refund'})',
+            'Refund Amount: \u20B1${_formatMoney(formattedReturn?['refund_amount'] ?? extra?['refund_amount'] ?? _orderData!['total_amount'])} (${(formattedReturn?['refund_payout_method'] ?? extra?['refund_method'] ?? 'WALLET').toString() == 'WALLET' ? 'Instant Storkia E-Wallet' : 'GCash Refund'})',
             style: const TextStyle(
               fontSize: 12,
               fontWeight: FontWeight.w800,
@@ -2697,7 +2763,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                   Padding(
                     padding: const EdgeInsets.only(bottom: 4),
                     child: Text(
-                      '• ${ev['title'] ?? ''}: ${ev['description'] ?? ''}',
+                      '\u2022 ${ev['title'] ?? ''}: ${ev['description'] ?? ''}',
                       style: const TextStyle(
                         fontSize: 11,
                         color: StorkTheme.textMuted,
@@ -2711,7 +2777,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
             Text(
               sellerDecision == 'rejected'
                   ? 'Seller Rejected Request: "${sellerReason ?? 'Declined'}"'
-                  : 'Seller Response: ${sellerDecision.replaceAll('_', ' ').toUpperCase()}${sellerReason != null && sellerReason.isNotEmpty ? ' — "$sellerReason"' : ''}',
+                  : 'Seller Response: ${sellerDecision.replaceAll('_', ' ').toUpperCase()}${sellerReason != null && sellerReason.isNotEmpty ? ' \u2014 "$sellerReason"' : ''}',
               style: TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w700,
@@ -2786,7 +2852,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
           ),
           const SizedBox(height: 8),
           Text(
-            '${address['recipient_name'] ?? 'Recipient'}  •  ${address['phone_number'] ?? ''}',
+            '${address['recipient_name'] ?? 'Recipient'}  \u2022  ${address['phone_number'] ?? ''}',
             style: const TextStyle(
               fontSize: 13.5,
               fontWeight: FontWeight.w800,
@@ -3032,7 +3098,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                               ),
                             ),
                           Text(
-                            '₱${_formatMoney(rawItem['discounted_unit_price'])} × ${rawItem['quantity']}',
+                            '\u20B1${_formatMoney(rawItem['discounted_unit_price'])} \u00D7 ${rawItem['quantity']}',
                             style: const TextStyle(
                               fontSize: 11.5,
                               color: StorkTheme.textMuted,
@@ -3043,7 +3109,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                     ),
                     const SizedBox(width: 8),
                     Text(
-                      '₱${_formatMoney(rawItem['line_total'])}',
+                      '\u20B1${_formatMoney(rawItem['line_total'])}',
                       style: const TextStyle(
                         fontSize: 13.5,
                         fontWeight: FontWeight.w800,
@@ -3061,35 +3127,35 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                 if (storeDisc > 0)
                   _buildInfoRow(
                     'Store / Bundle Discount:',
-                    '-₱${_formatMoney(storeDisc)}',
+                    '-\u20B1${_formatMoney(storeDisc)}',
                   ),
                 if (platDisc > 0)
                   _buildInfoRow(
                     'Platform Voucher (${extra?['platform_voucher_code'] ?? ''}):',
-                    '-₱${_formatMoney(platDisc)}',
+                    '-\u20B1${_formatMoney(platDisc)}',
                   ),
                 if (coinsDisc > 0)
                   _buildInfoRow(
                     'Storkia Coins ($coinsUsed Coins):',
-                    '-₱${_formatMoney(coinsDisc)}',
+                    '-\u20B1${_formatMoney(coinsDisc)}',
                   ),
                 _buildInfoRow(
                   'Net Product Subtotal:',
-                  '₱${_formatMoney(_orderData!['subtotal_amount'])}',
+                  '\u20B1${_formatMoney(_orderData!['subtotal_amount'])}',
                 ),
                 if (shipDisc > 0 && origShipFee > 0)
                   _buildInfoRow(
                     'Original Shipping Fee (${_orderData!['total_weight'] ?? '0'} kg):',
-                    '₱${_formatMoney(origShipFee)}',
+                    '\u20B1${_formatMoney(origShipFee)}',
                   ),
                 if (shipDisc > 0)
                   _buildInfoRow(
                     'Shipping Voucher (${extra?['shipping_voucher_code'] ?? 'FREE SHIP'}):',
-                    '-₱${_formatMoney(shipDisc)}',
+                    '-\u20B1${_formatMoney(shipDisc)}',
                   ),
                 _buildInfoRow(
                   'Net Shipping Fee (${_orderData!['total_weight'] ?? '0'} kg):',
-                  '₱${_formatMoney(_orderData!['shipping_fee'])}',
+                  '\u20B1${_formatMoney(_orderData!['shipping_fee'])}',
                 ),
                 const Divider(height: 18),
                 Row(
@@ -3107,7 +3173,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                     ),
                     const SizedBox(width: 8),
                     Text(
-                      '₱${_formatMoney(_orderData!['total_amount'])}',
+                      '\u20B1${_formatMoney(_orderData!['total_amount'])}',
                       style: const TextStyle(
                         fontSize: 18,
                         fontWeight: FontWeight.w900,
@@ -3274,39 +3340,82 @@ class _DeliveryRiderChatBottomSheet extends StatefulWidget {
 class _DeliveryRiderChatBottomSheetState
     extends State<_DeliveryRiderChatBottomSheet> {
   final TextEditingController _msgCtrl = TextEditingController();
-  Timer? _pollTimer;
+  final ScrollController _scrollCtrl = ScrollController();
+  final ImagePicker _picker = ImagePicker();
   bool _isLoading = true;
   bool _isSending = false;
   bool _canSend = false;
+  XFile? _attachment;
   JsonMap? _rider;
-  List<JsonMap> _messages = [];
+  JsonMapList _messages = [];
 
   @override
   void initState() {
     super.initState();
     _fetchChat();
-    _pollTimer = Timer.periodic(const Duration(seconds: 3), (_) {
-      _fetchChat(silent: true);
+    WebSocketService.subscribeOrderChannel(widget.orderId);
+    WebSocketService.addListener(_onRealtimeChatEvent);
+  }
+
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollCtrl.hasClients) {
+        _scrollCtrl.animateTo(
+          _scrollCtrl.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 220),
+          curve: Curves.easeOut,
+        );
+      }
     });
+  }
+
+  void _onRealtimeChatEvent(BuyerRealtimeEvent event) {
+    if (!mounted) return;
+    final data = event.data;
+    final eventOrderId = int.tryParse(
+      (data['seller_order_id'] ?? data['order_id'] ?? '').toString(),
+    );
+    if (eventOrderId != null &&
+        eventOrderId > 0 &&
+        eventOrderId != widget.orderId) {
+      return;
+    }
+
+    if (event.scope == 'delivery_chat' && data['message'] is Map) {
+      final incoming = JsonMap.from(data['message'] as Map);
+      final incomingId = int.tryParse(incoming['id']?.toString() ?? '0') ?? 0;
+      final exists = _messages.any(
+        (m) => (int.tryParse(m['id']?.toString() ?? '0') ?? -1) == incomingId,
+      );
+      if (!exists && mounted) {
+        setState(() {
+          _messages = [..._messages, incoming];
+        });
+        _scrollToBottom();
+      }
+      _fetchChat(silent: true);
+    } else if (event.channel == 'private-order.${widget.orderId}') {
+      _fetchChat(silent: true);
+    }
   }
 
   @override
   void dispose() {
-    _pollTimer?.cancel();
+    WebSocketService.removeListener(_onRealtimeChatEvent);
     _msgCtrl.dispose();
+    _scrollCtrl.dispose();
     super.dispose();
   }
 
   Future<void> _fetchChat({bool silent = false}) async {
     try {
-      final response = await http.get(
-        Uri.parse(
-            '${widget.domain}/api/v1/orders/${widget.orderId}/delivery-chat'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .get(
+            Uri.parse(
+                '${widget.domain}/api/v1/orders/${widget.orderId}/delivery-chat'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (!mounted || response.statusCode != 200) return;
       final body = json.decode(response.body);
@@ -3314,16 +3423,21 @@ class _DeliveryRiderChatBottomSheetState
         final List<dynamic> rawMsgs = body['messages'] is List
             ? List<dynamic>.from(body['messages'] as List)
             : <dynamic>[];
+        final prevCount = _messages.length;
+        final parsed = [
+          for (final m in rawMsgs)
+            if (m is Map) JsonMap.from(m),
+        ];
         setState(() {
           _canSend = body['can_send'] == true;
           _rider =
               body['rider'] is Map ? JsonMap.from(body['rider'] as Map) : null;
-          _messages = [
-            for (final m in rawMsgs)
-              if (m is Map) JsonMap.from(m),
-          ];
+          _messages = parsed;
           _isLoading = false;
         });
+        if (parsed.length > prevCount) {
+          _scrollToBottom();
+        }
       }
     } catch (_) {
       if (mounted && !silent) {
@@ -3332,34 +3446,70 @@ class _DeliveryRiderChatBottomSheetState
     }
   }
 
+  Future<void> _pickPhoto() async {
+    final picked = await _picker.pickImage(
+      source: ImageSource.gallery,
+      imageQuality: 84,
+    );
+    if (picked != null && mounted) {
+      setState(() => _attachment = picked);
+    }
+  }
+
   Future<void> _sendMessage() async {
     final text = _msgCtrl.text.trim();
-    if (text.isEmpty || _isSending || !_canSend) return;
-    setState(() => _isSending = true);
+    final fileToSend = _attachment;
+    if ((text.isEmpty && fileToSend == null) || _isSending || !_canSend) return;
+
+    setState(() {
+      _isSending = true;
+      _attachment = null;
+    });
     _msgCtrl.clear();
 
     try {
-      final response = await http
-          .post(
-            Uri.parse(
-                '${widget.domain}/api/v1/orders/${widget.orderId}/delivery-chat'),
-            headers: {
-              'Authorization': 'Bearer ${widget.token}',
-              'Accept': 'application/json',
-              'Content-Type': 'application/json',
-            },
-            body: json.encode({'message': text}),
-          )
-          .timeout(ApiConfig.requestTimeout);
+      http.Response response;
+      if (fileToSend != null) {
+        final req = http.MultipartRequest(
+          'POST',
+          Uri.parse(
+              '${widget.domain}/api/v1/orders/${widget.orderId}/delivery-chat'),
+        );
+        req.headers.addAll(ApiService.buildHeaders(widget.token));
+        if (text.isNotEmpty) {
+          req.fields['message'] = text;
+        }
+        req.files.add(
+          await http.MultipartFile.fromPath('attachment', fileToSend.path),
+        );
+        final streamed = await ApiService.httpClient
+            .send(req)
+            .timeout(ApiConfig.requestTimeout);
+        response = await http.Response.fromStream(streamed);
+      } else {
+        response = await ApiService.httpClient
+            .post(
+              Uri.parse(
+                  '${widget.domain}/api/v1/orders/${widget.orderId}/delivery-chat'),
+              headers: ApiService.buildHeaders(widget.token, isJson: true),
+              body: json.encode({'message': text}),
+            )
+            .timeout(ApiConfig.requestTimeout);
+      }
 
       if (!mounted) return;
       if (response.statusCode == 200 || response.statusCode == 201) {
-        _fetchChat(silent: true);
+        await _fetchChat(silent: true);
+        _scrollToBottom();
       } else {
         _msgCtrl.text = text;
+        setState(() => _attachment = fileToSend);
       }
     } catch (_) {
       _msgCtrl.text = text;
+      if (mounted) {
+        setState(() => _attachment = fileToSend);
+      }
     } finally {
       if (mounted) setState(() => _isSending = false);
     }
@@ -3372,7 +3522,7 @@ class _DeliveryRiderChatBottomSheetState
         bottom: MediaQuery.of(context).viewInsets.bottom,
       ),
       child: SizedBox(
-        height: MediaQuery.sizeOf(context).height * 0.68,
+        height: MediaQuery.sizeOf(context).height * 0.72,
         child: Column(
           children: [
             Center(
@@ -3411,7 +3561,7 @@ class _DeliveryRiderChatBottomSheetState
                         ),
                         if (_rider != null)
                           Text(
-                            '${_rider!['vehicle_type'] ?? ''} • Plate: ${_rider!['plate_number'] ?? ''}',
+                            '${_rider!['vehicle_type'] ?? ''} \u2022 Plate: ${_rider!['plate_number'] ?? ''}',
                             style: const TextStyle(
                               fontSize: 11.5,
                               color: StorkTheme.textMuted,
@@ -3449,12 +3599,18 @@ class _DeliveryRiderChatBottomSheetState
                           ),
                         )
                       : ListView.builder(
+                          controller: _scrollCtrl,
                           padding: const EdgeInsets.all(16),
                           itemCount: _messages.length,
                           itemBuilder: (context, index) {
                             final m = _messages[index];
                             final bool isBuyer =
                                 m['sender_type']?.toString() == 'buyer';
+                            final String attachmentUrl =
+                                m['attachment_url']?.toString() ?? '';
+                            final String msgText =
+                                m['message']?.toString() ?? '';
+
                             return Align(
                               alignment: isBuyer
                                   ? Alignment.centerRight
@@ -3465,7 +3621,7 @@ class _DeliveryRiderChatBottomSheetState
                                     horizontal: 14, vertical: 10),
                                 constraints: BoxConstraints(
                                   maxWidth:
-                                      MediaQuery.sizeOf(context).width * 0.72,
+                                      MediaQuery.sizeOf(context).width * 0.74,
                                 ),
                                 decoration: BoxDecoration(
                                   gradient:
@@ -3474,22 +3630,79 @@ class _DeliveryRiderChatBottomSheetState
                                       isBuyer ? null : StorkTheme.surfaceSubtle,
                                   borderRadius: BorderRadius.circular(16),
                                 ),
-                                child: Text(
-                                  m['message']?.toString() ?? '',
-                                  style: TextStyle(
-                                    fontSize: 13,
-                                    color: isBuyer
-                                        ? Colors.white
-                                        : StorkTheme.textMain,
-                                  ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    if (attachmentUrl.isNotEmpty) ...[
+                                      ClipRRect(
+                                        borderRadius: BorderRadius.circular(10),
+                                        child: Image.network(
+                                          ApiConfig.storageUrl(
+                                              attachmentUrl, widget.domain),
+                                          height: 145,
+                                          fit: BoxFit.cover,
+                                          errorBuilder: (_, __, ___) =>
+                                              const SizedBox.shrink(),
+                                        ),
+                                      ),
+                                      if (msgText.isNotEmpty)
+                                        const SizedBox(height: 6),
+                                    ],
+                                    if (msgText.isNotEmpty)
+                                      Text(
+                                        msgText,
+                                        style: TextStyle(
+                                          fontSize: 13,
+                                          color: isBuyer
+                                              ? Colors.white
+                                              : StorkTheme.textMain,
+                                        ),
+                                      ),
+                                  ],
                                 ),
                               ),
                             );
                           },
                         ),
             ),
+            if (_attachment != null)
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                decoration: const BoxDecoration(
+                  color: StorkTheme.surface,
+                  border:
+                      Border(top: BorderSide(color: StorkTheme.borderSubtle)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(
+                      Icons.image_outlined,
+                      size: 16,
+                      color: StorkTheme.primary,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        _attachment!.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      visualDensity: VisualDensity.compact,
+                      onPressed: () => setState(() => _attachment = null),
+                      icon: const Icon(Icons.close_rounded, size: 18),
+                    ),
+                  ],
+                ),
+              ),
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
               decoration: const BoxDecoration(
                 color: StorkTheme.surface,
                 border: Border(top: BorderSide(color: StorkTheme.borderSubtle)),
@@ -3498,10 +3711,17 @@ class _DeliveryRiderChatBottomSheetState
                 top: false,
                 child: Row(
                   children: [
+                    IconButton(
+                      onPressed: (_canSend && !_isSending) ? _pickPhoto : null,
+                      icon: const Icon(
+                        Icons.photo_library_outlined,
+                        color: StorkTheme.primaryDark,
+                      ),
+                    ),
                     Expanded(
                       child: TextField(
                         controller: _msgCtrl,
-                        enabled: _canSend,
+                        enabled: _canSend && !_isSending,
                         decoration: InputDecoration(
                           hintText: _canSend
                               ? 'Message your delivery rider...'
@@ -3515,10 +3735,19 @@ class _DeliveryRiderChatBottomSheetState
                     IconButton(
                       onPressed:
                           (_canSend && !_isSending) ? _sendMessage : null,
-                      icon: const Icon(
-                        Icons.send_rounded,
-                        color: StorkTheme.primary,
-                      ),
+                      icon: _isSending
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: StorkTheme.primary,
+                              ),
+                            )
+                          : const Icon(
+                              Icons.send_rounded,
+                              color: StorkTheme.primary,
+                            ),
                     ),
                   ],
                 ),

@@ -8,6 +8,8 @@ import 'package:image_picker/image_picker.dart';
 import '../config/api_config.dart';
 import '../config/app_theme.dart';
 import '../providers/auth_provider.dart';
+import '../services/api_service.dart';
+import '../services/websocket_service.dart';
 
 typedef JsonMap = Map<String, dynamic>;
 
@@ -28,7 +30,7 @@ class ProfileScreen extends ConsumerStatefulWidget {
 class _ProfileScreenState extends ConsumerState<ProfileScreen>
     with WidgetsBindingObserver {
   final TextEditingController _usernameController = TextEditingController();
-  Timer? _autoSyncTimer;
+  Timer? _wsDebounceTimer;
 
   bool _isLoading = true;
   bool _isSavingUsername = false;
@@ -38,7 +40,6 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
   String _avatarUrl = '';
   bool _canChangeUsername = true;
   String? _nextUsernameChangeDate;
-  String? _usernameError;
 
   String get _domain => ApiConfig.resolveBaseDomain(widget.baseUrl);
 
@@ -57,26 +58,46 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
       }
     }
     _fetchProfile(silent: false);
-    _autoSyncTimer = Timer.periodic(const Duration(seconds: 8), (_) {
-      if (!_isSavingUsername && !_isUploadingAvatar) {
-        _fetchProfile(silent: true);
-      }
-    });
+    WebSocketService.addListener(_onRealtimeEvent);
+  }
+
+  void _onRealtimeEvent(BuyerRealtimeEvent event) {
+    if (!mounted) return;
+    if (event.scope == 'user' || event.scope == 'general') {
+      _wsDebounceTimer?.cancel();
+      _wsDebounceTimer = Timer(const Duration(milliseconds: 260), () {
+        if (mounted && !_isSavingUsername && !_isUploadingAvatar) {
+          _fetchProfile(silent: true);
+        }
+      });
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _autoSyncTimer?.cancel();
+    _wsDebounceTimer?.cancel();
+    WebSocketService.removeListener(_onRealtimeEvent);
     _usernameController.dispose();
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
+    if (state == AppLifecycleState.resumed &&
+        !_isSavingUsername &&
+        !_isUploadingAvatar) {
       _fetchProfile(silent: true);
     }
+  }
+
+  Future<void> _copyUsername() async {
+    if (_username.isEmpty) return;
+    final tag = '@$_username';
+    await Clipboard.setData(ClipboardData(text: tag));
+    HapticFeedback.lightImpact();
+    if (!mounted) return;
+    _showToast('Copied username: $tag', isError: false);
   }
 
   Future<void> _fetchProfile({bool silent = true}) async {
@@ -84,13 +105,12 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
       setState(() => _isLoading = true);
     }
     try {
-      final response = await http.get(
-        Uri.parse('$_domain/api/v1/profile'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .get(
+            Uri.parse('$_domain/api/v1/profile'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (!mounted) return;
       if (response.statusCode == 200) {
@@ -172,32 +192,25 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
   Future<void> _updateUsername() async {
     final clean = _usernameController.text.trim().toLowerCase();
     if (clean.length < 3 || clean.length > 30) {
-      setState(() {
-        _usernameError = 'Username must be between 3 and 30 characters.';
-      });
+      _showToast('Username must be between 3 and 30 characters.');
       return;
     }
     if (!RegExp(r'^[a-z0-9_.]+$').hasMatch(clean)) {
-      setState(() {
-        _usernameError =
-            'Use only lowercase letters, numbers, underscores (_), or dots (.).';
-      });
+      _showToast(
+        'Use only lowercase letters, numbers, underscores (_), or dots (.).',
+      );
       return;
     }
 
+    HapticFeedback.lightImpact();
     setState(() {
       _isSavingUsername = true;
-      _usernameError = null;
     });
     try {
-      final response = await http
+      final response = await ApiService.httpClient
           .patch(
             Uri.parse('$_domain/api/v1/profile/username'),
-            headers: {
-              'Authorization': 'Bearer ${widget.token}',
-              'Accept': 'application/json',
-              'Content-Type': 'application/json',
-            },
+            headers: ApiService.buildHeaders(widget.token, isJson: true),
             body: json.encode({'username': clean}),
           )
           .timeout(ApiConfig.requestTimeout);
@@ -208,6 +221,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
       if (response.statusCode == 200 &&
           data is Map &&
           data['success'] == true) {
+        HapticFeedback.mediumImpact();
         _showToast(
           data['message']?.toString() ?? 'Username updated successfully!',
           isError: false,
@@ -226,10 +240,10 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
             err = first.first.toString();
           }
         }
-        setState(() => _usernameError = err);
+        _showToast(err);
       }
     } catch (_) {
-      setState(() => _usernameError = 'Network error occurred.');
+      _showToast('Network error occurred.');
     } finally {
       if (mounted) setState(() => _isSavingUsername = false);
     }
@@ -249,17 +263,19 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
       return;
     }
 
+    HapticFeedback.lightImpact();
     setState(() => _isUploadingAvatar = true);
     try {
       final req = http.MultipartRequest(
         'POST',
         Uri.parse('$_domain/api/v1/profile/avatar'),
       );
-      req.headers['Authorization'] = 'Bearer ${widget.token}';
-      req.headers['Accept'] = 'application/json';
+      req.headers.addAll(ApiService.buildHeaders(widget.token));
       req.files.add(await http.MultipartFile.fromPath('avatar', picked.path));
 
-      final streamed = await req.send().timeout(ApiConfig.requestTimeout);
+      final streamed = await ApiService.httpClient
+          .send(req)
+          .timeout(ApiConfig.requestTimeout);
       final response = await http.Response.fromStream(streamed);
       if (!mounted) return;
 
@@ -267,6 +283,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
       if ((response.statusCode == 200 || response.statusCode == 201) &&
           data is Map &&
           data['success'] == true) {
+        HapticFeedback.mediumImpact();
         _showToast(
           data['message']?.toString() ?? 'Profile photo updated!',
           isError: false,
@@ -288,15 +305,15 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
   }
 
   Future<void> _removeAvatar() async {
+    HapticFeedback.lightImpact();
     setState(() => _isUploadingAvatar = true);
     try {
-      final response = await http.delete(
-        Uri.parse('$_domain/api/v1/profile/avatar'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Accept': 'application/json',
-        },
-      ).timeout(ApiConfig.requestTimeout);
+      final response = await ApiService.httpClient
+          .delete(
+            Uri.parse('$_domain/api/v1/profile/avatar'),
+            headers: ApiService.buildHeaders(widget.token),
+          )
+          .timeout(ApiConfig.requestTimeout);
 
       if (!mounted) return;
       final data = json.decode(response.body);
@@ -325,11 +342,41 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
   }
 
   void _showToast(String message, {bool isError = true}) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
+    if (!mounted || message.trim().isEmpty) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.clearSnackBars();
+    messenger.showSnackBar(
       SnackBar(
-        content: Text(message),
+        content: Row(
+          children: [
+            Icon(
+              isError
+                  ? Icons.error_outline_rounded
+                  : Icons.check_circle_outline_rounded,
+              color: Colors.white,
+              size: 19,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                message.trim(),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                  height: 1.3,
+                ),
+              ),
+            ),
+          ],
+        ),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 3),
+        margin: const EdgeInsets.fromLTRB(16, 12, 16, 16),
         backgroundColor: isError ? StorkTheme.danger : StorkTheme.success,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+        ),
       ),
     );
   }
@@ -346,7 +393,11 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
     return Scaffold(
       backgroundColor: StorkTheme.surfaceSubtle,
       appBar: AppBar(
-        title: const Text('Public Buyer Profile'),
+        title: const FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerLeft,
+          child: Text('Public Buyer Profile'),
+        ),
       ),
       body: _isLoading && _username.isEmpty
           ? const Center(
@@ -359,7 +410,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
                 padding: const EdgeInsets.all(16),
                 children: [
                   Container(
-                    padding: const EdgeInsets.all(22),
+                    padding: const EdgeInsets.all(20),
                     decoration: BoxDecoration(
                       gradient: StorkTheme.brandGradient,
                       borderRadius: BorderRadius.circular(24),
@@ -447,22 +498,41 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
                           ),
                         ),
                         if (_username.isNotEmpty) ...[
-                          const SizedBox(height: 4),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 10,
-                              vertical: 3,
-                            ),
-                            decoration: BoxDecoration(
-                              color: Colors.white.withValues(alpha: 0.18),
-                              borderRadius: BorderRadius.circular(14),
-                            ),
-                            child: Text(
-                              '@$_username',
-                              style: const TextStyle(
-                                fontSize: 12.5,
-                                fontWeight: FontWeight.w800,
-                                color: StorkTheme.brandLight,
+                          const SizedBox(height: 6),
+                          InkWell(
+                            onTap: _copyUsername,
+                            borderRadius: BorderRadius.circular(14),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 4,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withValues(alpha: 0.18),
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      '@$_username',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        fontSize: 12.5,
+                                        fontWeight: FontWeight.w800,
+                                        color: StorkTheme.brandLight,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 4),
+                                  const Icon(
+                                    Icons.copy_rounded,
+                                    size: 12,
+                                    color: StorkTheme.brandLight,
+                                  ),
+                                ],
                               ),
                             ),
                           ),
@@ -574,52 +644,14 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
                             ),
                             LengthLimitingTextInputFormatter(30),
                           ],
-                          onChanged: (_) {
-                            if (_usernameError != null) {
-                              setState(() => _usernameError = null);
-                            }
-                          },
                           decoration: const InputDecoration(
                             labelText:
-                                'Username (3–30 chars: letters, numbers, _ .)',
+                                'Username (3\u201330 chars: letters, numbers, _ .)',
                             prefixText: '@',
                             counterText: '',
                             fillColor: StorkTheme.surfaceSubtle,
                           ),
                         ),
-                        if (_usernameError != null) ...[
-                          const SizedBox(height: 10),
-                          Container(
-                            padding: const EdgeInsets.all(10),
-                            decoration: BoxDecoration(
-                              color: StorkTheme.danger.withValues(alpha: 0.08),
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(
-                                color: StorkTheme.danger.withValues(alpha: 0.3),
-                              ),
-                            ),
-                            child: Row(
-                              children: [
-                                const Icon(
-                                  Icons.error_outline_rounded,
-                                  size: 16,
-                                  color: StorkTheme.danger,
-                                ),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: Text(
-                                    _usernameError!,
-                                    style: const TextStyle(
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.w700,
-                                      color: StorkTheme.danger,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
                         if (!_canChangeUsername &&
                             _nextUsernameChangeDate != null) ...[
                           const SizedBox(height: 10),
