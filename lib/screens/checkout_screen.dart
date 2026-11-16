@@ -55,6 +55,12 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
   String? _idempotencyKey;
   String? _priceSignature;
 
+  bool _isAddressExpanded = false;
+  final Set<int> _expandedPackageItems = <int>{};
+  final Set<int> _expandedPackageBreakdowns = <int>{};
+  bool _isVouchersSectionExpanded = false;
+  bool _isOrderSummaryExpanded = false;
+
   double _buyerWalletBalance = 0.0;
   int _buyerCoinsBalance = 0;
   int _maxRedeemableCoins = 0;
@@ -77,7 +83,6 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
       TextEditingController();
   final TextEditingController _shippingVoucherController =
       TextEditingController();
-
   String _appliedPlatformVoucherCode = '';
   String _appliedShippingVoucherCode = '';
 
@@ -131,6 +136,45 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
     if (state == AppLifecycleState.resumed && !_isSubmitting) {
       _fetchPreview(silent: true);
     }
+  }
+
+  Widget _buildSeeMoreToggle({
+    required bool isExpanded,
+    required String moreLabel,
+    String lessLabel = 'See Less',
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: () {
+        HapticFeedback.selectionClick();
+        onTap();
+      },
+      borderRadius: BorderRadius.circular(10),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 2),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              isExpanded ? lessLabel : moreLabel,
+              style: const TextStyle(
+                fontSize: 11.5,
+                fontWeight: FontWeight.w800,
+                color: StorkTheme.primary,
+              ),
+            ),
+            const SizedBox(width: 3),
+            Icon(
+              isExpanded
+                  ? Icons.keyboard_arrow_up_rounded
+                  : Icons.keyboard_arrow_down_rounded,
+              size: 16,
+              color: StorkTheme.primary,
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _copyTextWithToast(String text, String label) async {
@@ -215,14 +259,12 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
     final double minSpend =
         double.tryParse(voucher['min_spend']?.toString() ?? '0') ?? 0.0;
     if (baseAmount + 0.0001 < minSpend) return 0.0;
-
     final String type =
         (voucher['discount_type'] ?? 'fixed').toString().toLowerCase();
     final double val =
         double.tryParse(voucher['discount_value']?.toString() ?? '0') ?? 0.0;
     final double? maxCap =
         double.tryParse(voucher['max_discount_cap']?.toString() ?? '');
-
     double disc = 0.0;
     if (type == 'percentage') {
       disc = baseAmount * (val / 100.0);
@@ -259,7 +301,6 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
     final double overallSub = double.tryParse(
             _checkoutData!['overall_subtotal']?.toString() ?? '0') ??
         0.0;
-
     double totalStoreAndBundleDisc = 0.0;
     for (final rawPkg in rawPackages) {
       if (rawPkg is! Map) continue;
@@ -278,7 +319,6 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
           storeVoucher, (pkgSub - bundleDisc).clamp(0.0, double.infinity));
       totalStoreAndBundleDisc += (bundleDisc + storeDisc);
     }
-
     return (overallSub - totalStoreAndBundleDisc).clamp(0.0, double.infinity);
   }
 
@@ -292,7 +332,6 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
     final double overallShip = double.tryParse(
             _checkoutData!['overall_shipping']?.toString() ?? '0') ??
         0.0;
-
     double totalStoreAndBundleDisc = 0.0;
     for (final rawPkg in rawPackages) {
       if (rawPkg is! Map) continue;
@@ -311,29 +350,24 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
           storeVoucher, (pkgSub - bundleDisc).clamp(0.0, double.infinity));
       totalStoreAndBundleDisc += (bundleDisc + storeDisc);
     }
-
     final double netAfterStore =
         (overallSub - totalStoreAndBundleDisc).clamp(0.0, double.infinity);
     final platVoucher =
         _findAvailableVoucher(_appliedPlatformVoucherCode, scope: 'platform');
     final double platDisc = _computeVoucherDiscount(platVoucher, netAfterStore);
-
     final shipVoucher =
         _findAvailableVoucher(_appliedShippingVoucherCode, scope: 'shipping');
     final double shipDisc = _computeVoucherDiscount(shipVoucher, overallShip);
-
     final int activeCoins =
         (_useStorkiaCoins && _maxRedeemableCoins >= _minRedeemableCoins)
             ? _coinsToUse.clamp(0, _maxRedeemableCoins)
             : 0;
     final double coinsDisc =
         double.parse((activeCoins * 0.10).toStringAsFixed(2));
-
     final double newOverallTotal =
         ((overallSub - totalStoreAndBundleDisc - platDisc - coinsDisc)
                 .clamp(0.0, double.infinity)) +
             ((overallShip - shipDisc).clamp(0.0, double.infinity));
-
     setState(() {
       _checkoutData!['overall_store_discount'] = totalStoreAndBundleDisc;
       _checkoutData!['overall_platform_discount'] = platDisc;
@@ -353,7 +387,6 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
             headers: ApiService.buildHeaders(widget.token),
           )
           .timeout(const Duration(seconds: 6));
-
       if (response.statusCode == 200) {
         final body = json.decode(response.body);
         final dynamic raw = body is Map ? (body['data'] ?? body) : body;
@@ -389,7 +422,6 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
     } else if (mounted) {
       setState(() => _isSyncingPreview = true);
     }
-
     try {
       int? targetAddressId = addressId ?? _selectedAddress?.id;
       if (targetAddressId == null) {
@@ -399,28 +431,23 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
           targetAddressId = preResolved.id;
         }
       }
-
       final JsonMap payload = {
         'mode': widget.mode,
         'use_storkia_coins': _useStorkiaCoins,
         'touched_slots': _touchedSlots.toList(),
       };
-
       if (_useStorkiaCoins && _coinsToUse > 0) {
         payload['coins_to_use'] = _coinsToUse;
       }
-
       if (targetAddressId != null) {
         payload['address_id'] = targetAddressId;
         payload['user_address_id'] = targetAddressId;
       }
-
       if (widget.mode == 'cart' && widget.cartIds != null) {
         payload['cart_ids'] = widget.cartIds;
       } else if (widget.mode == 'buy_now' && widget.buyNowData != null) {
         payload.addAll(widget.buyNowData!);
       }
-
       final StringMap storeCodes = {};
       _appliedStoreVouchers.forEach((spId, code) {
         if (code.trim().isNotEmpty) {
@@ -431,7 +458,6 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
         payload['store_vouchers'] = storeCodes;
         payload['store_voucher_codes'] = storeCodes;
       }
-
       if (_appliedPlatformVoucherCode.trim().isNotEmpty) {
         payload['platform_voucher_code'] =
             _appliedPlatformVoucherCode.trim().toUpperCase();
@@ -440,7 +466,6 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
         payload['shipping_voucher_code'] =
             _appliedShippingVoucherCode.trim().toUpperCase();
       }
-
       final response = await ApiService.httpClient
           .post(
             Uri.parse('$_domain/api/v1/checkout/preview'),
@@ -580,10 +605,18 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
           _lastShownNoticeSignature = '';
         }
       } else {
-        final msg = body is Map
+        String msg = body is Map
             ? (body['message']?.toString() ??
                 'Failed to load checkout preview.')
             : 'Failed to load checkout preview.';
+        if (body is Map &&
+            body['errors'] is Map &&
+            (body['errors'] as Map).isNotEmpty) {
+          final firstVal = (body['errors'] as Map).values.first;
+          if (firstVal is List && firstVal.isNotEmpty) {
+            msg = firstVal.first.toString();
+          }
+        }
         if (_checkoutData == null) {
           _lastErrorMessage = msg;
         }
@@ -627,20 +660,58 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
   bool get _hasSufficientWalletBalance =>
       (_buyerWalletBalance + 0.0001) >= _totalWalletRequired;
 
-  Future<void> _placeOrder() async {
-    if (_selectedAddress == null) {
-      _showError('Please select a delivery address.');
-      return;
+  String? get _firstPackageUnserviceableReason {
+    if (_checkoutData == null) return null;
+    final List<dynamic> packages =
+        _extractList(_checkoutData!['seller_packages']);
+    for (final rawPkg in packages) {
+      if (rawPkg is! Map) continue;
+      final shipping = rawPkg['shipping'];
+      if (shipping is Map && shipping['is_serviceable'] == false) {
+        final reason = shipping['unserviceable_reason']?.toString().trim();
+        if (reason != null && reason.isNotEmpty) {
+          return reason;
+        }
+        return 'No single Storkia Logistics Partner currently connects the seller\'s Origin Hub with an active Destination Branch Hub and local Barangay Rider in your municipality.';
+      }
     }
-    if (!_isAddressServiceable) {
-      _showError(
-          'Your selected delivery address is currently unserviceable by our partner logistics hubs.');
-      return;
+    return null;
+  }
+
+  List<String> get _checkoutBlockers {
+    final List<String> reasons = [];
+    if (_selectedAddress == null) {
+      reasons.add('Select or add a delivery address.');
+    } else if (!_isAddressServiceable ||
+        _firstPackageUnserviceableReason != null) {
+      reasons.add(
+        _firstPackageUnserviceableReason ??
+            'Your selected delivery address is outside our active Last-Mile Logistics Hub & Barangay Rider coverage zones. Please select another address.',
+      );
     }
     if (!_hasSufficientWalletBalance) {
       final shortfall = _totalWalletRequired - _buyerWalletBalance;
-      _showError(
-          'Insufficient Storkia E-Wallet balance. Please top up \u20B1${_formatMoney(shortfall)} or choose Cash on Delivery (COD).');
+      reasons.add(
+        'Insufficient Storkia E-Wallet balance (Need \u20B1${_formatMoney(shortfall)} more). Top up via GCash or switch to Cash on Delivery (COD).',
+      );
+    }
+    return reasons;
+  }
+
+  void _handlePlaceOrderTap() {
+    if (_isSubmitting) return;
+    final blockers = _checkoutBlockers;
+    if (blockers.isNotEmpty) {
+      _showError(blockers.first);
+      return;
+    }
+    _placeOrder();
+  }
+
+  Future<void> _placeOrder() async {
+    final blockers = _checkoutBlockers;
+    if (blockers.isNotEmpty) {
+      _showError(blockers.first);
       return;
     }
 
@@ -713,7 +784,6 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                 'order_number': 'ORD-${data['order_id']}',
                 'total_amount': _checkoutData?['overall_total'] ?? 0,
               };
-
         Navigator.pushReplacement(
           context,
           StorkRoute.fade(
@@ -772,7 +842,6 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
         ),
       ),
     );
-
     if (result is Address) {
       setState(() => _selectedAddress = result);
       _fetchPreview(addressId: result.id, silent: true);
@@ -785,10 +854,8 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
   Widget build(BuildContext context) {
     final List<dynamic> packages =
         _extractList(_checkoutData?['seller_packages']);
-    final bool canSubmit = !_isSubmitting &&
-        _selectedAddress != null &&
-        _isAddressServiceable &&
-        _hasSufficientWalletBalance;
+    final blockers = _checkoutBlockers;
+    final bool canSubmit = !_isSubmitting && blockers.isEmpty;
 
     return Scaffold(
       backgroundColor: StorkTheme.surfaceSubtle,
@@ -892,92 +959,153 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
               ),
               child: SafeArea(
                 top: false,
-                child: LayoutBuilder(
-                  builder: (context, constraints) {
-                    final totalCol = Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'Total Payable Amount',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 11.5,
-                            color: StorkTheme.textMuted,
-                            fontWeight: FontWeight.w700,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (blockers.isNotEmpty)
+                      Container(
+                        width: double.infinity,
+                        margin: const EdgeInsets.only(bottom: 10),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 8,
+                        ),
+                        decoration: BoxDecoration(
+                          color: StorkTheme.warning.withValues(alpha: 0.14),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: StorkTheme.warning.withValues(alpha: 0.45),
                           ),
                         ),
-                        FittedBox(
-                          fit: BoxFit.scaleDown,
-                          alignment: Alignment.centerLeft,
-                          child: Text(
-                            '\u20B1${_formatMoney(_checkoutData!['overall_total'])}',
-                            maxLines: 1,
-                            style: const TextStyle(
-                              fontSize: 20,
-                              fontWeight: FontWeight.w900,
-                              color: StorkTheme.primary,
-                            ),
-                          ),
-                        ),
-                      ],
-                    );
-
-                    final placeOrderBtn = Container(
-                      height: 48,
-                      decoration: BoxDecoration(
-                        gradient: canSubmit ? StorkTheme.brandGradient : null,
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      child: ElevatedButton(
-                        onPressed: canSubmit ? _placeOrder : null,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.transparent,
-                          shadowColor: Colors.transparent,
-                          padding: const EdgeInsets.symmetric(horizontal: 22),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(14),
-                          ),
-                        ),
-                        child: _isSubmitting
-                            ? const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(
-                                  color: Colors.white,
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : const Text(
-                                'Place Order',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Padding(
+                              padding: EdgeInsets.only(top: 1),
+                              child: Icon(
+                                Icons.warning_amber_rounded,
+                                size: 16,
+                                color: Color(0xFF92400E),
                               ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Incomplete Step: ${blockers.first}',
+                                maxLines: 4,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontSize: 11.5,
+                                  fontWeight: FontWeight.w700,
+                                  color: Color(0xFF92400E),
+                                  height: 1.3,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
-                    );
+                    LayoutBuilder(
+                      builder: (context, constraints) {
+                        final totalCol = Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'Total Payable Amount',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                color: StorkTheme.textMuted,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            FittedBox(
+                              fit: BoxFit.scaleDown,
+                              alignment: Alignment.centerLeft,
+                              child: Text(
+                                '\u20B1${_formatMoney(_checkoutData!['overall_total'])}',
+                                maxLines: 1,
+                                style: const TextStyle(
+                                  fontSize: 20,
+                                  fontWeight: FontWeight.w900,
+                                  color: StorkTheme.primary,
+                                ),
+                              ),
+                            ),
+                          ],
+                        );
 
-                    if (constraints.maxWidth < 290) {
-                      return Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          totalCol,
-                          const SizedBox(height: 8),
-                          placeOrderBtn,
-                        ],
-                      );
-                    }
+                        final placeOrderBtn = Container(
+                          height: 48,
+                          decoration: BoxDecoration(
+                            gradient:
+                                canSubmit ? StorkTheme.brandGradient : null,
+                            color: canSubmit ? null : StorkTheme.surfaceSubtle,
+                            borderRadius: BorderRadius.circular(14),
+                            border: canSubmit
+                                ? null
+                                : Border.all(color: StorkTheme.borderSubtle),
+                          ),
+                          child: ElevatedButton(
+                            onPressed:
+                                _isSubmitting ? null : _handlePlaceOrderTap,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.transparent,
+                              shadowColor: Colors.transparent,
+                              foregroundColor: canSubmit
+                                  ? Colors.white
+                                  : StorkTheme.textMuted,
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 22),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                            ),
+                            child: _isSubmitting
+                                ? const SizedBox(
+                                    width: 20,
+                                    height: 20,
+                                    child: CircularProgressIndicator(
+                                      color: Colors.white,
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Text(
+                                    'Place Order',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                          ),
+                        );
 
-                    return Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Expanded(child: totalCol),
-                        const SizedBox(width: 12),
-                        placeOrderBtn,
-                      ],
-                    );
-                  },
+                        if (constraints.maxWidth < 290) {
+                          return Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              totalCol,
+                              const SizedBox(height: 8),
+                              placeOrderBtn,
+                            ],
+                          );
+                        }
+
+                        return Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Expanded(child: totalCol),
+                            const SizedBox(width: 12),
+                            placeOrderBtn,
+                          ],
+                        );
+                      },
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -985,6 +1113,13 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
   }
 
   Widget _buildAddressSection() {
+    final unserviceableReason = _firstPackageUnserviceableReason ??
+        (!_isAddressServiceable
+            ? 'Delivery to this municipality/province is currently unserviceable by our partner logistics hubs and barangay riders. Please select another address.'
+            : null);
+    final isAddressLong = (_selectedAddress?.fullAddress.length ?? 0) > 85 ||
+        (unserviceableReason != null && unserviceableReason.length > 95);
+
     return GestureDetector(
       onTap: _navigateAndSelectAddress,
       onLongPress: _selectedAddress != null
@@ -999,10 +1134,12 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
           color: StorkTheme.surface,
           borderRadius: BorderRadius.circular(20),
           border: Border.all(
-            color: !_isAddressServiceable
+            color: unserviceableReason != null || _selectedAddress == null
                 ? StorkTheme.danger
                 : StorkTheme.borderSubtle,
-            width: !_isAddressServiceable ? 1.5 : 1,
+            width: unserviceableReason != null || _selectedAddress == null
+                ? 1.5
+                : 1,
           ),
           boxShadow: StorkTheme.softCardShadow,
         ),
@@ -1025,16 +1162,48 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                   ),
                 ),
                 const SizedBox(width: 10),
-                const Expanded(
-                  child: Text(
-                    'Delivery Address',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 14.5,
-                      fontWeight: FontWeight.w800,
-                      color: StorkTheme.primaryDark,
-                    ),
+                Expanded(
+                  child: Wrap(
+                    spacing: 6,
+                    runSpacing: 4,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      const Text(
+                        'Delivery Address',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 14.5,
+                          fontWeight: FontWeight.w800,
+                          color: StorkTheme.primaryDark,
+                        ),
+                      ),
+                      if (_selectedAddress != null)
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 7,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: unserviceableReason == null
+                                ? StorkTheme.success.withValues(alpha: 0.12)
+                                : StorkTheme.danger.withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            unserviceableReason == null
+                                ? 'Serviceable Route Verified'
+                                : 'Unserviceable Route',
+                            style: TextStyle(
+                              fontSize: 9.5,
+                              fontWeight: FontWeight.w800,
+                              color: unserviceableReason == null
+                                  ? StorkTheme.success
+                                  : StorkTheme.danger,
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
                 ),
                 TextButton(
@@ -1065,13 +1234,17 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
               const SizedBox(height: 4),
               Text(
                 _selectedAddress!.fullAddress,
+                maxLines: isAddressLong && !_isAddressExpanded ? 2 : 8,
+                overflow: isAddressLong && !_isAddressExpanded
+                    ? TextOverflow.ellipsis
+                    : TextOverflow.visible,
                 style: const TextStyle(
                   fontSize: 12.5,
                   color: StorkTheme.textMuted,
                   height: 1.38,
                 ),
               ),
-              if (!_isAddressServiceable) ...[
+              if (unserviceableReason != null) ...[
                 const SizedBox(height: 8),
                 Container(
                   padding: const EdgeInsets.all(10),
@@ -1079,14 +1252,27 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                     color: StorkTheme.danger.withValues(alpha: 0.08),
                     borderRadius: BorderRadius.circular(10),
                   ),
-                  child: const Text(
-                    'Delivery to this municipality/province is currently unserviceable by our partner logistics hubs. Please select another address.',
-                    style: TextStyle(
+                  child: Text(
+                    unserviceableReason,
+                    maxLines: isAddressLong && !_isAddressExpanded ? 3 : 8,
+                    overflow: isAddressLong && !_isAddressExpanded
+                        ? TextOverflow.ellipsis
+                        : TextOverflow.visible,
+                    style: const TextStyle(
                       fontSize: 11.5,
                       fontWeight: FontWeight.w700,
                       color: StorkTheme.danger,
                     ),
                   ),
+                ),
+              ],
+              if (isAddressLong) ...[
+                const SizedBox(height: 4),
+                _buildSeeMoreToggle(
+                  isExpanded: _isAddressExpanded,
+                  moreLabel: 'See More Address Details',
+                  onTap: () =>
+                      setState(() => _isAddressExpanded = !_isAddressExpanded),
                 ),
               ],
             ] else
@@ -1118,24 +1304,20 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
     final JsonMap shipping = pkg['shipping'] is Map
         ? JsonMap.from(pkg['shipping'] as Map)
         : <String, dynamic>{};
-
     final storeVouchers = _availableVouchers
         .where((v) =>
             v['scope']?.toString() == 'store' &&
             int.tryParse(v['seller_profile_id']?.toString() ?? '0') == spId)
         .toList();
-
     final selectedMethod = _paymentMethods[spId] ?? 'COD';
     final currentStoreCode = _appliedStoreVouchers[spId] ?? '';
     final String recommendedStoreCode = _recommendedStoreVouchers[spId] ?? '';
-
     final double pkgSubtotal =
         double.tryParse(pkg['subtotal']?.toString() ?? '0') ?? 0.0;
     final double bundleDisc =
         double.tryParse(pkg['bundle_discount']?.toString() ?? '0') ?? 0.0;
     final double eligibleStoreBase =
         (pkgSubtotal - bundleDisc).clamp(0.0, double.infinity);
-
     final String? bundleTitle = pkg['bundle_title']?.toString();
     final double storeDisc =
         double.tryParse(pkg['store_discount']?.toString() ?? '0') ?? 0.0;
@@ -1145,7 +1327,6 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
         int.tryParse(pkg['coins_used']?.toString() ?? '0') ?? 0;
     final double pkgCoinsDisc =
         double.tryParse(pkg['coins_discount']?.toString() ?? '0') ?? 0.0;
-
     final double origShippingFee = double.tryParse(
             (pkg['original_shipping_fee'] ??
                     shipping['shipping_fee'] ??
@@ -1156,13 +1337,32 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
         double.tryParse(pkg['shipping_discount']?.toString() ?? '0') ?? 0.0;
     final double netShippingFee =
         double.tryParse(pkg['net_shipping_fee']?.toString() ?? '0') ?? 0.0;
+    final double? distKm = shipping['distance_km'] != null
+        ? double.tryParse(shipping['distance_km'].toString())
+        : null;
+    final String tierLabel = (shipping['tier_label'] ?? '').toString().trim();
+    final bool isPkgServiceable = shipping['is_serviceable'] != false;
+    final String? pkgUnserviceableReason =
+        shipping['unserviceable_reason']?.toString();
+    final String routeBadgeLabel =
+        (shipping['route_badge_label'] ?? '').toString().trim();
+
+    final bool itemsExpanded = _expandedPackageItems.contains(spId);
+    final List<dynamic> visibleItems =
+        (items.length > 2 && !itemsExpanded) ? items.take(2).toList() : items;
+    final bool breakdownExpanded = _expandedPackageBreakdowns.contains(spId);
 
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
       decoration: BoxDecoration(
         color: StorkTheme.surface,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: StorkTheme.borderSubtle),
+        border: Border.all(
+          color: !isPkgServiceable
+              ? StorkTheme.danger.withValues(alpha: 0.65)
+              : StorkTheme.borderSubtle,
+          width: !isPkgServiceable ? 1.5 : 1,
+        ),
         boxShadow: StorkTheme.softCardShadow,
       ),
       clipBehavior: Clip.antiAlias,
@@ -1172,59 +1372,152 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
             color: StorkTheme.surfaceSubtle.withValues(alpha: 0.7),
-            child: Wrap(
-              alignment: WrapAlignment.spaceBetween,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              spacing: 8,
-              runSpacing: 4,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  mainAxisSize: MainAxisSize.min,
+                Wrap(
+                  alignment: WrapAlignment.spaceBetween,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  spacing: 8,
+                  runSpacing: 4,
                   children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        gradient: StorkTheme.brandGradient,
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Text(
-                        'Package ${pkgIndex + 1}',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 10.5,
-                          fontWeight: FontWeight.w800,
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            gradient: StorkTheme.brandGradient,
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text(
+                            'Package ${pkgIndex + 1}',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
                         ),
-                      ),
+                        const SizedBox(width: 8),
+                        Flexible(
+                          child: Text(
+                            storeName,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 13.5,
+                              fontWeight: FontWeight.w800,
+                              color: StorkTheme.primaryDark,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
-                    const SizedBox(width: 8),
-                    Flexible(
-                      child: Text(
-                        storeName,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 13.5,
-                          fontWeight: FontWeight.w800,
-                          color: StorkTheme.primaryDark,
+                    Wrap(
+                      spacing: 6,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        if (distKm != null && distKm > 0)
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 7,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: StorkTheme.primary.withValues(alpha: 0.1),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              '~${distKm.toStringAsFixed(1)} km',
+                              style: const TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w800,
+                                color: StorkTheme.primaryDark,
+                              ),
+                            ),
+                          ),
+                        Text(
+                          'From: ${sellerProfile['municipality'] ?? ''}, ${sellerProfile['province'] ?? ''}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: StorkTheme.textMuted,
+                          ),
                         ),
-                      ),
+                      ],
                     ),
                   ],
                 ),
-                Text(
-                  'From: ${sellerProfile['municipality'] ?? ''}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 11,
-                    color: StorkTheme.textMuted,
+                if (isPkgServiceable && routeBadgeLabel.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 9,
+                      vertical: 4,
+                    ),
+                    decoration: BoxDecoration(
+                      color: StorkTheme.success.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: StorkTheme.success.withValues(alpha: 0.3),
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(
+                          Icons.route_rounded,
+                          size: 13,
+                          color: StorkTheme.success,
+                        ),
+                        const SizedBox(width: 5),
+                        Flexible(
+                          child: Text(
+                            'Route: $routeBadgeLabel',
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w800,
+                              color: StorkTheme.success,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
+                ],
               ],
             ),
           ),
-          for (final rawItem in items)
+          if (!isPkgServiceable)
+            Container(
+              width: double.infinity,
+              margin: const EdgeInsets.fromLTRB(14, 10, 14, 0),
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: StorkTheme.danger.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: StorkTheme.danger.withValues(alpha: 0.3),
+                ),
+              ),
+              child: Text(
+                (pkgUnserviceableReason != null &&
+                        pkgUnserviceableReason.trim().isNotEmpty)
+                    ? pkgUnserviceableReason
+                    : 'Unserviceable route between seller and your delivery address.',
+                style: const TextStyle(
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w700,
+                  color: StorkTheme.danger,
+                ),
+              ),
+            ),
+          for (final rawItem in visibleItems)
             if (rawItem is Map)
               Padding(
                 padding:
@@ -1348,6 +1641,25 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                   ],
                 ),
               ),
+          if (items.length > 2)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 0, 14, 8),
+              child: _buildSeeMoreToggle(
+                isExpanded: itemsExpanded,
+                moreLabel:
+                    'See More Items (+${items.length - 2} more in package)',
+                lessLabel: 'See Less Items',
+                onTap: () {
+                  setState(() {
+                    if (itemsExpanded) {
+                      _expandedPackageItems.remove(spId);
+                    } else {
+                      _expandedPackageItems.add(spId);
+                    }
+                  });
+                },
+              ),
+            ),
           const Divider(height: 1),
           Padding(
             padding: const EdgeInsets.all(14),
@@ -1391,182 +1703,6 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                     ),
                   ),
                 ],
-                TextField(
-                  controller: _noteControllers[spId],
-                  maxLength: 200,
-                  decoration: InputDecoration(
-                    labelText: 'Optional Note to $storeName',
-                    counterText: '',
-                    prefixIcon: const Icon(Icons.edit_note_rounded, size: 20),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Wrap(
-                  alignment: WrapAlignment.spaceBetween,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  spacing: 8,
-                  runSpacing: 4,
-                  children: [
-                    Text(
-                      'STORE VOUCHER ($storeName)',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w800,
-                        color: StorkTheme.primaryDark,
-                      ),
-                    ),
-                    if (recommendedStoreCode.isNotEmpty)
-                      Text(
-                        'Preferred: $recommendedStoreCode',
-                        style: const TextStyle(
-                          fontSize: 10.5,
-                          fontWeight: FontWeight.w800,
-                          color: StorkTheme.primary,
-                        ),
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                if (storeVouchers.isNotEmpty) ...[
-                  SizedBox(
-                    height: 84,
-                    child: ListView(
-                      scrollDirection: Axis.horizontal,
-                      children: [
-                        _buildVoucherOptionChip(
-                          code: '',
-                          title: 'No Store Voucher',
-                          subtitle: 'Skip discount',
-                          isSelected: currentStoreCode.isEmpty,
-                          isMostPreferred: false,
-                          activeColor: StorkTheme.primary,
-                          onTap: () {
-                            if (currentStoreCode.isEmpty) return;
-                            HapticFeedback.selectionClick();
-                            setState(() {
-                              _touchedSlots.add('store_$spId');
-                              _appliedStoreVouchers[spId] = '';
-                              _storeVoucherControllers[spId]?.clear();
-                            });
-                            _applyOptimisticLocalCalculation();
-                            _fetchPreview(silent: true);
-                          },
-                        ),
-                        for (final sv in storeVouchers)
-                          _buildVoucherOptionChip(
-                            code: sv['code']?.toString() ?? '',
-                            title: sv['badge_label']?.toString() ?? 'STORE OFF',
-                            subtitle:
-                                'Min \u20B1${_formatMoney(sv['min_spend'])}',
-                            isSelected: currentStoreCode.toUpperCase() ==
-                                (sv['code']?.toString().toUpperCase() ?? ''),
-                            isMostPreferred: sv['is_most_preferred'] == true ||
-                                (recommendedStoreCode.isNotEmpty &&
-                                    recommendedStoreCode ==
-                                        (sv['code']?.toString().toUpperCase() ??
-                                            '')),
-                            activeColor: StorkTheme.primary,
-                            onTap: () {
-                              final c = sv['code']?.toString() ?? '';
-                              if (currentStoreCode.toUpperCase() ==
-                                  c.toUpperCase()) {
-                                return;
-                              }
-                              final minSpend = double.tryParse(
-                                      sv['min_spend']?.toString() ?? '0') ??
-                                  0.0;
-                              if (eligibleStoreBase + 0.0001 < minSpend) {
-                                _showPopupNotification(
-                                  'Voucher $c requires a minimum spend of \u20B1${_formatMoney(minSpend)} at $storeName.',
-                                  isError: true,
-                                );
-                                return;
-                              }
-                              HapticFeedback.selectionClick();
-                              setState(() {
-                                _touchedSlots.add('store_$spId');
-                                _appliedStoreVouchers[spId] = c;
-                                _storeVoucherControllers[spId]?.text = c;
-                              });
-                              _applyOptimisticLocalCalculation();
-                              _fetchPreview(silent: true);
-                            },
-                          ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                ],
-                LayoutBuilder(
-                  builder: (context, constraints) {
-                    final voucherInput = TextField(
-                      controller: _storeVoucherControllers[spId],
-                      textCapitalization: TextCapitalization.characters,
-                      decoration: const InputDecoration(
-                        hintText: 'Or enter store voucher code...',
-                      ),
-                    );
-                    final applyBtn = ElevatedButton(
-                      onPressed: () {
-                        HapticFeedback.lightImpact();
-                        final entered = _storeVoucherControllers[spId]!
-                            .text
-                            .trim()
-                            .toUpperCase();
-                        if (entered.isNotEmpty) {
-                          final known = _findAvailableVoucher(
-                            entered,
-                            scope: 'store',
-                            sellerId: spId,
-                          );
-                          if (known != null) {
-                            final minSpend = double.tryParse(
-                                    known['min_spend']?.toString() ?? '0') ??
-                                0.0;
-                            if (eligibleStoreBase + 0.0001 < minSpend) {
-                              _showPopupNotification(
-                                'Voucher $entered requires a minimum spend of \u20B1${_formatMoney(minSpend)} at $storeName.',
-                                isError: true,
-                              );
-                              return;
-                            }
-                          }
-                        }
-                        setState(() {
-                          _touchedSlots.add('store_$spId');
-                          _appliedStoreVouchers[spId] = entered;
-                        });
-                        _applyOptimisticLocalCalculation();
-                        _fetchPreview(silent: true);
-                      },
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: StorkTheme.primaryDark,
-                      ),
-                      child: const Text('Apply'),
-                    );
-
-                    if (constraints.maxWidth < 290) {
-                      return Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          voucherInput,
-                          const SizedBox(height: 8),
-                          applyBtn,
-                        ],
-                      );
-                    }
-                    return Row(
-                      children: [
-                        Expanded(child: voucherInput),
-                        const SizedBox(width: 8),
-                        applyBtn,
-                      ],
-                    );
-                  },
-                ),
-                const SizedBox(height: 14),
                 Wrap(
                   alignment: WrapAlignment.spaceBetween,
                   crossAxisAlignment: WrapCrossAlignment.center,
@@ -1646,7 +1782,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                             ),
                             SizedBox(height: 2),
                             Text(
-                              'Pay cash upon delivery',
+                              'Pay cash to Rider',
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: TextStyle(
@@ -1669,7 +1805,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                         padding: const EdgeInsets.all(12),
                         decoration: BoxDecoration(
                           color: selectedMethod == 'WALLET'
-                              ? StorkTheme.primaryDark.withValues(alpha: 0.08)
+                              ? StorkTheme.primaryDark.withValues(alpha: 0.07)
                               : StorkTheme.surface,
                           borderRadius: BorderRadius.circular(14),
                           border: Border.all(
@@ -1696,12 +1832,10 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                               'Bal: \u20B1${_formatMoney(_buyerWalletBalance)}',
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
+                              style: const TextStyle(
                                 fontSize: 10.5,
-                                fontWeight: FontWeight.w800,
-                                color: _hasSufficientWalletBalance
-                                    ? StorkTheme.success
-                                    : StorkTheme.danger,
+                                fontWeight: FontWeight.w700,
+                                color: StorkTheme.primaryDark,
                               ),
                             ),
                           ],
@@ -1709,7 +1843,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                       ),
                     );
 
-                    if (constraints.maxWidth < 330) {
+                    if (constraints.maxWidth < 290) {
                       return Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
@@ -1728,160 +1862,258 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                     );
                   },
                 ),
-                const Divider(height: 22),
-                if (storeDisc > 0) ...[
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Flexible(
-                        child: Text(
-                          'Store Voucher ($currentStoreCode)',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w700,
-                            color: StorkTheme.success,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        '-\u20B1${_formatMoney(storeDisc)}',
-                        style: const TextStyle(
-                          fontSize: 12.5,
-                          fontWeight: FontWeight.w800,
-                          color: StorkTheme.success,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 6),
-                ],
-                if (platDisc > 0) ...[
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Flexible(
-                        child: Text(
-                          'Platform Voucher Share',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w700,
-                            color: Color(0xFF6B21A8),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        '-\u20B1${_formatMoney(platDisc)}',
-                        style: const TextStyle(
-                          fontSize: 12.5,
-                          fontWeight: FontWeight.w800,
-                          color: Color(0xFF6B21A8),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 6),
-                ],
-                if (pkgCoinsUsed > 0) ...[
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Flexible(
-                        child: Text(
-                          'Storkia Coins Redeemed ($pkgCoinsUsed Coins)',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w700,
-                            color: Color(0xFFB45309),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        '-\u20B1${_formatMoney(pkgCoinsDisc)}',
-                        style: const TextStyle(
-                          fontSize: 12.5,
-                          fontWeight: FontWeight.w800,
-                          color: Color(0xFFB45309),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 6),
-                ],
+                const SizedBox(height: 10),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Expanded(
-                      child: Text(
-                        'Shipping (${shipping['tier_label'] ?? 'Standard'} \u2022 ${pkg['total_weight']} kg)',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: StorkTheme.textMuted,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (pkgShipDiscount > 0) ...[
-                          Text(
-                            '\u20B1${_formatMoney(origShippingFee)}',
-                            style: const TextStyle(
-                              fontSize: 11,
-                              decoration: TextDecoration.lineThrough,
-                              color: StorkTheme.textMuted,
-                            ),
-                          ),
-                          const SizedBox(width: 5),
-                        ],
-                        Text(
-                          netShippingFee <= 0.001
-                              ? 'FREE (\u20B10.00)'
-                              : '\u20B1${_formatMoney(netShippingFee)}',
-                          style: TextStyle(
-                            fontSize: 12.5,
-                            fontWeight: FontWeight.w800,
-                            color: pkgShipDiscount > 0
-                                ? const Color(0xFF047857)
-                                : StorkTheme.textMain,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Text(
-                      'Package Total',
-                      style: TextStyle(
-                        fontSize: 13.5,
-                        fontWeight: FontWeight.w800,
+                      child: _buildSeeMoreToggle(
+                        isExpanded: breakdownExpanded,
+                        moreLabel: currentStoreCode.isNotEmpty
+                            ? 'See More (Voucher $currentStoreCode, Note & Breakdown)'
+                            : 'See More (Store Voucher, Note & Breakdown)',
+                        lessLabel: 'See Less Package Options',
+                        onTap: () {
+                          setState(() {
+                            if (breakdownExpanded) {
+                              _expandedPackageBreakdowns.remove(spId);
+                            } else {
+                              _expandedPackageBreakdowns.add(spId);
+                            }
+                          });
+                        },
                       ),
                     ),
                     Text(
                       '\u20B1${_formatMoney(pkg['total'])}',
                       style: const TextStyle(
-                        fontSize: 15,
+                        fontSize: 14.5,
                         fontWeight: FontWeight.w900,
                         color: StorkTheme.primary,
                       ),
                     ),
                   ],
                 ),
+                if (breakdownExpanded) ...[
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: _noteControllers[spId],
+                    maxLength: 200,
+                    decoration: InputDecoration(
+                      labelText: 'Optional Note to $storeName',
+                      counterText: '',
+                      prefixIcon: const Icon(Icons.edit_note_rounded, size: 20),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Wrap(
+                    alignment: WrapAlignment.spaceBetween,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    spacing: 8,
+                    runSpacing: 4,
+                    children: [
+                      Text(
+                        'STORE VOUCHER ($storeName)',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w800,
+                          color: StorkTheme.primaryDark,
+                        ),
+                      ),
+                      if (recommendedStoreCode.isNotEmpty)
+                        Text(
+                          'Preferred: $recommendedStoreCode',
+                          style: const TextStyle(
+                            fontSize: 10.5,
+                            fontWeight: FontWeight.w800,
+                            color: StorkTheme.primary,
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  if (storeVouchers.isNotEmpty) ...[
+                    SizedBox(
+                      height: 84,
+                      child: ListView(
+                        scrollDirection: Axis.horizontal,
+                        children: [
+                          _buildVoucherOptionChip(
+                            code: '',
+                            title: 'No Store Voucher',
+                            subtitle: 'Skip discount',
+                            isSelected: currentStoreCode.isEmpty,
+                            isMostPreferred: false,
+                            activeColor: StorkTheme.primary,
+                            onTap: () {
+                              if (currentStoreCode.isEmpty) return;
+                              HapticFeedback.selectionClick();
+                              setState(() {
+                                _touchedSlots.add('store_$spId');
+                                _appliedStoreVouchers[spId] = '';
+                                _storeVoucherControllers[spId]?.clear();
+                              });
+                              _applyOptimisticLocalCalculation();
+                              _fetchPreview(silent: true);
+                            },
+                          ),
+                          for (final sv in storeVouchers)
+                            _buildVoucherOptionChip(
+                              code: sv['code']?.toString() ?? '',
+                              title:
+                                  sv['badge_label']?.toString() ?? 'STORE OFF',
+                              subtitle:
+                                  'Min \u20B1${_formatMoney(sv['min_spend'])}',
+                              isSelected: currentStoreCode.toUpperCase() ==
+                                  (sv['code']?.toString().toUpperCase() ?? ''),
+                              isMostPreferred:
+                                  sv['is_most_preferred'] == true ||
+                                      (recommendedStoreCode.isNotEmpty &&
+                                          recommendedStoreCode ==
+                                              (sv['code']
+                                                      ?.toString()
+                                                      .toUpperCase() ??
+                                                  '')),
+                              activeColor: StorkTheme.primary,
+                              onTap: () {
+                                final c = sv['code']?.toString() ?? '';
+                                if (currentStoreCode.toUpperCase() ==
+                                    c.toUpperCase()) {
+                                  return;
+                                }
+                                final minSpend = double.tryParse(
+                                        sv['min_spend']?.toString() ?? '0') ??
+                                    0.0;
+                                if (eligibleStoreBase + 0.0001 < minSpend) {
+                                  _showPopupNotification(
+                                    'Voucher $c requires a minimum spend of \u20B1${_formatMoney(minSpend)} at $storeName.',
+                                    isError: true,
+                                  );
+                                  return;
+                                }
+                                HapticFeedback.selectionClick();
+                                setState(() {
+                                  _touchedSlots.add('store_$spId');
+                                  _appliedStoreVouchers[spId] = c;
+                                  _storeVoucherControllers[spId]?.text = c;
+                                });
+                                _applyOptimisticLocalCalculation();
+                                _fetchPreview(silent: true);
+                              },
+                            ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
+                  LayoutBuilder(
+                    builder: (context, constraints) {
+                      final voucherInput = TextField(
+                        controller: _storeVoucherControllers[spId],
+                        textCapitalization: TextCapitalization.characters,
+                        decoration: const InputDecoration(
+                          hintText: 'Or enter store voucher code...',
+                        ),
+                      );
+                      final applyBtn = ElevatedButton(
+                        onPressed: () {
+                          HapticFeedback.lightImpact();
+                          final entered = _storeVoucherControllers[spId]!
+                              .text
+                              .trim()
+                              .toUpperCase();
+                          if (entered.isEmpty && currentStoreCode.isEmpty) {
+                            _showPopupNotification(
+                              'Please enter a store voucher code before tapping Apply.',
+                              isError: true,
+                            );
+                            return;
+                          }
+                          if (entered.isNotEmpty) {
+                            final known = _findAvailableVoucher(
+                              entered,
+                              scope: 'store',
+                              sellerId: spId,
+                            );
+                            if (known != null) {
+                              final minSpend = double.tryParse(
+                                      known['min_spend']?.toString() ?? '0') ??
+                                  0.0;
+                              if (eligibleStoreBase + 0.0001 < minSpend) {
+                                _showPopupNotification(
+                                  'Voucher $entered requires a minimum spend of \u20B1${_formatMoney(minSpend)} at $storeName.',
+                                  isError: true,
+                                );
+                                return;
+                              }
+                            }
+                          }
+                          setState(() {
+                            _touchedSlots.add('store_$spId');
+                            _appliedStoreVouchers[spId] = entered;
+                          });
+                          _applyOptimisticLocalCalculation();
+                          _fetchPreview(silent: true);
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: StorkTheme.primaryDark,
+                        ),
+                        child: const Text('Apply'),
+                      );
+
+                      if (constraints.maxWidth < 290) {
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            voucherInput,
+                            const SizedBox(height: 8),
+                            applyBtn,
+                          ],
+                        );
+                      }
+                      return Row(
+                        children: [
+                          Expanded(child: voucherInput),
+                          const SizedBox(width: 8),
+                          applyBtn,
+                        ],
+                      );
+                    },
+                  ),
+                  const Divider(height: 22),
+                  _buildPackageRow('Package Subtotal:',
+                      '\u20B1${_formatMoney(pkgSubtotal)}'),
+                  if (tierLabel.isNotEmpty)
+                    _buildPackageRow('Shipping Tier:', tierLabel),
+                  if (routeBadgeLabel.isNotEmpty)
+                    _buildPackageRow('Verified Route:', routeBadgeLabel,
+                        valueColor: StorkTheme.success),
+                  if (storeDisc > 0)
+                    _buildPackageRow('Store Voucher Discount:',
+                        '-\u20B1${_formatMoney(storeDisc)}',
+                        valueColor: StorkTheme.primary),
+                  if (platDisc > 0)
+                    _buildPackageRow('Platform Voucher Share:',
+                        '-\u20B1${_formatMoney(platDisc)}',
+                        valueColor: StorkTheme.primaryDark),
+                  if (pkgCoinsDisc > 0)
+                    _buildPackageRow('Coins Offset ($pkgCoinsUsed Coins):',
+                        '-\u20B1${_formatMoney(pkgCoinsDisc)}',
+                        valueColor: StorkTheme.primary),
+                  if (pkgShipDiscount > 0) ...[
+                    _buildPackageRow('Original Shipping Fee:',
+                        '\u20B1${_formatMoney(origShippingFee)}'),
+                    _buildPackageRow('Shipping Voucher Share:',
+                        '-\u20B1${_formatMoney(pkgShipDiscount)}',
+                        valueColor: StorkTheme.success),
+                  ],
+                  _buildPackageRow(
+                    'Net Shipping Fee:',
+                    '\u20B1${_formatMoney(netShippingFee)}',
+                  ),
+                ],
               ],
             ),
           ),
@@ -1890,230 +2122,37 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
     );
   }
 
-  Widget _buildStorkiaCoinsRedemptionSection() {
-    final bool canRedeem = _maxRedeemableCoins >= _minRedeemableCoins;
-    final double currentDiscount = _coinsToUse * 0.10;
-    final double maxDiscount = _maxRedeemableCoins * 0.10;
-
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: StorkTheme.surface,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(
-          color: _useStorkiaCoins
-              ? const Color(0xFFD97706)
-              : StorkTheme.borderSubtle,
-        ),
-        boxShadow: StorkTheme.softCardShadow,
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+  Widget _buildPackageRow(String label, String value, {Color? valueColor}) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFFEF3C7),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: const Icon(
-                  Icons.monetization_on_rounded,
-                  color: Color(0xFFD97706),
-                  size: 20,
-                ),
+          Flexible(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 11.5,
+                color: StorkTheme.textMuted,
               ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Redeem Storkia Coins (10 Coins = \u20B11.00)',
-                      style: TextStyle(
-                        fontSize: 13.5,
-                        fontWeight: FontWeight.w800,
-                        color: StorkTheme.primaryDark,
-                      ),
-                    ),
-                    Text(
-                      canRedeem
-                          ? 'Balance: $_buyerCoinsBalance Coins \u2022 Max usable: $_maxRedeemableCoins Coins (-\u20B1${_formatMoney(maxDiscount)})'
-                          : 'Balance: $_buyerCoinsBalance Coins (Minimum $_minRedeemableCoins coins required)',
-                      style: const TextStyle(
-                        fontSize: 11.5,
-                        color: StorkTheme.textMuted,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              Switch(
-                activeThumbColor: const Color(0xFFD97706),
-                value: _useStorkiaCoins && canRedeem,
-                onChanged: !canRedeem
-                    ? null
-                    : (val) {
-                        HapticFeedback.selectionClick();
-                        setState(() {
-                          _useStorkiaCoins = val;
-                          if (val && _coinsToUse < _minRedeemableCoins) {
-                            _coinsToUse = _maxRedeemableCoins;
-                            _coinsInputController.text = '$_coinsToUse';
-                          }
-                        });
-                        _applyOptimisticLocalCalculation();
-                        _fetchPreview(silent: true);
-                      },
-              ),
-            ],
+            ),
           ),
-          if (_useStorkiaCoins && canRedeem) ...[
-            const Divider(height: 20),
-            Wrap(
-              alignment: WrapAlignment.spaceBetween,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              spacing: 8,
-              runSpacing: 4,
-              children: [
-                Text(
-                  'Using $_coinsToUse Coins',
-                  style: const TextStyle(
-                    fontSize: 12.5,
-                    fontWeight: FontWeight.w800,
-                    color: StorkTheme.textMain,
-                  ),
-                ),
-                Text(
-                  'Discount: -\u20B1${_formatMoney(currentDiscount)}',
-                  style: const TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w900,
-                    color: Color(0xFFB45309),
-                  ),
-                ),
-              ],
-            ),
-            if (_maxRedeemableCoins > _minRedeemableCoins)
-              Slider(
-                value: _coinsToUse
-                    .clamp(_minRedeemableCoins, _maxRedeemableCoins)
-                    .toDouble(),
-                min: _minRedeemableCoins.toDouble(),
-                max: _maxRedeemableCoins.toDouble(),
-                divisions:
-                    (_maxRedeemableCoins - _minRedeemableCoins).clamp(1, 500),
-                activeColor: const Color(0xFFD97706),
-                onChanged: (val) {
-                  final rounded = val.round();
-                  setState(() {
-                    _coinsToUse = rounded;
-                    _coinsInputController.text = '$rounded';
-                  });
-                  _applyOptimisticLocalCalculation();
-                },
-                onChangeEnd: (_) {
-                  HapticFeedback.selectionClick();
-                  _fetchPreview(silent: true);
-                },
+          const SizedBox(width: 8),
+          Flexible(
+            child: Text(
+              value,
+              textAlign: TextAlign.right,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 11.5,
+                fontWeight: FontWeight.w700,
+                color: valueColor ?? StorkTheme.textMain,
               ),
-            LayoutBuilder(
-              builder: (context, constraints) {
-                final coinsField = TextField(
-                  controller: _coinsInputController,
-                  keyboardType: TextInputType.number,
-                  inputFormatters: [
-                    FilteringTextInputFormatter.digitsOnly,
-                  ],
-                  decoration: InputDecoration(
-                    labelText:
-                        'Coins ($_minRedeemableCoins - $_maxRedeemableCoins)',
-                  ),
-                );
-
-                final maxBtn = OutlinedButton(
-                  onPressed: () {
-                    HapticFeedback.selectionClick();
-                    setState(() {
-                      _coinsToUse = _maxRedeemableCoins;
-                      _coinsInputController.text = '$_maxRedeemableCoins';
-                    });
-                    _applyOptimisticLocalCalculation();
-                    _fetchPreview(silent: true);
-                  },
-                  child: const Text('Max'),
-                );
-
-                final applyBtn = ElevatedButton(
-                  onPressed: () {
-                    HapticFeedback.lightImpact();
-                    final parsed =
-                        int.tryParse(_coinsInputController.text.trim());
-                    if (parsed == null) {
-                      _showPopupNotification(
-                        'Enter a valid whole number between $_minRedeemableCoins and $_maxRedeemableCoins coins.',
-                        isError: true,
-                      );
-                      return;
-                    }
-                    if (parsed < _minRedeemableCoins) {
-                      _showPopupNotification(
-                        'Minimum redeemable is $_minRedeemableCoins coins.',
-                        isError: false,
-                        isWarning: true,
-                      );
-                    } else if (parsed > _maxRedeemableCoins) {
-                      _showPopupNotification(
-                        'Maximum redeemable for this order is $_maxRedeemableCoins coins (25% cap).',
-                        isError: false,
-                        isWarning: true,
-                      );
-                    }
-                    final clamped =
-                        parsed.clamp(_minRedeemableCoins, _maxRedeemableCoins);
-                    setState(() {
-                      _coinsToUse = clamped;
-                      _coinsInputController.text = '$clamped';
-                    });
-                    _applyOptimisticLocalCalculation();
-                    _fetchPreview(silent: true);
-                  },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFFD97706),
-                  ),
-                  child: const Text('Apply'),
-                );
-
-                if (constraints.maxWidth < 340) {
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      coinsField,
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          Expanded(child: maxBtn),
-                          const SizedBox(width: 8),
-                          Expanded(child: applyBtn),
-                        ],
-                      ),
-                    ],
-                  );
-                }
-
-                return Row(
-                  children: [
-                    Expanded(child: coinsField),
-                    const SizedBox(width: 8),
-                    maxBtn,
-                    const SizedBox(width: 6),
-                    applyBtn,
-                  ],
-                );
-              },
             ),
-          ],
+          ),
         ],
       ),
     );
@@ -2139,345 +2178,370 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Wrap(
-            alignment: WrapAlignment.spaceBetween,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            spacing: 8,
-            runSpacing: 4,
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                'Platform & Free Shipping Vouchers',
-                style: TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.w800,
-                  color: StorkTheme.primaryDark,
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Platform & Free Shipping Vouchers',
+                      style: TextStyle(
+                        fontSize: 14.5,
+                        fontWeight: FontWeight.w800,
+                        color: StorkTheme.primaryDark,
+                      ),
+                    ),
+                    SizedBox(height: 2),
+                    Text(
+                      'Auto-applied best vouchers or tap to customize.',
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        color: StorkTheme.textMuted,
+                      ),
+                    ),
+                  ],
                 ),
               ),
-              Text(
-                'Auto-Picks Best Savings',
-                style: TextStyle(
-                  fontSize: 10.5,
-                  fontWeight: FontWeight.w800,
-                  color: StorkTheme.primary,
-                ),
+              _buildSeeMoreToggle(
+                isExpanded: _isVouchersSectionExpanded,
+                moreLabel: 'See More',
+                lessLabel: 'See Less',
+                onTap: () => setState(() =>
+                    _isVouchersSectionExpanded = !_isVouchersSectionExpanded),
               ),
             ],
           ),
-          const SizedBox(height: 12),
-          Wrap(
-            alignment: WrapAlignment.spaceBetween,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            spacing: 8,
-            runSpacing: 4,
-            children: [
-              const Text(
-                'PLATFORM VOUCHER (ADMIN-SPONSORED)',
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w800,
-                  color: Color(0xFF581C87),
-                ),
-              ),
-              if (_recommendedPlatformVoucher.isNotEmpty)
-                Text(
-                  'Preferred: $_recommendedPlatformVoucher',
-                  style: const TextStyle(
-                    fontSize: 10.5,
+          if (!_isVouchersSectionExpanded &&
+              (_appliedPlatformVoucherCode.isNotEmpty ||
+                  _appliedShippingVoucherCode.isNotEmpty)) ...[
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              children: [
+                if (_appliedPlatformVoucherCode.isNotEmpty)
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 5,
+                    ),
+                    decoration: BoxDecoration(
+                      color: StorkTheme.primaryDark.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                        color: StorkTheme.primaryDark.withValues(alpha: 0.25),
+                      ),
+                    ),
+                    child: Text(
+                      'Platform: $_appliedPlatformVoucherCode',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                        color: StorkTheme.primaryDark,
+                      ),
+                    ),
+                  ),
+                if (_appliedShippingVoucherCode.isNotEmpty)
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 5,
+                    ),
+                    decoration: BoxDecoration(
+                      color: StorkTheme.success.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                        color: StorkTheme.success.withValues(alpha: 0.3),
+                      ),
+                    ),
+                    child: Text(
+                      'Shipping: $_appliedShippingVoucherCode',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                        color: StorkTheme.success,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ],
+          if (_isVouchersSectionExpanded) ...[
+            const SizedBox(height: 14),
+            Wrap(
+              alignment: WrapAlignment.spaceBetween,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 8,
+              runSpacing: 4,
+              children: [
+                const Text(
+                  'PLATFORM VOUCHER',
+                  style: TextStyle(
+                    fontSize: 11,
                     fontWeight: FontWeight.w800,
-                    color: Color(0xFF6B21A8),
+                    color: StorkTheme.primaryDark,
                   ),
                 ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          if (platformVouchers.isNotEmpty) ...[
-            SizedBox(
-              height: 84,
-              child: ListView(
-                scrollDirection: Axis.horizontal,
-                children: [
-                  _buildVoucherOptionChip(
-                    code: '',
-                    title: 'No Platform Voucher',
-                    subtitle: 'None',
-                    isSelected: _appliedPlatformVoucherCode.isEmpty,
-                    isMostPreferred: false,
-                    activeColor: const Color(0xFF6B21A8),
-                    onTap: () {
-                      if (_appliedPlatformVoucherCode.isEmpty) return;
-                      HapticFeedback.selectionClick();
-                      setState(() {
-                        _touchedSlots.add('platform');
-                        _appliedPlatformVoucherCode = '';
-                        _platformVoucherController.clear();
-                      });
-                      _applyOptimisticLocalCalculation();
-                      _fetchPreview(silent: true);
-                    },
+                if (_recommendedPlatformVoucher.isNotEmpty)
+                  Text(
+                    'Preferred: $_recommendedPlatformVoucher',
+                    style: const TextStyle(
+                      fontSize: 10.5,
+                      fontWeight: FontWeight.w800,
+                      color: StorkTheme.primary,
+                    ),
                   ),
-                  for (final pv in platformVouchers)
+              ],
+            ),
+            const SizedBox(height: 8),
+            if (platformVouchers.isNotEmpty) ...[
+              SizedBox(
+                height: 84,
+                child: ListView(
+                  scrollDirection: Axis.horizontal,
+                  children: [
                     _buildVoucherOptionChip(
-                      code: pv['code']?.toString() ?? '',
-                      title: pv['badge_label']?.toString() ?? 'PLATFORM OFF',
-                      subtitle: 'Min \u20B1${_formatMoney(pv['min_spend'])}',
-                      isSelected: _appliedPlatformVoucherCode.toUpperCase() ==
-                          (pv['code']?.toString().toUpperCase() ?? ''),
-                      isMostPreferred: pv['is_most_preferred'] == true ||
-                          (_recommendedPlatformVoucher.isNotEmpty &&
-                              _recommendedPlatformVoucher ==
-                                  (pv['code']?.toString().toUpperCase() ?? '')),
-                      activeColor: const Color(0xFF6B21A8),
+                      code: '',
+                      title: 'No Platform Voucher',
+                      subtitle: 'Skip discount',
+                      isSelected: _appliedPlatformVoucherCode.isEmpty,
+                      isMostPreferred: false,
+                      activeColor: StorkTheme.primaryDark,
                       onTap: () {
-                        final c = pv['code']?.toString() ?? '';
-                        if (_appliedPlatformVoucherCode.toUpperCase() ==
-                            c.toUpperCase()) {
-                          return;
-                        }
-                        final minSpend = double.tryParse(
-                                pv['min_spend']?.toString() ?? '0') ??
-                            0.0;
-                        if (netAfterStore + 0.0001 < minSpend) {
-                          _showPopupNotification(
-                            'Platform voucher $c requires a minimum spend of \u20B1${_formatMoney(minSpend)}.',
-                            isError: true,
-                          );
-                          return;
-                        }
+                        if (_appliedPlatformVoucherCode.isEmpty) return;
                         HapticFeedback.selectionClick();
                         setState(() {
                           _touchedSlots.add('platform');
-                          _appliedPlatformVoucherCode = c;
-                          _platformVoucherController.text = c;
+                          _appliedPlatformVoucherCode = '';
+                          _platformVoucherController.clear();
                         });
                         _applyOptimisticLocalCalculation();
                         _fetchPreview(silent: true);
                       },
                     ),
-                ],
+                    for (final pv in platformVouchers)
+                      _buildVoucherOptionChip(
+                        code: pv['code']?.toString() ?? '',
+                        title: pv['badge_label']?.toString() ?? 'PLATFORM OFF',
+                        subtitle: 'Min \u20B1${_formatMoney(pv['min_spend'])}',
+                        isSelected: _appliedPlatformVoucherCode.toUpperCase() ==
+                            (pv['code']?.toString().toUpperCase() ?? ''),
+                        isMostPreferred: pv['is_most_preferred'] == true ||
+                            (_recommendedPlatformVoucher.isNotEmpty &&
+                                _recommendedPlatformVoucher ==
+                                    (pv['code']?.toString().toUpperCase() ??
+                                        '')),
+                        activeColor: StorkTheme.primaryDark,
+                        onTap: () {
+                          final c = pv['code']?.toString() ?? '';
+                          if (_appliedPlatformVoucherCode.toUpperCase() ==
+                              c.toUpperCase()) {
+                            return;
+                          }
+                          final minSpend = double.tryParse(
+                                  pv['min_spend']?.toString() ?? '0') ??
+                              0.0;
+                          if (netAfterStore + 0.0001 < minSpend) {
+                            _showPopupNotification(
+                              'Platform voucher $c requires a minimum spend of \u20B1${_formatMoney(minSpend)}.',
+                              isError: true,
+                            );
+                            return;
+                          }
+                          HapticFeedback.selectionClick();
+                          setState(() {
+                            _touchedSlots.add('platform');
+                            _appliedPlatformVoucherCode = c;
+                            _platformVoucherController.text = c;
+                          });
+                          _applyOptimisticLocalCalculation();
+                          _fetchPreview(silent: true);
+                        },
+                      ),
+                  ],
+                ),
               ),
+              const SizedBox(height: 8),
+            ],
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _platformVoucherController,
+                    textCapitalization: TextCapitalization.characters,
+                    decoration: const InputDecoration(
+                      hintText: 'Enter Platform Voucher Code...',
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  onPressed: () {
+                    HapticFeedback.lightImpact();
+                    final entered =
+                        _platformVoucherController.text.trim().toUpperCase();
+                    if (entered.isEmpty &&
+                        _appliedPlatformVoucherCode.isEmpty) {
+                      _showPopupNotification(
+                        'Please enter a platform voucher code before tapping Apply.',
+                        isError: true,
+                      );
+                      return;
+                    }
+                    setState(() {
+                      _touchedSlots.add('platform');
+                      _appliedPlatformVoucherCode = entered;
+                    });
+                    _applyOptimisticLocalCalculation();
+                    _fetchPreview(silent: true);
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: StorkTheme.primaryDark,
+                  ),
+                  child: const Text('Apply'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Wrap(
+              alignment: WrapAlignment.spaceBetween,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 8,
+              runSpacing: 4,
+              children: [
+                const Text(
+                  'FREE SHIPPING VOUCHER',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
+                    color: StorkTheme.primaryDark,
+                  ),
+                ),
+                if (_recommendedShippingVoucher.isNotEmpty)
+                  Text(
+                    'Preferred: $_recommendedShippingVoucher',
+                    style: const TextStyle(
+                      fontSize: 10.5,
+                      fontWeight: FontWeight.w800,
+                      color: StorkTheme.primary,
+                    ),
+                  ),
+              ],
             ),
             const SizedBox(height: 8),
-          ],
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final platField = TextField(
-                controller: _platformVoucherController,
-                textCapitalization: TextCapitalization.characters,
-                decoration: const InputDecoration(
-                  hintText: 'Enter Platform Voucher Code...',
-                ),
-              );
-              final applyBtn = ElevatedButton(
-                onPressed: () {
-                  HapticFeedback.lightImpact();
-                  final entered =
-                      _platformVoucherController.text.trim().toUpperCase();
-                  if (entered.isNotEmpty) {
-                    final known =
-                        _findAvailableVoucher(entered, scope: 'platform');
-                    if (known != null) {
-                      final minSpend = double.tryParse(
-                              known['min_spend']?.toString() ?? '0') ??
-                          0.0;
-                      if (netAfterStore + 0.0001 < minSpend) {
-                        _showPopupNotification(
-                          'Platform voucher $entered requires a minimum spend of \u20B1${_formatMoney(minSpend)}.',
-                          isError: true,
-                        );
-                        return;
-                      }
-                    }
-                  }
-                  setState(() {
-                    _touchedSlots.add('platform');
-                    _appliedPlatformVoucherCode = entered;
-                  });
-                  _applyOptimisticLocalCalculation();
-                  _fetchPreview(silent: true);
-                },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF6B21A8),
-                ),
-                child: const Text('Apply'),
-              );
-
-              if (constraints.maxWidth < 290) {
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
+            if (shippingVouchers.isNotEmpty) ...[
+              SizedBox(
+                height: 84,
+                child: ListView(
+                  scrollDirection: Axis.horizontal,
                   children: [
-                    platField,
-                    const SizedBox(height: 8),
-                    applyBtn,
-                  ],
-                );
-              }
-              return Row(
-                children: [
-                  Expanded(child: platField),
-                  const SizedBox(width: 8),
-                  applyBtn,
-                ],
-              );
-            },
-          ),
-          const SizedBox(height: 16),
-          Wrap(
-            alignment: WrapAlignment.spaceBetween,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            spacing: 8,
-            runSpacing: 4,
-            children: [
-              const Text(
-                'FREE SHIPPING VOUCHER',
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w800,
-                  color: Color(0xFF065F46),
-                ),
-              ),
-              if (_recommendedShippingVoucher.isNotEmpty)
-                Text(
-                  'Preferred: $_recommendedShippingVoucher',
-                  style: const TextStyle(
-                    fontSize: 10.5,
-                    fontWeight: FontWeight.w800,
-                    color: Color(0xFF047857),
-                  ),
-                ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          if (shippingVouchers.isNotEmpty) ...[
-            SizedBox(
-              height: 84,
-              child: ListView(
-                scrollDirection: Axis.horizontal,
-                children: [
-                  _buildVoucherOptionChip(
-                    code: '',
-                    title: 'No Shipping Voucher',
-                    subtitle: 'None',
-                    isSelected: _appliedShippingVoucherCode.isEmpty,
-                    isMostPreferred: false,
-                    activeColor: const Color(0xFF047857),
-                    onTap: () {
-                      if (_appliedShippingVoucherCode.isEmpty) return;
-                      HapticFeedback.selectionClick();
-                      setState(() {
-                        _touchedSlots.add('shipping');
-                        _appliedShippingVoucherCode = '';
-                        _shippingVoucherController.clear();
-                      });
-                      _applyOptimisticLocalCalculation();
-                      _fetchPreview(silent: true);
-                    },
-                  ),
-                  for (final shv in shippingVouchers)
                     _buildVoucherOptionChip(
-                      code: shv['code']?.toString() ?? '',
-                      title: shv['badge_label']?.toString() ?? 'FREE SHIP',
-                      subtitle: 'Min \u20B1${_formatMoney(shv['min_spend'])}',
-                      isSelected: _appliedShippingVoucherCode.toUpperCase() ==
-                          (shv['code']?.toString().toUpperCase() ?? ''),
-                      isMostPreferred: shv['is_most_preferred'] == true ||
-                          (_recommendedShippingVoucher.isNotEmpty &&
-                              _recommendedShippingVoucher ==
-                                  (shv['code']?.toString().toUpperCase() ??
-                                      '')),
-                      activeColor: const Color(0xFF047857),
+                      code: '',
+                      title: 'No Shipping Voucher',
+                      subtitle: 'Standard shipping',
+                      isSelected: _appliedShippingVoucherCode.isEmpty,
+                      isMostPreferred: false,
+                      activeColor: StorkTheme.primary,
                       onTap: () {
-                        final c = shv['code']?.toString() ?? '';
-                        if (_appliedShippingVoucherCode.toUpperCase() ==
-                            c.toUpperCase()) {
-                          return;
-                        }
-                        final minSpend = double.tryParse(
-                                shv['min_spend']?.toString() ?? '0') ??
-                            0.0;
-                        if (netAfterStore + 0.0001 < minSpend) {
-                          _showPopupNotification(
-                            'Shipping voucher $c requires a minimum order spend of \u20B1${_formatMoney(minSpend)}.',
-                            isError: true,
-                          );
-                          return;
-                        }
+                        if (_appliedShippingVoucherCode.isEmpty) return;
                         HapticFeedback.selectionClick();
                         setState(() {
                           _touchedSlots.add('shipping');
-                          _appliedShippingVoucherCode = c;
-                          _shippingVoucherController.text = c;
+                          _appliedShippingVoucherCode = '';
+                          _shippingVoucherController.clear();
                         });
                         _applyOptimisticLocalCalculation();
                         _fetchPreview(silent: true);
                       },
                     ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 8),
-          ],
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final shipField = TextField(
-                controller: _shippingVoucherController,
-                textCapitalization: TextCapitalization.characters,
-                decoration: const InputDecoration(
-                  hintText: 'Enter Shipping Voucher Code...',
-                ),
-              );
-              final applyBtn = ElevatedButton(
-                onPressed: () {
-                  HapticFeedback.lightImpact();
-                  final entered =
-                      _shippingVoucherController.text.trim().toUpperCase();
-                  if (entered.isNotEmpty) {
-                    final known =
-                        _findAvailableVoucher(entered, scope: 'shipping');
-                    if (known != null) {
-                      final minSpend = double.tryParse(
-                              known['min_spend']?.toString() ?? '0') ??
-                          0.0;
-                      if (netAfterStore + 0.0001 < minSpend) {
-                        _showPopupNotification(
-                          'Shipping voucher $entered requires a minimum order spend of \u20B1${_formatMoney(minSpend)}.',
-                          isError: true,
-                        );
-                        return;
-                      }
-                    }
-                  }
-                  setState(() {
-                    _touchedSlots.add('shipping');
-                    _appliedShippingVoucherCode = entered;
-                  });
-                  _applyOptimisticLocalCalculation();
-                  _fetchPreview(silent: true);
-                },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF047857),
-                ),
-                child: const Text('Apply'),
-              );
-
-              if (constraints.maxWidth < 290) {
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    shipField,
-                    const SizedBox(height: 8),
-                    applyBtn,
+                    for (final shv in shippingVouchers)
+                      _buildVoucherOptionChip(
+                        code: shv['code']?.toString() ?? '',
+                        title: shv['badge_label']?.toString() ?? 'FREE SHIP',
+                        subtitle: 'Min \u20B1${_formatMoney(shv['min_spend'])}',
+                        isSelected: _appliedShippingVoucherCode.toUpperCase() ==
+                            (shv['code']?.toString().toUpperCase() ?? ''),
+                        isMostPreferred: shv['is_most_preferred'] == true ||
+                            (_recommendedShippingVoucher.isNotEmpty &&
+                                _recommendedShippingVoucher ==
+                                    (shv['code']?.toString().toUpperCase() ??
+                                        '')),
+                        activeColor: StorkTheme.primary,
+                        onTap: () {
+                          final c = shv['code']?.toString() ?? '';
+                          if (_appliedShippingVoucherCode.toUpperCase() ==
+                              c.toUpperCase()) {
+                            return;
+                          }
+                          final minSpend = double.tryParse(
+                                  shv['min_spend']?.toString() ?? '0') ??
+                              0.0;
+                          final overallSub = double.tryParse(
+                                  _checkoutData?['overall_subtotal']
+                                          ?.toString() ??
+                                      '0') ??
+                              0.0;
+                          if (overallSub + 0.0001 < minSpend) {
+                            _showPopupNotification(
+                              'Shipping voucher $c requires a minimum spend of \u20B1${_formatMoney(minSpend)}.',
+                              isError: true,
+                            );
+                            return;
+                          }
+                          HapticFeedback.selectionClick();
+                          setState(() {
+                            _touchedSlots.add('shipping');
+                            _appliedShippingVoucherCode = c;
+                            _shippingVoucherController.text = c;
+                          });
+                          _applyOptimisticLocalCalculation();
+                          _fetchPreview(silent: true);
+                        },
+                      ),
                   ],
-                );
-              }
-              return Row(
-                children: [
-                  Expanded(child: shipField),
-                  const SizedBox(width: 8),
-                  applyBtn,
-                ],
-              );
-            },
-          ),
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _shippingVoucherController,
+                    textCapitalization: TextCapitalization.characters,
+                    decoration: const InputDecoration(
+                      hintText: 'Enter Shipping Voucher Code...',
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  onPressed: () {
+                    HapticFeedback.lightImpact();
+                    final entered =
+                        _shippingVoucherController.text.trim().toUpperCase();
+                    if (entered.isEmpty &&
+                        _appliedShippingVoucherCode.isEmpty) {
+                      _showPopupNotification(
+                        'Please enter a shipping voucher code before tapping Apply.',
+                        isError: true,
+                      );
+                      return;
+                    }
+                    setState(() {
+                      _touchedSlots.add('shipping');
+                      _appliedShippingVoucherCode = entered;
+                    });
+                    _applyOptimisticLocalCalculation();
+                    _fetchPreview(silent: true);
+                  },
+                  child: const Text('Apply'),
+                ),
+              ],
+            ),
+          ],
         ],
       ),
     );
@@ -2494,93 +2558,88 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
   }) {
     return GestureDetector(
       onTap: onTap,
-      onLongPress: code.isNotEmpty
-          ? () => _copyTextWithToast(code, 'Voucher Code')
-          : null,
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 230),
-        child: Container(
-          margin: const EdgeInsets.only(right: 10),
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-          decoration: BoxDecoration(
-            color: isSelected
-                ? activeColor.withValues(alpha: 0.08)
-                : StorkTheme.surfaceSubtle,
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(
-              color: isSelected ? activeColor : StorkTheme.borderSubtle,
-              width: isSelected ? 1.8 : 1,
-            ),
+      child: Container(
+        width: 170,
+        margin: const EdgeInsets.only(right: 10),
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: isSelected
+              ? activeColor.withValues(alpha: 0.08)
+              : StorkTheme.surfaceSubtle,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: isSelected ? activeColor : StorkTheme.borderSubtle,
+            width: isSelected ? 1.8 : 1,
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisAlignment: MainAxisAlignment.center,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (isMostPreferred)
-                Container(
-                  margin: const EdgeInsets.only(bottom: 3),
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-                  decoration: BoxDecoration(
-                    color: activeColor,
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: const Text(
-                    '\u2605 MOST PREFERRED',
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Flexible(
+                  child: Text(
+                    code.isNotEmpty ? code : 'NONE',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                      fontSize: 8.5,
+                      fontSize: 11,
                       fontWeight: FontWeight.w900,
-                      color: Colors.white,
+                      color: isSelected ? activeColor : StorkTheme.primaryDark,
                     ),
                   ),
                 ),
-              Flexible(
-                child: Text(
-                  code.isNotEmpty ? '$code \u2022 $title' : title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w800,
-                    color: isSelected ? activeColor : StorkTheme.textMain,
+                if (isMostPreferred)
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                    decoration: BoxDecoration(
+                      color: StorkTheme.primary,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: const Text(
+                      '\u2605 BEST',
+                      style: TextStyle(
+                        fontSize: 8.5,
+                        fontWeight: FontWeight.w900,
+                        color: Colors.white,
+                      ),
+                    ),
                   ),
-                ),
+              ],
+            ),
+            const SizedBox(height: 3),
+            Text(
+              title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w800,
+                color: StorkTheme.textMain,
               ),
-              Text(
-                subtitle,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  fontSize: 10.5,
-                  color: StorkTheme.textMuted,
-                ),
+            ),
+            const SizedBox(height: 1),
+            Text(
+              subtitle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 10,
+                color: StorkTheme.textMuted,
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
   }
 
-  Widget _buildCheckoutSummaryCard() {
-    final storeDisc = double.tryParse(
-            _checkoutData!['overall_store_discount']?.toString() ?? '0') ??
-        0.0;
-    final platDisc = double.tryParse(
-            _checkoutData!['overall_platform_discount']?.toString() ?? '0') ??
-        0.0;
-    final shipDisc = double.tryParse(
-            _checkoutData!['overall_shipping_discount']?.toString() ?? '0') ??
-        0.0;
-    final int overallCoinsUsed =
-        int.tryParse(_checkoutData!['overall_coins_used']?.toString() ?? '0') ??
-            0;
-    final double coinsDisc = double.tryParse(
-            _checkoutData!['overall_coins_discount']?.toString() ?? '0') ??
-        0.0;
+  Widget _buildStorkiaCoinsRedemptionSection() {
+    final bool canRedeemCoins = _maxRedeemableCoins >= _minRedeemableCoins;
+    final double maxPesoDiscount = _maxRedeemableCoins * 0.10;
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -2593,125 +2652,246 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            'Checkout Summary',
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w800,
-              color: StorkTheme.primaryDark,
-            ),
+          Row(
+            children: [
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: StorkTheme.primary.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(
+                  Icons.monetization_on_rounded,
+                  color: StorkTheme.primary,
+                  size: 20,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Redeem Storkia Coins ($_buyerCoinsBalance available)',
+                      style: const TextStyle(
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w800,
+                        color: StorkTheme.primaryDark,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      canRedeemCoins
+                          ? 'Use up to $_maxRedeemableCoins Coins (-\u20B1${_formatMoney(maxPesoDiscount)}) \u2022 10 Coins = \u20B11.00'
+                          : (_buyerCoinsBalance > 0 &&
+                                  _buyerCoinsBalance < _minRedeemableCoins
+                              ? 'Minimum $_minRedeemableCoins Coins (\u20B11.00) required to redeem at checkout'
+                              : 'No redeemable coins for this order'),
+                      style: const TextStyle(
+                        fontSize: 11.5,
+                        color: StorkTheme.textMuted,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Switch(
+                activeThumbColor: StorkTheme.primary,
+                value: _useStorkiaCoins && canRedeemCoins,
+                onChanged: (val) {
+                  if (!canRedeemCoins) {
+                    _showPopupNotification(
+                      _buyerCoinsBalance < _minRedeemableCoins
+                          ? 'You need at least $_minRedeemableCoins Storkia Coins (\u20B11.00) in your balance to redeem coins at checkout.'
+                          : 'No Storkia Coins can be applied to this order.',
+                      isError: true,
+                    );
+                    return;
+                  }
+                  HapticFeedback.selectionClick();
+                  setState(() {
+                    _useStorkiaCoins = val;
+                    _coinsToUse = val ? _maxRedeemableCoins : 0;
+                    _coinsInputController.text = '$_coinsToUse';
+                  });
+                  _applyOptimisticLocalCalculation();
+                  _fetchPreview(silent: true);
+                },
+              ),
+            ],
           ),
-          const Divider(height: 22),
-          _buildSummaryRow(
-            'Merchandise Subtotal (${_checkoutData!['total_items'] ?? 0} items)',
-            '\u20B1${_formatMoney(_checkoutData!['overall_subtotal'])}',
-          ),
-          const SizedBox(height: 8),
-          _buildSummaryRow(
-            'Original Shipping Subtotal',
-            '\u20B1${_formatMoney(_checkoutData!['overall_shipping'])}',
-          ),
-          if (storeDisc > 0) ...[
-            const SizedBox(height: 8),
-            _buildSummaryRow(
-              'Store & Bundle Discounts',
-              '-\u20B1${_formatMoney(storeDisc)}',
-              valueColor: StorkTheme.success,
+          if (_useStorkiaCoins && canRedeemCoins) ...[
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _coinsInputController,
+                    keyboardType: TextInputType.number,
+                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                    decoration: InputDecoration(
+                      labelText:
+                          'Coins to redeem ($_minRedeemableCoins - $_maxRedeemableCoins)',
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  onPressed: () {
+                    final parsed =
+                        int.tryParse(_coinsInputController.text.trim()) ?? 0;
+                    if (parsed < _minRedeemableCoins) {
+                      _showPopupNotification(
+                        'Minimum redeemable amount is $_minRedeemableCoins Storkia Coins (\u20B11.00).',
+                        isError: true,
+                      );
+                      setState(() {
+                        _coinsToUse = _minRedeemableCoins;
+                        _coinsInputController.text = '$_coinsToUse';
+                      });
+                    } else if (parsed > _maxRedeemableCoins) {
+                      _showPopupNotification(
+                        'Maximum redeemable for this order is $_maxRedeemableCoins Storkia Coins.',
+                        isError: false,
+                        isWarning: true,
+                      );
+                      setState(() {
+                        _coinsToUse = _maxRedeemableCoins;
+                        _coinsInputController.text = '$_coinsToUse';
+                      });
+                    } else {
+                      setState(() => _coinsToUse = parsed);
+                    }
+                    _applyOptimisticLocalCalculation();
+                    _fetchPreview(silent: true);
+                  },
+                  child: const Text('Apply Coins'),
+                ),
+              ],
             ),
           ],
-          if (platDisc > 0) ...[
-            const SizedBox(height: 8),
-            _buildSummaryRow(
-              'Platform Voucher ($_appliedPlatformVoucherCode)',
-              '-\u20B1${_formatMoney(platDisc)}',
-              valueColor: const Color(0xFF6B21A8),
-            ),
-          ],
-          if (shipDisc > 0) ...[
-            const SizedBox(height: 8),
-            _buildSummaryRow(
-              'Shipping Voucher ($_appliedShippingVoucherCode)',
-              '-\u20B1${_formatMoney(shipDisc)}',
-              valueColor: const Color(0xFF047857),
-            ),
-          ],
-          if (coinsDisc > 0) ...[
-            const SizedBox(height: 8),
-            _buildSummaryRow(
-              'Storkia Coins ($overallCoinsUsed Coins)',
-              '-\u20B1${_formatMoney(coinsDisc)}',
-              valueColor: const Color(0xFFB45309),
-            ),
-          ],
-          if (_totalWalletRequired > 0) ...[
-            const SizedBox(height: 8),
-            _buildSummaryRow(
-              'Payable via Storkia E-Wallet',
-              '\u20B1${_formatMoney(_totalWalletRequired)}',
-              valueColor: _hasSufficientWalletBalance
-                  ? StorkTheme.primaryDark
-                  : StorkTheme.danger,
-            ),
-          ],
-          const Divider(height: 22),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCheckoutSummaryCard() {
+    if (_checkoutData == null) return const SizedBox.shrink();
+    final double overallSub = double.tryParse(
+            _checkoutData!['overall_subtotal']?.toString() ?? '0') ??
+        0.0;
+    final double overallShip = double.tryParse(
+            _checkoutData!['overall_shipping']?.toString() ?? '0') ??
+        0.0;
+    final double storeDisc = double.tryParse(
+            _checkoutData!['overall_store_discount']?.toString() ?? '0') ??
+        0.0;
+    final double platDisc = double.tryParse(
+            _checkoutData!['overall_platform_discount']?.toString() ?? '0') ??
+        0.0;
+    final double shipDisc = double.tryParse(
+            _checkoutData!['overall_shipping_discount']?.toString() ?? '0') ??
+        0.0;
+    final int coinsUsed =
+        int.tryParse(_checkoutData!['overall_coins_used']?.toString() ?? '0') ??
+            0;
+    final double coinsDisc = double.tryParse(
+            _checkoutData!['overall_coins_discount']?.toString() ?? '0') ??
+        0.0;
+    final double overallTotal =
+        double.tryParse(_checkoutData!['overall_total']?.toString() ?? '0') ??
+            0.0;
+    final int totalItems =
+        int.tryParse(_checkoutData!['total_items']?.toString() ?? '1') ?? 1;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: StorkTheme.surface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: StorkTheme.borderSubtle),
+        boxShadow: StorkTheme.softCardShadow,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Expanded(
-                child: Text(
-                  'Total Payable Amount',
-                  style: TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w800,
-                    color: StorkTheme.textMain,
-                  ),
+              const Text(
+                'Order Summary',
+                style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w900,
+                  color: StorkTheme.primaryDark,
                 ),
               ),
-              const SizedBox(width: 8),
-              Flexible(
-                child: FittedBox(
-                  fit: BoxFit.scaleDown,
-                  alignment: Alignment.centerRight,
-                  child: Text(
-                    '\u20B1${_formatMoney(_checkoutData!['overall_total'])}',
-                    style: const TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.w900,
-                      color: StorkTheme.primary,
-                    ),
-                  ),
+              _buildSeeMoreToggle(
+                isExpanded: _isOrderSummaryExpanded,
+                moreLabel: 'See Breakdown',
+                lessLabel: 'See Less',
+                onTap: () => setState(
+                    () => _isOrderSummaryExpanded = !_isOrderSummaryExpanded),
+              ),
+            ],
+          ),
+          if (_isOrderSummaryExpanded) ...[
+            const SizedBox(height: 12),
+            _buildPackageRow('Merchandise Subtotal ($totalItems item(s)):',
+                '\u20B1${_formatMoney(overallSub)}'),
+            _buildPackageRow(
+                'Shipping Subtotal:', '\u20B1${_formatMoney(overallShip)}'),
+            if (storeDisc > 0)
+              _buildPackageRow(
+                'Store Voucher / Bundle Discount:',
+                '-\u20B1${_formatMoney(storeDisc)}',
+                valueColor: StorkTheme.primary,
+              ),
+            if (platDisc > 0)
+              _buildPackageRow(
+                'Platform Voucher ($_appliedPlatformVoucherCode):',
+                '-\u20B1${_formatMoney(platDisc)}',
+                valueColor: StorkTheme.primaryDark,
+              ),
+            if (shipDisc > 0)
+              _buildPackageRow(
+                'Shipping Voucher ($_appliedShippingVoucherCode):',
+                '-\u20B1${_formatMoney(shipDisc)}',
+                valueColor: StorkTheme.success,
+              ),
+            if (coinsDisc > 0)
+              _buildPackageRow(
+                'Storkia Coins ($coinsUsed Coins):',
+                '-\u20B1${_formatMoney(coinsDisc)}',
+                valueColor: StorkTheme.primary,
+              ),
+            const Divider(height: 20),
+          ] else
+            const SizedBox(height: 10),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                'Total Payable Amount:',
+                style: TextStyle(
+                  fontSize: 14.5,
+                  fontWeight: FontWeight.w900,
+                  color: StorkTheme.primaryDark,
+                ),
+              ),
+              Text(
+                '\u20B1${_formatMoney(overallTotal)}',
+                style: const TextStyle(
+                  fontSize: 19,
+                  fontWeight: FontWeight.w900,
+                  color: StorkTheme.primary,
                 ),
               ),
             ],
           ),
         ],
       ),
-    );
-  }
-
-  Widget _buildSummaryRow(String label, String value, {Color? valueColor}) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: [
-        Expanded(
-          child: Text(
-            label,
-            style: const TextStyle(
-              fontSize: 12.5,
-              color: StorkTheme.textMuted,
-            ),
-          ),
-        ),
-        const SizedBox(width: 8),
-        Text(
-          value,
-          style: TextStyle(
-            fontSize: 13,
-            fontWeight: FontWeight.w800,
-            color: valueColor ?? StorkTheme.textMain,
-          ),
-        ),
-      ],
     );
   }
 }

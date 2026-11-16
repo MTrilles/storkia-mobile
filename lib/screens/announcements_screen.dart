@@ -29,6 +29,7 @@ class _AnnouncementsScreenState extends ConsumerState<AnnouncementsScreen>
   bool _isLoading = true;
   String _selectedFilter = 'all';
   List<JsonMap> _announcements = [];
+  final Set<int> _expandedAnnouncementIds = <int>{};
 
   String get _domain => ApiConfig.resolveBaseDomain(widget.baseUrl);
 
@@ -355,7 +356,7 @@ class _AnnouncementsScreenState extends ConsumerState<AnnouncementsScreen>
                               final item = visibleList[index];
                               final int id =
                                   int.tryParse(item['id']?.toString() ?? '0') ??
-                                      0;
+                                      index;
                               final bool isRead = item['is_read'] == true;
                               final bool isPinned = item['is_pinned'] == true;
                               final String title =
@@ -369,11 +370,23 @@ class _AnnouncementsScreenState extends ConsumerState<AnnouncementsScreen>
                                       item['created_at'] ??
                                       '')
                                   .toString();
+                              final bool isLongContent = content.length > 130;
+                              final bool isExpanded =
+                                  _expandedAnnouncementIds.contains(id);
 
                               return InkWell(
                                 onTap: () {
                                   if (!isRead && id > 0) {
                                     _markAsRead(id);
+                                  }
+                                  if (isLongContent) {
+                                    setState(() {
+                                      if (isExpanded) {
+                                        _expandedAnnouncementIds.remove(id);
+                                      } else {
+                                        _expandedAnnouncementIds.add(id);
+                                      }
+                                    });
                                   }
                                 },
                                 borderRadius: BorderRadius.circular(20),
@@ -486,12 +499,46 @@ class _AnnouncementsScreenState extends ConsumerState<AnnouncementsScreen>
                                       const SizedBox(height: 6),
                                       Text(
                                         content,
+                                        maxLines: isLongContent && !isExpanded
+                                            ? 3
+                                            : 80,
+                                        overflow: isLongContent && !isExpanded
+                                            ? TextOverflow.ellipsis
+                                            : TextOverflow.visible,
                                         style: const TextStyle(
                                           fontSize: 13,
                                           color: StorkTheme.textMain,
                                           height: 1.45,
                                         ),
                                       ),
+                                      if (isLongContent) ...[
+                                        const SizedBox(height: 6),
+                                        Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Text(
+                                              isExpanded
+                                                  ? 'See Less'
+                                                  : 'See More',
+                                              style: const TextStyle(
+                                                fontSize: 11.5,
+                                                fontWeight: FontWeight.w800,
+                                                color: StorkTheme.primary,
+                                              ),
+                                            ),
+                                            const SizedBox(width: 2),
+                                            Icon(
+                                              isExpanded
+                                                  ? Icons
+                                                      .keyboard_arrow_up_rounded
+                                                  : Icons
+                                                      .keyboard_arrow_down_rounded,
+                                              size: 16,
+                                              color: StorkTheme.primary,
+                                            ),
+                                          ],
+                                        ),
+                                      ],
                                       if (dateStr.isNotEmpty) ...[
                                         const SizedBox(height: 10),
                                         Row(

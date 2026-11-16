@@ -14,6 +14,9 @@ class Address {
   final String streetAddress;
   final String? buildingDetails;
   final bool isDefault;
+  final bool isServiceable;
+  final double? latitude;
+  final double? longitude;
 
   Address({
     required this.id,
@@ -31,29 +34,40 @@ class Address {
     required this.streetAddress,
     this.buildingDetails,
     required this.isDefault,
+    this.isServiceable = true,
+    this.latitude,
+    this.longitude,
   });
 
   factory Address.fromJson(Map<String, dynamic> json) {
     return Address(
-      id: json['id'],
-      firstName: json['first_name'] ?? '',
-      lastName: json['last_name'] ?? '',
-      phoneNumber: json['phone_number'] ?? '',
-      country: json['country'] ?? 'Philippines',
-      provinceCode: json['province_code'] ?? '',
-      province: json['province'] ?? '',
-      municipalityCode: json['municipality_code'] ?? '',
-      municipality: json['municipality'] ?? '',
-      barangayCode: json['barangay_code'],
-      barangay: json['barangay'],
-      postcode: json['postcode'] ?? '',
-      streetAddress: json['street_address'] ?? '',
-      buildingDetails: json['building_details'],
+      id: int.tryParse('${json['id'] ?? 0}') ?? 0,
+      firstName: (json['first_name'] ?? '').toString(),
+      lastName: (json['last_name'] ?? '').toString(),
+      phoneNumber: (json['phone_number'] ?? '').toString(),
+      country: (json['country'] ?? 'Philippines').toString(),
+      provinceCode: (json['province_code'] ?? '').toString(),
+      province: (json['province'] ?? '').toString(),
+      municipalityCode: (json['municipality_code'] ?? '').toString(),
+      municipality: (json['municipality'] ?? '').toString(),
+      barangayCode: json['barangay_code']?.toString(),
+      barangay: json['barangay']?.toString(),
+      postcode: (json['postcode'] ?? '').toString(),
+      streetAddress: (json['street_address'] ?? '').toString(),
+      buildingDetails: json['building_details']?.toString(),
       isDefault: json['is_default'] == 1 || json['is_default'] == true,
+      isServiceable:
+          json['is_serviceable'] != false && json['is_serviceable'] != 0,
+      latitude: json['latitude'] != null
+          ? double.tryParse('${json['latitude']}')
+          : null,
+      longitude: json['longitude'] != null
+          ? double.tryParse('${json['longitude']}')
+          : null,
     );
   }
 
-  String get recipientName => '$firstName $lastName';
+  String get recipientName => '$firstName $lastName'.trim();
 
   String get fullAddress {
     final parts = [
@@ -62,8 +76,10 @@ class Address {
       barangay,
       municipality,
       province,
-      postcode
+      postcode,
     ];
-    return parts.where((part) => part != null && part.isNotEmpty).join(', ');
+    return parts
+        .where((part) => part != null && part.trim().isNotEmpty)
+        .join(', ');
   }
 }

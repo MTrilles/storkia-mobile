@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../config/app_theme.dart';
 
 class LegalPoliciesScreen extends StatefulWidget {
@@ -16,6 +17,7 @@ class LegalPoliciesScreen extends StatefulWidget {
 class _LegalPoliciesScreenState extends State<LegalPoliciesScreen>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
+  final Set<String> _expandedSections = <String>{};
 
   @override
   void initState() {
@@ -139,10 +141,17 @@ class _LegalPoliciesScreenState extends State<LegalPoliciesScreen>
   }
 
   Widget _buildPolicySection({
+    required String sectionKey,
     required String number,
     required String title,
     required List<String> paragraphs,
   }) {
+    final bool isExpanded = _expandedSections.contains(sectionKey);
+    final bool hasMultipleOrLong = paragraphs.length > 1 ||
+        (paragraphs.isNotEmpty && paragraphs.first.length > 150);
+    final List<String> visibleParagraphs =
+        (hasMultipleOrLong && !isExpanded) ? [paragraphs.first] : paragraphs;
+
     return Container(
       margin: const EdgeInsets.only(top: 12),
       padding: const EdgeInsets.all(16),
@@ -155,45 +164,105 @@ class _LegalPoliciesScreenState extends State<LegalPoliciesScreen>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
-                decoration: BoxDecoration(
-                  gradient: StorkTheme.brandGradient,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(
-                  number,
-                  style: const TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w900,
-                    color: Colors.white,
+          InkWell(
+            onTap: hasMultipleOrLong
+                ? () {
+                    HapticFeedback.selectionClick();
+                    setState(() {
+                      if (isExpanded) {
+                        _expandedSections.remove(sectionKey);
+                      } else {
+                        _expandedSections.add(sectionKey);
+                      }
+                    });
+                  }
+                : null,
+            borderRadius: BorderRadius.circular(10),
+            child: Row(
+              children: [
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+                  decoration: BoxDecoration(
+                    gradient: StorkTheme.brandGradient,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    number,
+                    style: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w900,
+                      color: Colors.white,
+                    ),
                   ),
                 ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  title,
-                  style: const TextStyle(
-                    fontSize: 14.5,
-                    fontWeight: FontWeight.w800,
-                    color: StorkTheme.primaryDark,
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 14.5,
+                      fontWeight: FontWeight.w800,
+                      color: StorkTheme.primaryDark,
+                    ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
           const SizedBox(height: 10),
-          for (int i = 0; i < paragraphs.length; i++) ...[
+          for (int i = 0; i < visibleParagraphs.length; i++) ...[
             if (i > 0) const SizedBox(height: 8),
             Text(
-              paragraphs[i],
+              visibleParagraphs[i],
+              maxLines: (hasMultipleOrLong && !isExpanded) ? 3 : 50,
+              overflow: (hasMultipleOrLong && !isExpanded)
+                  ? TextOverflow.ellipsis
+                  : TextOverflow.visible,
               style: const TextStyle(
                 fontSize: 12.5,
                 color: StorkTheme.textMain,
                 height: 1.5,
+              ),
+            ),
+          ],
+          if (hasMultipleOrLong) ...[
+            const SizedBox(height: 8),
+            InkWell(
+              onTap: () {
+                HapticFeedback.selectionClick();
+                setState(() {
+                  if (isExpanded) {
+                    _expandedSections.remove(sectionKey);
+                  } else {
+                    _expandedSections.add(sectionKey);
+                  }
+                });
+              },
+              borderRadius: BorderRadius.circular(8),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      isExpanded ? 'See Less' : 'See More',
+                      style: const TextStyle(
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w800,
+                        color: StorkTheme.primary,
+                      ),
+                    ),
+                    const SizedBox(width: 3),
+                    Icon(
+                      isExpanded
+                          ? Icons.keyboard_arrow_up_rounded
+                          : Icons.keyboard_arrow_down_rounded,
+                      size: 16,
+                      color: StorkTheme.primary,
+                    ),
+                  ],
+                ),
               ),
             ),
           ],
@@ -214,6 +283,7 @@ class _LegalPoliciesScreenState extends State<LegalPoliciesScreen>
               'Governing buyer accounts, checkout protection, E-Wallet escrow, Storkia Coins, and returns across Storkia Web & Mobile.',
         ),
         _buildPolicySection(
+          sectionKey: 'terms_01',
           number: '01',
           title: 'Account Eligibility & Security',
           paragraphs: const [
@@ -222,6 +292,7 @@ class _LegalPoliciesScreenState extends State<LegalPoliciesScreen>
           ],
         ),
         _buildPolicySection(
+          sectionKey: 'terms_02',
           number: '02',
           title: 'Orders, 24-Hour Seller SLA & Cancellation Quota',
           paragraphs: const [
@@ -230,6 +301,7 @@ class _LegalPoliciesScreenState extends State<LegalPoliciesScreen>
           ],
         ),
         _buildPolicySection(
+          sectionKey: 'terms_03',
           number: '03',
           title: 'Payment Methods, Storkia E-Wallet & COD Rules',
           paragraphs: const [
@@ -238,6 +310,7 @@ class _LegalPoliciesScreenState extends State<LegalPoliciesScreen>
           ],
         ),
         _buildPolicySection(
+          sectionKey: 'terms_04',
           number: '04',
           title: '72-Hour Buyer Protection & Return / Refund Policy',
           paragraphs: const [
@@ -247,6 +320,7 @@ class _LegalPoliciesScreenState extends State<LegalPoliciesScreen>
           ],
         ),
         _buildPolicySection(
+          sectionKey: 'terms_05',
           number: '05',
           title: 'Storkia Coins, Vouchers & Promotions',
           paragraphs: const [
@@ -271,6 +345,7 @@ class _LegalPoliciesScreenState extends State<LegalPoliciesScreen>
               'How we collect, protect, and process your personal data in compliance with the Philippine Data Privacy Act of 2012.',
         ),
         _buildPolicySection(
+          sectionKey: 'privacy_01',
           number: '01',
           title: 'Information We Collect',
           paragraphs: const [
@@ -280,6 +355,7 @@ class _LegalPoliciesScreenState extends State<LegalPoliciesScreen>
           ],
         ),
         _buildPolicySection(
+          sectionKey: 'privacy_02',
           number: '02',
           title: 'How Your Data Is Used',
           paragraphs: const [
@@ -288,6 +364,7 @@ class _LegalPoliciesScreenState extends State<LegalPoliciesScreen>
           ],
         ),
         _buildPolicySection(
+          sectionKey: 'privacy_03',
           number: '03',
           title: 'Document Security & Account Archiving',
           paragraphs: const [
@@ -312,6 +389,7 @@ class _LegalPoliciesScreenState extends State<LegalPoliciesScreen>
               'How Storkia Web and Mobile use authentication tokens, local preferences, and real-time synchronization.',
         ),
         _buildPolicySection(
+          sectionKey: 'cookie_01',
           number: '01',
           title: 'Sanctum API Tokens & Session Security',
           paragraphs: const [
@@ -320,6 +398,7 @@ class _LegalPoliciesScreenState extends State<LegalPoliciesScreen>
           ],
         ),
         _buildPolicySection(
+          sectionKey: 'cookie_02',
           number: '02',
           title: 'Local Device Storage',
           paragraphs: const [

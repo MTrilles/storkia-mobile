@@ -88,6 +88,7 @@ class _CartScreenState extends ConsumerState<CartScreen>
   bool _isLoading = true;
   bool _summaryExpanded = false;
   Timer? _wsDebounceTimer;
+
   CartItemList _cartItems = [];
   final CartGroupMap _groupedItems = {};
 
@@ -130,6 +131,55 @@ class _CartScreenState extends ConsumerState<CartScreen>
     }
   }
 
+  void _showPopupNotification(
+    String message, {
+    bool isError = true,
+    bool isWarning = false,
+  }) {
+    if (!mounted || message.trim().isEmpty) return;
+    HapticFeedback.heavyImpact();
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.clearSnackBars();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            Icon(
+              isError
+                  ? Icons.error_outline_rounded
+                  : (isWarning
+                      ? Icons.info_outline_rounded
+                      : Icons.check_circle_outline_rounded),
+              color: Colors.white,
+              size: 19,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                message.trim(),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                  height: 1.3,
+                ),
+              ),
+            ),
+          ],
+        ),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 3),
+        margin: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+        backgroundColor: isError
+            ? StorkTheme.danger
+            : (isWarning ? const Color(0xFFB45309) : StorkTheme.success),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+        ),
+      ),
+    );
+  }
+
   List<dynamic> _extractCartItemsList(dynamic raw) {
     if (raw is List) return List<dynamic>.from(raw);
     if (raw is Map) {
@@ -153,7 +203,6 @@ class _CartScreenState extends ConsumerState<CartScreen>
           .timeout(ApiConfig.requestTimeout);
 
       if (!mounted) return;
-
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         final List<dynamic> items = _extractCartItemsList(
@@ -180,10 +229,15 @@ class _CartScreenState extends ConsumerState<CartScreen>
           _groupCartItems();
           _isLoading = false;
         });
-
         ref.read(cartCountProvider.notifier).updateCount(_cartItems.length);
+      } else if (!silent) {
+        _showPopupNotification('Failed to load shopping cart items.');
       }
     } catch (_) {
+      if (mounted && !silent) {
+        _showPopupNotification(
+            'Network error occurred while loading your cart.');
+      }
     } finally {
       if (mounted && !silent) setState(() => _isLoading = false);
     }
@@ -198,13 +252,18 @@ class _CartScreenState extends ConsumerState<CartScreen>
 
   CartItemList get _selectedItems =>
       _cartItems.where((i) => i.isSelected).toList();
+
   bool get _isAllSelected =>
       _cartItems.isNotEmpty && _cartItems.every((i) => i.isSelected);
+
   int get _selectedCount => _selectedItems.length;
+
   double get _retailTotal =>
       _selectedItems.fold(0.0, (sum, i) => sum + (i.activePrice * i.quantity));
+
   double get _estimatedTotal => _selectedItems.fold(
       0.0, (sum, i) => sum + (i.discountedPrice * i.quantity));
+
   double get _savingsTotal => (_retailTotal - _estimatedTotal) > 0
       ? (_retailTotal - _estimatedTotal)
       : 0.0;
@@ -234,7 +293,23 @@ class _CartScreenState extends ConsumerState<CartScreen>
   }
 
   Future<void> _updateQuantity(CartItem item, int newQty) async {
-    if (newQty < 1 || newQty > item.maxStock || item.isSyncing) return;
+    if (item.isSyncing) return;
+    if (newQty < 1) {
+      _showPopupNotification(
+        'Minimum quantity is 1. Tap the trash icon to remove "${item.product.name}".',
+        isError: false,
+        isWarning: true,
+      );
+      return;
+    }
+    if (newQty > item.maxStock) {
+      _showPopupNotification(
+        'Maximum available stock (${item.maxStock}) reached for "${item.product.name}".',
+        isError: true,
+      );
+      return;
+    }
+
     HapticFeedback.lightImpact();
 
     final previousQty = item.quantity;
@@ -256,17 +331,22 @@ class _CartScreenState extends ConsumerState<CartScreen>
       if (response.statusCode != 200) {
         final data = json.decode(response.body);
         setState(() => item.quantity = previousQty);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-                data['message']?.toString() ?? 'Unable to update quantity.'),
-            backgroundColor: StorkTheme.danger,
-          ),
+        _showPopupNotification(
+          data is Map
+              ? (data['message']?.toString() ??
+                  data['error']?.toString() ??
+                  'Unable to update quantity.')
+              : 'Unable to update quantity.',
+          isError: true,
         );
       }
     } catch (_) {
       if (mounted) {
         setState(() => item.quantity = previousQty);
+        _showPopupNotification(
+          'Network error while updating item quantity.',
+          isError: true,
+        );
       }
     } finally {
       if (mounted) {
@@ -308,8 +388,8 @@ class _CartScreenState extends ConsumerState<CartScreen>
     );
 
     if (confirmed != true) return;
-    HapticFeedback.mediumImpact();
 
+    HapticFeedback.mediumImpact();
     setState(() {
       _cartItems.remove(item);
       _groupCartItems();
@@ -841,15 +921,22 @@ class _CartScreenState extends ConsumerState<CartScreen>
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           IconButton(
-                            icon: const Icon(Icons.remove_rounded, size: 15),
+                            icon: Icon(
+                              Icons.remove_rounded,
+                              size: 15,
+                              color: item.quantity > 1
+                                  ? StorkTheme.textMain
+                                  : StorkTheme.textMuted,
+                            ),
                             padding: EdgeInsets.zero,
                             constraints: const BoxConstraints(
                               minWidth: 28,
                               minHeight: 28,
                             ),
-                            onPressed: item.quantity > 1 && !item.isSyncing
-                                ? () => _updateQuantity(item, item.quantity - 1)
-                                : null,
+                            onPressed: item.isSyncing
+                                ? null
+                                : () =>
+                                    _updateQuantity(item, item.quantity - 1),
                           ),
                           Container(
                             width: 28,
@@ -872,16 +959,22 @@ class _CartScreenState extends ConsumerState<CartScreen>
                                   ),
                           ),
                           IconButton(
-                            icon: const Icon(Icons.add_rounded, size: 15),
+                            icon: Icon(
+                              Icons.add_rounded,
+                              size: 15,
+                              color: item.quantity < item.maxStock
+                                  ? StorkTheme.textMain
+                                  : StorkTheme.textMuted,
+                            ),
                             padding: EdgeInsets.zero,
                             constraints: const BoxConstraints(
                               minWidth: 28,
                               minHeight: 28,
                             ),
-                            onPressed: item.quantity < item.maxStock &&
-                                    !item.isSyncing
-                                ? () => _updateQuantity(item, item.quantity + 1)
-                                : null,
+                            onPressed: item.isSyncing
+                                ? null
+                                : () =>
+                                    _updateQuantity(item, item.quantity + 1),
                           ),
                         ],
                       ),
@@ -917,6 +1010,40 @@ class _CartScreenState extends ConsumerState<CartScreen>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (_selectedCount == 0)
+              Container(
+                width: double.infinity,
+                margin: const EdgeInsets.only(bottom: 10),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: StorkTheme.warning.withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: StorkTheme.warning.withValues(alpha: 0.4),
+                  ),
+                ),
+                child: const Row(
+                  children: [
+                    Icon(
+                      Icons.info_outline_rounded,
+                      size: 16,
+                      color: Color(0xFF92400E),
+                    ),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Incomplete Step: Select at least 1 cart item to enable Checkout.',
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w700,
+                          color: Color(0xFF92400E),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             if (_summaryExpanded)
               ConstrainedBox(
                 constraints: BoxConstraints(maxHeight: screenHeight * 0.35),
@@ -1122,30 +1249,42 @@ class _CartScreenState extends ConsumerState<CartScreen>
                   decoration: BoxDecoration(
                     gradient:
                         _selectedCount > 0 ? StorkTheme.brandGradient : null,
+                    color: _selectedCount > 0 ? null : StorkTheme.surfaceSubtle,
                     borderRadius: BorderRadius.circular(14),
+                    border: _selectedCount > 0
+                        ? null
+                        : Border.all(color: StorkTheme.borderSubtle),
                   ),
                   child: ElevatedButton(
-                    onPressed: _selectedCount == 0
-                        ? null
-                        : () {
-                            HapticFeedback.mediumImpact();
-                            final selectedIds =
-                                _selectedItems.map((i) => i.id).toList();
-                            Navigator.push(
-                              context,
-                              StorkRoute.fade(
-                                CheckoutScreen(
-                                  baseUrl: _domain,
-                                  token: widget.token,
-                                  mode: 'cart',
-                                  cartIds: selectedIds,
-                                ),
-                              ),
-                            ).then((_) => _fetchCartItems());
-                          },
+                    onPressed: () {
+                      if (_selectedCount == 0) {
+                        _showPopupNotification(
+                          'Incomplete Step: Please select at least 1 item in your cart to proceed to checkout.',
+                          isError: true,
+                        );
+                        return;
+                      }
+                      HapticFeedback.mediumImpact();
+                      final selectedIds =
+                          _selectedItems.map((i) => i.id).toList();
+                      Navigator.push(
+                        context,
+                        StorkRoute.fade(
+                          CheckoutScreen(
+                            baseUrl: _domain,
+                            token: widget.token,
+                            mode: 'cart',
+                            cartIds: selectedIds,
+                          ),
+                        ),
+                      ).then((_) => _fetchCartItems());
+                    },
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.transparent,
                       shadowColor: Colors.transparent,
+                      foregroundColor: _selectedCount > 0
+                          ? Colors.white
+                          : StorkTheme.textMuted,
                       padding: const EdgeInsets.symmetric(horizontal: 18),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(14),

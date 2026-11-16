@@ -96,6 +96,12 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
   bool _isLoadingDetails = true;
   bool _isAddingToCart = false;
 
+  bool _showAllSpecs = false;
+  bool _showFullDescription = false;
+  bool _showAllQuestions = false;
+  bool _showAllReviews = false;
+  final Set<int> _expandedReviewIds = <int>{};
+
   String get _domain => ApiConfig.resolveBaseDomain(widget.baseUrl);
 
   @override
@@ -158,6 +164,48 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
     if (state == AppLifecycleState.resumed) {
       _fetchFullProductDetails(silent: true);
     }
+  }
+
+  Widget _buildSeeMoreButton({
+    required bool isExpanded,
+    required String moreLabel,
+    String lessLabel = 'See Less',
+    required VoidCallback onTap,
+  }) {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: InkWell(
+        onTap: () {
+          HapticFeedback.selectionClick();
+          onTap();
+        },
+        borderRadius: BorderRadius.circular(10),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 2),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                isExpanded ? lessLabel : moreLabel,
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                  color: StorkTheme.primary,
+                ),
+              ),
+              const SizedBox(width: 4),
+              Icon(
+                isExpanded
+                    ? Icons.keyboard_arrow_up_rounded
+                    : Icons.keyboard_arrow_down_rounded,
+                size: 16,
+                color: StorkTheme.primary,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   Future<void> _copyText(String text, String label) async {
@@ -2614,6 +2662,32 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
   }
 
   Widget _buildSpecificationsAndDescriptionSection() {
+    final allSpecRows = <MapEntry<String, String>>[
+      for (final spec in _product.specifications)
+        MapEntry(spec.title, spec.description),
+      MapEntry('Weight', '${_product.weight} kg'),
+      MapEntry('Stock', '$_activeStock'),
+      MapEntry(
+        'Ships From',
+        _seller != null
+            ? '${_seller!.municipality}, ${_seller!.province}'
+            : 'Local Warehouse',
+      ),
+    ];
+
+    final visibleSpecRows = (allSpecRows.length > 4 && !_showAllSpecs)
+        ? allSpecRows.take(4).toList()
+        : allSpecRows;
+
+    final String fullDesc = [
+      if (_product.description.trim().isNotEmpty) _product.description.trim(),
+      if (_product.additionalDescriptions != null &&
+          _product.additionalDescriptions!.trim().isNotEmpty)
+        _product.additionalDescriptions!.trim(),
+    ].join('\n\n');
+    final bool isLongDescription =
+        fullDesc.length > 180 || fullDesc.split('\n').length > 4;
+
     return Container(
       width: double.infinity,
       margin: const EdgeInsets.symmetric(horizontal: 14),
@@ -2637,16 +2711,16 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
             ),
           ),
           const SizedBox(height: 12),
-          for (final spec in _product.specifications)
-            _buildSpecRow(spec.title, spec.description),
-          _buildSpecRow('Weight', '${_product.weight} kg'),
-          _buildSpecRow('Stock', '$_activeStock'),
-          _buildSpecRow(
-            'Ships From',
-            _seller != null
-                ? '${_seller!.municipality}, ${_seller!.province}'
-                : 'Local Warehouse',
-          ),
+          for (final spec in visibleSpecRows)
+            _buildSpecRow(spec.key, spec.value),
+          if (allSpecRows.length > 4)
+            _buildSeeMoreButton(
+              isExpanded: _showAllSpecs,
+              moreLabel:
+                  'See More Specifications (+${allSpecRows.length - 4} more)',
+              lessLabel: 'See Less Specifications',
+              onTap: () => setState(() => _showAllSpecs = !_showAllSpecs),
+            ),
           const Divider(height: 28),
           const Text(
             'PRODUCT DESCRIPTION',
@@ -2659,24 +2733,25 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
           ),
           const SizedBox(height: 10),
           Text(
-            _product.description.isNotEmpty
-                ? _product.description
-                : 'No description provided.',
+            fullDesc.isNotEmpty ? fullDesc : 'No description provided.',
+            maxLines: isLongDescription && !_showFullDescription ? 4 : 200,
+            overflow: isLongDescription && !_showFullDescription
+                ? TextOverflow.ellipsis
+                : TextOverflow.visible,
             style: const TextStyle(
               fontSize: 13.5,
               color: StorkTheme.textMain,
               height: 1.5,
             ),
           ),
-          if (_product.additionalDescriptions != null &&
-              _product.additionalDescriptions!.trim().isNotEmpty) ...[
-            const SizedBox(height: 12),
-            Text(
-              _product.additionalDescriptions!,
-              style: const TextStyle(
-                fontSize: 13.5,
-                color: StorkTheme.textMain,
-                height: 1.5,
+          if (isLongDescription) ...[
+            const SizedBox(height: 6),
+            _buildSeeMoreButton(
+              isExpanded: _showFullDescription,
+              moreLabel: 'See More Description',
+              lessLabel: 'See Less Description',
+              onTap: () => setState(
+                () => _showFullDescription = !_showFullDescription,
               ),
             ),
           ],
@@ -2719,6 +2794,10 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
   }
 
   Widget _buildProductQnaSection() {
+    final visibleQuestions = (_questions.length > 2 && !_showAllQuestions)
+        ? _questions.take(2).toList()
+        : _questions;
+
     return Container(
       width: double.infinity,
       margin: const EdgeInsets.symmetric(horizontal: 14),
@@ -2773,14 +2852,14 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                 style: TextStyle(fontSize: 12.5, color: StorkTheme.textMuted),
               ),
             )
-          else
+          else ...[
             ListView.separated(
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
-              itemCount: _questions.length,
+              itemCount: visibleQuestions.length,
               separatorBuilder: (_, __) => const Divider(height: 20),
               itemBuilder: (context, index) {
-                final q = _questions[index];
+                final q = visibleQuestions[index];
                 final String? answer = q['answer']?.toString();
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -2867,13 +2946,29 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                 );
               },
             ),
+            if (_questions.length > 2) ...[
+              const SizedBox(height: 8),
+              _buildSeeMoreButton(
+                isExpanded: _showAllQuestions,
+                moreLabel:
+                    'See More Questions (+${_questions.length - 2} more)',
+                lessLabel: 'See Less Questions',
+                onTap: () => setState(
+                  () => _showAllQuestions = !_showAllQuestions,
+                ),
+              ),
+            ],
+          ],
         ],
       ),
     );
   }
 
   Widget _buildReviewsSection() {
-    final visibleReviews = _filteredReviews;
+    final allFilteredReviews = _filteredReviews;
+    final visibleReviews = (allFilteredReviews.length > 3 && !_showAllReviews)
+        ? allFilteredReviews.take(3).toList()
+        : allFilteredReviews;
 
     return Container(
       width: double.infinity,
@@ -2960,7 +3055,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                     fontSize: 12.5, color: StorkTheme.textMuted),
               ),
             )
-          else
+          else ...[
             ListView.separated(
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
@@ -2969,7 +3064,7 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
               itemBuilder: (context, index) {
                 final rev = visibleReviews[index];
                 final int reviewId =
-                    int.tryParse(rev['id']?.toString() ?? '0') ?? 0;
+                    int.tryParse(rev['id']?.toString() ?? '0') ?? (index + 1);
                 final int rating =
                     int.tryParse(rev['rating']?.toString() ?? '5') ?? 5;
                 final List<dynamic> photos = rev['review_photos'] is List
@@ -2982,6 +3077,11 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                 final int helpfulCount =
                     int.tryParse(rev['helpful_count']?.toString() ?? '0') ?? 0;
                 final bool isUpvoted = rev['is_upvoted'] == true;
+                final String reviewText =
+                    (rev['review_text'] ?? '').toString().trim();
+                final bool isLongReview = reviewText.length > 140;
+                final bool isReviewExpanded =
+                    _expandedReviewIds.contains(reviewId);
 
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -3076,17 +3176,34 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                         ),
                       ],
                     ),
-                    if (rev['review_text'] != null &&
-                        rev['review_text'].toString().trim().isNotEmpty) ...[
+                    if (reviewText.isNotEmpty) ...[
                       const SizedBox(height: 6),
                       Text(
-                        rev['review_text'].toString(),
+                        reviewText,
+                        maxLines: isLongReview && !isReviewExpanded ? 3 : 50,
+                        overflow: isLongReview && !isReviewExpanded
+                            ? TextOverflow.ellipsis
+                            : TextOverflow.visible,
                         style: const TextStyle(
                           fontSize: 13,
                           color: StorkTheme.textMain,
                           height: 1.4,
                         ),
                       ),
+                      if (isLongReview)
+                        _buildSeeMoreButton(
+                          isExpanded: isReviewExpanded,
+                          moreLabel: 'See More',
+                          onTap: () {
+                            setState(() {
+                              if (isReviewExpanded) {
+                                _expandedReviewIds.remove(reviewId);
+                              } else {
+                                _expandedReviewIds.add(reviewId);
+                              }
+                            });
+                          },
+                        ),
                     ],
                     if (photos.isNotEmpty) ...[
                       const SizedBox(height: 8),
@@ -3203,6 +3320,19 @@ class _ProductShowScreenState extends ConsumerState<ProductShowScreen>
                 );
               },
             ),
+            if (allFilteredReviews.length > 3) ...[
+              const SizedBox(height: 8),
+              _buildSeeMoreButton(
+                isExpanded: _showAllReviews,
+                moreLabel:
+                    'See More Reviews (+${allFilteredReviews.length - 3} more)',
+                lessLabel: 'See Less Reviews',
+                onTap: () => setState(
+                  () => _showAllReviews = !_showAllReviews,
+                ),
+              ),
+            ],
+          ],
         ],
       ),
     );

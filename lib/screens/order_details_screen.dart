@@ -40,8 +40,16 @@ class OrderDetailsScreen extends ConsumerStatefulWidget {
 class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
     with WidgetsBindingObserver {
   bool _isLoading = true;
+  bool _isDownloadingPdf = false;
   Timer? _wsDebounceTimer;
   int? _subscribedShipmentId;
+
+  bool _showFullDisputeReason = false;
+  bool _showAllReturnEvents = false;
+  bool _showFullDeliveryAddress = false;
+  bool _showAllOrderItems = false;
+  bool _showOrderPriceBreakdown = false;
+  bool _showAllTrackingHistories = false;
 
   JsonMap? _orderData;
   JsonMap? _liveTrackingData;
@@ -52,6 +60,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
     'remaining_buyer': 5,
   };
   bool _isIdentityVerified = false;
+  String _identityStatus = 'unsubmitted';
   int _unreadDeliveryChatCount = 0;
 
   String get _domain => ApiConfig.resolveBaseDomain(widget.baseUrl);
@@ -177,6 +186,48 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
     }
   }
 
+  Widget _buildSeeMoreButton({
+    required bool isExpanded,
+    required String moreLabel,
+    String lessLabel = 'See Less',
+    required VoidCallback onTap,
+  }) {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: InkWell(
+        onTap: () {
+          HapticFeedback.selectionClick();
+          onTap();
+        },
+        borderRadius: BorderRadius.circular(10),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 2),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                isExpanded ? lessLabel : moreLabel,
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                  color: StorkTheme.primary,
+                ),
+              ),
+              const SizedBox(width: 4),
+              Icon(
+                isExpanded
+                    ? Icons.keyboard_arrow_up_rounded
+                    : Icons.keyboard_arrow_down_rounded,
+                size: 16,
+                color: StorkTheme.primary,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   List<dynamic> _extractList(dynamic value) {
     if (value is List) {
       return List<dynamic>.from(value);
@@ -232,6 +283,10 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                   JsonMap.from(data['cancellation_quota'] as Map);
             }
             _isIdentityVerified = data['is_identity_verified'] == true;
+            _identityStatus =
+                (data['identity_status']?.toString() ?? '').isNotEmpty
+                    ? data['identity_status'].toString()
+                    : (_isIdentityVerified ? 'verified' : 'unsubmitted');
             _unreadDeliveryChatCount = int.tryParse(
                     (data['unread_delivery_chat_count'] ??
                             orderMap['unread_delivery_chat_count'] ??
@@ -271,12 +326,142 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
     } catch (_) {}
   }
 
+  Future<String?> _savePdfBytesToDevice(
+    List<int> bytes,
+    String fileName,
+  ) async {
+    final cleanName = fileName.endsWith('.pdf') ? fileName : '$fileName.pdf';
+    final List<Directory> candidateDirs = [
+      Directory('/storage/emulated/0/Download'),
+      Directory('/storage/emulated/0/Documents'),
+      Directory.systemTemp,
+    ];
+
+    for (final dir in candidateDirs) {
+      try {
+        if (await dir.exists()) {
+          final file = File('${dir.path}/$cleanName');
+          await file.writeAsBytes(bytes, flush: true);
+          return file.path;
+        }
+      } catch (_) {
+        continue;
+      }
+    }
+    return null;
+  }
+
+  Future<void> _downloadOfficialPdfInvoice({JsonMap? cachedInvoice}) async {
+    if (_isDownloadingPdf) return;
+    HapticFeedback.lightImpact();
+    setState(() => _isDownloadingPdf = true);
+
+    try {
+      List<int>? pdfBytes;
+      String fileName =
+          'INV-${(_orderData?['seller_order_number'] ?? widget.orderId).toString().replaceAll('SO-', '')}.pdf';
+
+      if (cachedInvoice != null) {
+        if (cachedInvoice['filename'] != null &&
+            cachedInvoice['filename'].toString().trim().isNotEmpty) {
+          fileName = cachedInvoice['filename'].toString().trim();
+        }
+        final b64 = cachedInvoice['pdf_base64']?.toString() ?? '';
+        if (b64.isNotEmpty) {
+          try {
+            pdfBytes = base64Decode(b64);
+          } catch (_) {
+            pdfBytes = null;
+          }
+        }
+      }
+
+      if (pdfBytes == null || pdfBytes.isEmpty) {
+        final response = await ApiService.httpClient
+            .get(
+              Uri.parse(
+                  '$_domain/api/v1/orders/${widget.orderId}/invoice?format=pdf'),
+              headers: ApiService.buildHeaders(widget.token),
+            )
+            .timeout(ApiConfig.requestTimeout);
+
+        if (response.statusCode == 200 && response.bodyBytes.isNotEmpty) {
+          final contentType = response.headers['content-type'] ?? '';
+          if (contentType.contains('application/pdf')) {
+            pdfBytes = response.bodyBytes;
+          } else {
+            final decoded = json.decode(response.body);
+            if (decoded is Map &&
+                decoded['data'] is Map &&
+                decoded['data']['pdf_base64'] != null) {
+              pdfBytes = base64Decode(decoded['data']['pdf_base64'].toString());
+            }
+          }
+        }
+      }
+
+      if (!mounted) return;
+
+      if (pdfBytes != null && pdfBytes.isNotEmpty) {
+        final savedPath = await _savePdfBytesToDevice(pdfBytes, fileName);
+        if (!mounted) return;
+        if (savedPath != null) {
+          await Clipboard.setData(ClipboardData(text: savedPath));
+          _showSuccess('Official PDF E-Invoice saved to: $savedPath');
+        } else {
+          _showError('Could not write PDF file to device storage.');
+        }
+      } else {
+        _showError('Failed to generate Official PDF E-Invoice.');
+      }
+    } catch (_) {
+      if (mounted) {
+        _showError('Network error while downloading PDF E-Invoice.');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isDownloadingPdf = false);
+      }
+    }
+  }
+
+  Future<void> _copyFormattedInvoiceSummary(JsonMap inv) async {
+    final buffer = StringBuffer();
+    buffer.writeln('STORKIA OFFICIAL E-INVOICE');
+    buffer.writeln('Invoice #: ${inv['invoice_number'] ?? ''}');
+    buffer.writeln('Order #: ${inv['seller_order_number'] ?? ''}');
+    buffer.writeln('Issued: ${inv['issued_at'] ?? ''}');
+    buffer.writeln(
+        'Store: ${inv['seller'] is Map ? (inv['seller']['business_name'] ?? '') : ''}');
+    buffer.writeln(
+        'Buyer: ${inv['buyer'] is Map ? (inv['buyer']['recipient_name'] ?? '') : ''}');
+    buffer.writeln(
+        'Payment: ${inv['payment_method'] ?? 'COD'} (${inv['payment_status'] ?? ''})');
+    buffer.writeln('----------------------------------------');
+    final List<dynamic> items =
+        inv['items'] is List ? List<dynamic>.from(inv['items'] as List) : [];
+    for (final item in items) {
+      if (item is Map) {
+        buffer.writeln(
+            '${item['product_name']} x${item['quantity']} - PHP ${_formatMoney(item['line_total'])}');
+      }
+    }
+    buffer.writeln('----------------------------------------');
+    buffer.writeln('Total Payable: PHP ${_formatMoney(inv['total_amount'])}');
+
+    await Clipboard.setData(ClipboardData(text: buffer.toString()));
+    HapticFeedback.selectionClick();
+    if (!mounted) return;
+    _showSuccess('Official E-Invoice details copied to clipboard!');
+  }
+
   Future<void> _openOrderInvoiceModal() async {
     _showLoadingDialog();
     try {
       final response = await ApiService.httpClient
           .get(
-            Uri.parse('$_domain/api/v1/orders/${widget.orderId}/invoice'),
+            Uri.parse(
+                '$_domain/api/v1/orders/${widget.orderId}/invoice?include_pdf=1'),
             headers: ApiService.buildHeaders(widget.token),
           )
           .timeout(ApiConfig.requestTimeout);
@@ -302,171 +487,287 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
             borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
           ),
           builder: (modalContext) {
-            return DraggableScrollableSheet(
-              expand: false,
-              initialChildSize: 0.82,
-              maxChildSize: 0.94,
-              minChildSize: 0.5,
-              builder: (ctx, scrollCtrl) {
-                return ListView(
-                  controller: scrollCtrl,
-                  padding: const EdgeInsets.fromLTRB(20, 14, 20, 24),
-                  children: [
-                    Center(
-                      child: Container(
-                        width: 42,
-                        height: 4,
-                        margin: const EdgeInsets.only(bottom: 16),
-                        decoration: BoxDecoration(
-                          color: StorkTheme.borderSubtle,
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                      ),
-                    ),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            bool isSavingModalPdf = false;
+            String? savedFilePath;
+
+            return StatefulBuilder(
+              builder: (ctx, setModalState) {
+                return DraggableScrollableSheet(
+                  expand: false,
+                  initialChildSize: 0.85,
+                  maxChildSize: 0.95,
+                  minChildSize: 0.55,
+                  builder: (sheetCtx, scrollCtrl) {
+                    return ListView(
+                      controller: scrollCtrl,
+                      padding: const EdgeInsets.fromLTRB(20, 14, 20, 24),
                       children: [
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                inv['invoice_number']?.toString() ?? 'INVOICE',
-                                style: const TextStyle(
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.w900,
-                                  color: StorkTheme.primaryDark,
-                                ),
-                              ),
-                              Text(
-                                'Issued: ${inv['issued_at'] ?? ''}',
-                                style: const TextStyle(
-                                  fontSize: 11.5,
-                                  color: StorkTheme.textMuted,
-                                ),
-                              ),
-                            ],
+                        Center(
+                          child: Container(
+                            width: 42,
+                            height: 4,
+                            margin: const EdgeInsets.only(bottom: 16),
+                            decoration: BoxDecoration(
+                              color: StorkTheme.borderSubtle,
+                              borderRadius: BorderRadius.circular(4),
+                            ),
                           ),
                         ),
-                        IconButton(
-                          onPressed: () => Navigator.pop(modalContext),
-                          icon: const Icon(Icons.close_rounded),
-                        ),
-                      ],
-                    ),
-                    const Divider(height: 24),
-                    _buildInfoRow(
-                        'Store:', inv['seller']?['business_name'] ?? 'Store'),
-                    _buildInfoRow(
-                        'Store Address:', inv['seller']?['address'] ?? ''),
-                    _buildInfoRow('Buyer:',
-                        inv['buyer']?['recipient_name'] ?? 'Recipient'),
-                    _buildInfoRow(
-                        'Delivery Address:', inv['buyer']?['address'] ?? ''),
-                    _buildInfoRow('Payment Method:',
-                        '${inv['payment_method'] ?? 'COD'} (${inv['payment_status'] ?? ''})'),
-                    if (inv['payment_reference'] != null)
-                      _buildInfoRow(
-                          'Payment Ref:', inv['payment_reference'].toString()),
-                    const Divider(height: 24),
-                    const Text(
-                      'ORDER LINE ITEMS',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w800,
-                        color: StorkTheme.primaryDark,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    for (final raw in items)
-                      if (raw is Map)
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 8),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Expanded(
-                                child: Text(
-                                  '${raw['product_name']}${raw['variant'] != null ? ' (${raw['variant']})' : ''} \u00D7 ${raw['quantity']}',
-                                  style: const TextStyle(
-                                    fontSize: 12.5,
-                                    fontWeight: FontWeight.w600,
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 8,
+                                      vertical: 3,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: StorkTheme.brandLight
+                                          .withValues(alpha: 0.6),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: const Text(
+                                      'OFFICIAL E-RECEIPT',
+                                      style: TextStyle(
+                                        fontSize: 9.5,
+                                        fontWeight: FontWeight.w900,
+                                        color: StorkTheme.primaryDark,
+                                      ),
+                                    ),
                                   ),
-                                ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    inv['invoice_number']?.toString() ??
+                                        'INVOICE',
+                                    style: const TextStyle(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.w900,
+                                      color: StorkTheme.primaryDark,
+                                    ),
+                                  ),
+                                  Text(
+                                    'Issued: ${inv['issued_at'] ?? ''}',
+                                    style: const TextStyle(
+                                      fontSize: 11.5,
+                                      color: StorkTheme.textMuted,
+                                    ),
+                                  ),
+                                ],
                               ),
-                              const SizedBox(width: 8),
-                              Text(
-                                '\u20B1${_formatMoney(raw['line_total'])}',
-                                style: const TextStyle(
-                                  fontSize: 12.5,
-                                  fontWeight: FontWeight.w800,
-                                ),
-                              ),
-                            ],
-                          ),
+                            ),
+                            IconButton(
+                              onPressed: () => Navigator.pop(modalContext),
+                              icon: const Icon(Icons.close_rounded),
+                            ),
+                          ],
                         ),
-                    const Divider(height: 24),
-                    _buildInfoRow('Original Merchandise Subtotal:',
-                        '\u20B1${_formatMoney(inv['original_subtotal'])}'),
-                    if ((double.tryParse(
-                                inv['store_voucher_discount']?.toString() ??
-                                    '0') ??
-                            0) >
-                        0)
-                      _buildInfoRow('Store & Bundle Discount:',
-                          '-\u20B1${_formatMoney(inv['store_voucher_discount'])}'),
-                    if ((double.tryParse(
-                                inv['platform_voucher_discount']?.toString() ??
-                                    '0') ??
-                            0) >
-                        0)
-                      _buildInfoRow('Platform Voucher Discount:',
-                          '-\u20B1${_formatMoney(inv['platform_voucher_discount'])}'),
-                    if ((double.tryParse(
-                                inv['coins_discount_amount']?.toString() ??
-                                    '0') ??
-                            0) >
-                        0)
-                      _buildInfoRow(
-                          'Storkia Coins (${inv['coins_used']} Coins):',
-                          '-\u20B1${_formatMoney(inv['coins_discount_amount'])}'),
-                    _buildInfoRow('Net Merchandise Subtotal:',
-                        '\u20B1${_formatMoney(inv['net_subtotal'])}'),
-                    if ((double.tryParse(
-                                inv['shipping_voucher_discount']?.toString() ??
-                                    '0') ??
-                            0) >
-                        0) ...[
-                      _buildInfoRow('Original Shipping Fee:',
-                          '\u20B1${_formatMoney(inv['original_shipping_fee'])}'),
-                      _buildInfoRow('Shipping Voucher Discount:',
-                          '-\u20B1${_formatMoney(inv['shipping_voucher_discount'])}'),
-                    ],
-                    _buildInfoRow('Net Shipping Fee:',
-                        '\u20B1${_formatMoney(inv['net_shipping_fee'])}'),
-                    const Divider(height: 20),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
+                        const Divider(height: 24),
+                        _buildInfoRow('Store:',
+                            inv['seller']?['business_name'] ?? 'Store'),
+                        _buildInfoRow(
+                            'Store Address:', inv['seller']?['address'] ?? ''),
+                        _buildInfoRow('Buyer:',
+                            inv['buyer']?['recipient_name'] ?? 'Recipient'),
+                        _buildInfoRow('Delivery Address:',
+                            inv['buyer']?['address'] ?? ''),
+                        _buildInfoRow('Payment Method:',
+                            '${inv['payment_method'] ?? 'COD'} (${inv['payment_status'] ?? ''})'),
+                        if (inv['payment_reference'] != null)
+                          _buildInfoRow('Payment Ref:',
+                              inv['payment_reference'].toString()),
+                        const Divider(height: 24),
                         const Text(
-                          'Total Invoice Amount',
+                          'ORDER LINE ITEMS',
                           style: TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w900,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w800,
                             color: StorkTheme.primaryDark,
                           ),
                         ),
-                        Text(
-                          '\u20B1${_formatMoney(inv['total_amount'])}',
-                          style: const TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.w900,
-                            color: StorkTheme.primary,
+                        const SizedBox(height: 8),
+                        for (final raw in items)
+                          if (raw is Map)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 8),
+                              child: Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      '${raw['product_name']}${raw['variant'] != null ? ' (${raw['variant']})' : ''} \u00D7 ${raw['quantity']}',
+                                      style: const TextStyle(
+                                        fontSize: 12.5,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    '\u20B1${_formatMoney(raw['line_total'])}',
+                                    style: const TextStyle(
+                                      fontSize: 12.5,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                        const Divider(height: 24),
+                        _buildInfoRow('Original Merchandise Subtotal:',
+                            '\u20B1${_formatMoney(inv['original_subtotal'])}'),
+                        if ((double.tryParse(
+                                    inv['store_voucher_discount']?.toString() ??
+                                        '0') ??
+                                0) >
+                            0)
+                          _buildInfoRow('Store & Bundle Discount:',
+                              '-\u20B1${_formatMoney(inv['store_voucher_discount'])}'),
+                        if ((double.tryParse(inv['platform_voucher_discount']
+                                        ?.toString() ??
+                                    '0') ??
+                                0) >
+                            0)
+                          _buildInfoRow('Platform Voucher Discount:',
+                              '-\u20B1${_formatMoney(inv['platform_voucher_discount'])}'),
+                        if ((double.tryParse(
+                                    inv['coins_discount_amount']?.toString() ??
+                                        '0') ??
+                                0) >
+                            0)
+                          _buildInfoRow(
+                              'Storkia Coins (${inv['coins_used']} Coins):',
+                              '-\u20B1${_formatMoney(inv['coins_discount_amount'])}'),
+                        _buildInfoRow('Net Merchandise Subtotal:',
+                            '\u20B1${_formatMoney(inv['net_subtotal'])}'),
+                        if ((double.tryParse(inv['shipping_voucher_discount']
+                                        ?.toString() ??
+                                    '0') ??
+                                0) >
+                            0) ...[
+                          _buildInfoRow('Original Shipping Fee:',
+                              '\u20B1${_formatMoney(inv['original_shipping_fee'])}'),
+                          _buildInfoRow('Shipping Voucher Discount:',
+                              '-\u20B1${_formatMoney(inv['shipping_voucher_discount'])}'),
+                        ],
+                        _buildInfoRow('Net Shipping Fee:',
+                            '\u20B1${_formatMoney(inv['net_shipping_fee'])}'),
+                        const Divider(height: 20),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text(
+                              'Total Invoice Amount',
+                              style: TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w900,
+                                color: StorkTheme.primaryDark,
+                              ),
+                            ),
+                            Text(
+                              '\u20B1${_formatMoney(inv['total_amount'])}',
+                              style: const TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w900,
+                                color: StorkTheme.primary,
+                              ),
+                            ),
+                          ],
+                        ),
+                        if (savedFilePath != null) ...[
+                          const SizedBox(height: 14),
+                          Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: StorkTheme.success.withValues(alpha: 0.1),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color:
+                                    StorkTheme.success.withValues(alpha: 0.35),
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(
+                                  Icons.check_circle_rounded,
+                                  size: 18,
+                                  color: StorkTheme.success,
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    'Saved PDF to: $savedFilePath',
+                                    style: const TextStyle(
+                                      fontSize: 11.5,
+                                      fontWeight: FontWeight.w700,
+                                      color: StorkTheme.success,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
+                        ],
+                        const SizedBox(height: 18),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                onPressed: () =>
+                                    _copyFormattedInvoiceSummary(inv),
+                                icon: const Icon(Icons.copy_rounded, size: 16),
+                                label: const Text('Copy Receipt'),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: ElevatedButton.icon(
+                                onPressed: isSavingModalPdf
+                                    ? null
+                                    : () async {
+                                        setModalState(
+                                            () => isSavingModalPdf = true);
+                                        await _downloadOfficialPdfInvoice(
+                                            cachedInvoice: inv);
+                                        if (modalContext.mounted) {
+                                          final fileName = inv['filename']
+                                                  ?.toString() ??
+                                              '${inv['invoice_number'] ?? 'INV'}.pdf';
+                                          setModalState(() {
+                                            isSavingModalPdf = false;
+                                            savedFilePath = fileName;
+                                          });
+                                        }
+                                      },
+                                icon: isSavingModalPdf
+                                    ? const SizedBox(
+                                        width: 16,
+                                        height: 16,
+                                        child: CircularProgressIndicator(
+                                          color: Colors.white,
+                                          strokeWidth: 2,
+                                        ),
+                                      )
+                                    : const Icon(
+                                        Icons.picture_as_pdf_rounded,
+                                        size: 17,
+                                      ),
+                                label: Text(
+                                  isSavingModalPdf
+                                      ? 'Saving PDF...'
+                                      : 'Download PDF',
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                       ],
-                    ),
-                  ],
+                    );
+                  },
                 );
               },
             );
@@ -652,6 +953,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
     String selectedReason = reasons.first;
     final notesController = TextEditingController();
     bool isSubmitting = false;
+    String? modalError;
 
     await showModalBottomSheet(
       context: context,
@@ -705,6 +1007,39 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                         ),
                       ],
                     ),
+                    if (modalError != null) ...[
+                      const SizedBox(height: 6),
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: StorkTheme.danger.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: StorkTheme.danger.withValues(alpha: 0.35),
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(
+                              Icons.error_outline_rounded,
+                              size: 17,
+                              color: StorkTheme.danger,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                modalError!,
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                  color: StorkTheme.danger,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                     const SizedBox(height: 8),
                     const Text(
                       'SELECT CANCELLATION REASON *',
@@ -717,8 +1052,10 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                     const SizedBox(height: 8),
                     for (final reason in reasons)
                       InkWell(
-                        onTap: () =>
-                            setModalState(() => selectedReason = reason),
+                        onTap: () => setModalState(() {
+                          selectedReason = reason;
+                          modalError = null;
+                        }),
                         borderRadius: BorderRadius.circular(10),
                         child: Padding(
                           padding: const EdgeInsets.symmetric(vertical: 8),
@@ -776,7 +1113,18 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                             onPressed: isSubmitting
                                 ? null
                                 : () async {
-                                    setModalState(() => isSubmitting = true);
+                                    if (selectedReason.trim().isEmpty) {
+                                      setModalState(() {
+                                        modalError =
+                                            'Please select a reason for cancelling this order.';
+                                      });
+                                      _showError(modalError!);
+                                      return;
+                                    }
+                                    setModalState(() {
+                                      isSubmitting = true;
+                                      modalError = null;
+                                    });
                                     try {
                                       final response = await ApiService
                                           .httpClient
@@ -789,8 +1137,11 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                                             ),
                                             body: json.encode({
                                               'cancel_reason': selectedReason,
-                                              'cancel_notes':
-                                                  notesController.text.trim(),
+                                              if (notesController.text
+                                                  .trim()
+                                                  .isNotEmpty)
+                                                'cancel_notes':
+                                                    notesController.text.trim(),
                                             }),
                                           )
                                           .timeout(ApiConfig.requestTimeout);
@@ -825,9 +1176,18 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                                             err = first.first.toString();
                                           }
                                         }
+                                        if (modalContext.mounted) {
+                                          setModalState(() => modalError = err);
+                                        }
                                         _showError(err);
                                       }
                                     } catch (_) {
+                                      if (modalContext.mounted) {
+                                        setModalState(() {
+                                          modalError =
+                                              'Network error occurred.';
+                                        });
+                                      }
                                       _showError('Network error occurred.');
                                     } finally {
                                       if (modalContext.mounted) {
@@ -911,6 +1271,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
     String defaultAccountName = '';
     String defaultAccountNumber = '';
     bool identityVerified = _isIdentityVerified;
+    String identityStatus = _identityStatus;
     String? blockerMessage;
 
     try {
@@ -928,6 +1289,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
         if (body is Map && body['data'] is Map) {
           final d = JsonMap.from(body['data'] as Map);
           identityVerified = d['identity_verified'] == true;
+          identityStatus = d['identity_status']?.toString() ?? identityStatus;
           blockerMessage = d['blocker']?.toString();
           defaultAccountName = d['default_account_name']?.toString() ?? '';
           defaultAccountNumber = d['default_account_number']?.toString() ?? '';
@@ -965,6 +1327,9 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
     if (!mounted) return;
 
     if (!identityVerified) {
+      _showError(
+        'Valid Government ID verification is required to request a Return & Refund.',
+      );
       await showDialog<void>(
         context: context,
         builder: (dialogContext) => AlertDialog(
@@ -978,9 +1343,13 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
               color: StorkTheme.primaryDark,
             ),
           ),
-          content: const Text(
-            'To protect both buyers and merchants from fraudulent claims, Storkia requires an approved Valid Government ID on your account before submitting a Return & Refund request.\n\nPlease complete Identity Verification first.',
-            style: TextStyle(
+          content: Text(
+            identityStatus == 'pending'
+                ? 'While you can place orders without ID verification, requesting a Return & Refund requires an approved Valid Government ID.\n\nCurrent Status: PENDING ADMIN REVIEW. Please wait for Admin approval or check your verification status.'
+                : (identityStatus == 'failed'
+                    ? 'While you can place orders without ID verification, requesting a Return & Refund requires an approved Valid Government ID.\n\nCurrent Status: VERIFICATION DECLINED. Please resubmit a clear photo of your Government ID.'
+                    : 'While you can place orders without ID verification, requesting a Return & Refund requires an approved Valid Government ID on your account.\n\nPlease complete Identity Verification first.'),
+            style: const TextStyle(
               fontSize: 13.5,
               color: StorkTheme.textMain,
               height: 1.45,
@@ -1004,7 +1373,11 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                   ),
                 ).then((_) => _fetchAllOrderData(silent: true));
               },
-              child: const Text('Verify ID Now'),
+              child: Text(
+                identityStatus == 'pending'
+                    ? 'View ID Status'
+                    : 'Verify ID Now',
+              ),
             ),
           ],
         ),
@@ -1029,6 +1402,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
     final reasonCtrl = TextEditingController();
     XFileList evidenceFiles = <XFile>[];
     bool isSubmitting = false;
+    String? modalError;
 
     await showModalBottomSheet(
       context: context,
@@ -1050,6 +1424,28 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
 
             if (isRefundOnlyForced && selectedResolution != 'refund_only') {
               selectedResolution = 'refund_only';
+            }
+
+            final List<String> missingSteps = [];
+            if (reasonCtrl.text.trim().length < 10) {
+              missingSteps.add(
+                'Describe the problem with your order (at least 10 characters).',
+              );
+            }
+            if (refundMethod == 'GCASH') {
+              if (accountNameCtrl.text.trim().isEmpty) {
+                missingSteps.add('Enter your GCash account holder name.');
+              }
+              final rawDigits =
+                  accountPhoneCtrl.text.trim().replaceAll(RegExp(r'\D'), '');
+              if (!RegExp(r'^0?9\d{9}$').hasMatch(rawDigits)) {
+                missingSteps.add(
+                  'Enter a valid Philippine GCash mobile number (09XXXXXXXXX or 9XXXXXXXXX).',
+                );
+              }
+            }
+            if (evidenceFiles.isEmpty) {
+              missingSteps.add('Upload 1 to 5 evidence photos (max 5MB each).');
             }
 
             return Padding(
@@ -1157,6 +1553,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                           );
                           setModalState(() {
                             selectedCategoryKey = val;
+                            modalError = null;
                             if (match['refund_only_forced'] == true) {
                               selectedResolution = 'refund_only';
                             } else {
@@ -1287,8 +1684,10 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                       children: [
                         Expanded(
                           child: InkWell(
-                            onTap: () =>
-                                setModalState(() => refundMethod = 'WALLET'),
+                            onTap: () => setModalState(() {
+                              refundMethod = 'WALLET';
+                              modalError = null;
+                            }),
                             borderRadius: BorderRadius.circular(12),
                             child: Container(
                               padding: const EdgeInsets.symmetric(vertical: 11),
@@ -1321,8 +1720,10 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                         const SizedBox(width: 10),
                         Expanded(
                           child: InkWell(
-                            onTap: () =>
-                                setModalState(() => refundMethod = 'GCASH'),
+                            onTap: () => setModalState(() {
+                              refundMethod = 'GCASH';
+                              modalError = null;
+                            }),
                             borderRadius: BorderRadius.circular(12),
                             child: Container(
                               padding: const EdgeInsets.symmetric(vertical: 11),
@@ -1358,6 +1759,8 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                       const SizedBox(height: 12),
                       TextField(
                         controller: accountNameCtrl,
+                        onChanged: (_) =>
+                            setModalState(() => modalError = null),
                         textCapitalization: TextCapitalization.words,
                         decoration: const InputDecoration(
                           labelText: 'GCash Account Holder Name *',
@@ -1366,6 +1769,8 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                       const SizedBox(height: 10),
                       TextField(
                         controller: accountPhoneCtrl,
+                        onChanged: (_) =>
+                            setModalState(() => modalError = null),
                         keyboardType: TextInputType.phone,
                         inputFormatters: [
                           FilteringTextInputFormatter.digitsOnly,
@@ -1381,6 +1786,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                     const SizedBox(height: 12),
                     TextField(
                       controller: reasonCtrl,
+                      onChanged: (_) => setModalState(() => modalError = null),
                       maxLines: 3,
                       maxLength: 1000,
                       decoration: const InputDecoration(
@@ -1413,6 +1819,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                           }
                           setModalState(() {
                             evidenceFiles = picked;
+                            modalError = null;
                           });
                         }
                       },
@@ -1442,25 +1849,89 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                         ],
                       ),
                     ],
+                    if (missingSteps.isNotEmpty) ...[
+                      const SizedBox(height: 12),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: StorkTheme.warning.withValues(alpha: 0.14),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: StorkTheme.warning.withValues(alpha: 0.45),
+                          ),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'COMPLETE THESE STEPS TO SUBMIT:',
+                              style: TextStyle(
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w900,
+                                color: Color(0xFF92400E),
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            for (final step in missingSteps)
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 2),
+                                child: Text(
+                                  '\u2022 $step',
+                                  style: const TextStyle(
+                                    fontSize: 11.5,
+                                    fontWeight: FontWeight.w700,
+                                    color: Color(0xFF92400E),
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ],
+                    if (modalError != null) ...[
+                      const SizedBox(height: 10),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: StorkTheme.danger.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: StorkTheme.danger.withValues(alpha: 0.35),
+                          ),
+                        ),
+                        child: Text(
+                          modalError!,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: StorkTheme.danger,
+                          ),
+                        ),
+                      ),
+                    ],
                     const SizedBox(height: 16),
                     SizedBox(
                       width: double.infinity,
                       height: 50,
                       child: ElevatedButton(
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: StorkTheme.danger,
+                          backgroundColor: missingSteps.isEmpty
+                              ? StorkTheme.danger
+                              : StorkTheme.textMuted.withValues(alpha: 0.4),
                         ),
                         onPressed: isSubmitting
                             ? null
                             : () async {
-                                final reasonText = reasonCtrl.text.trim();
-                                if (reasonText.length < 10) {
-                                  _showError(
-                                    'Please provide at least 10 characters explaining the issue.',
-                                  );
+                                if (missingSteps.isNotEmpty) {
+                                  setModalState(
+                                      () => modalError = missingSteps.first);
+                                  _showError(missingSteps.first);
                                   return;
                                 }
 
+                                final reasonText = reasonCtrl.text.trim();
                                 String normalizedGcashPhone =
                                     defaultAccountNumber;
                                 String resolvedAccountName = defaultAccountName;
@@ -1468,23 +1939,9 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                                 if (refundMethod == 'GCASH') {
                                   resolvedAccountName =
                                       accountNameCtrl.text.trim();
-                                  if (resolvedAccountName.isEmpty) {
-                                    _showError(
-                                      'Please enter your GCash account holder name.',
-                                    );
-                                    return;
-                                  }
-
                                   final rawDigits = accountPhoneCtrl.text
                                       .trim()
                                       .replaceAll(RegExp(r'\D'), '');
-                                  if (!RegExp(r'^0?9\d{9}$')
-                                      .hasMatch(rawDigits)) {
-                                    _showError(
-                                      'Enter a valid 11-digit (09XXXXXXXXX) or 10-digit (9XXXXXXXXX) GCash number.',
-                                    );
-                                    return;
-                                  }
                                   normalizedGcashPhone =
                                       rawDigits.startsWith('9') &&
                                               rawDigits.length == 10
@@ -1499,15 +1956,10 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                                   }
                                 }
 
-                                if (evidenceFiles.isEmpty ||
-                                    evidenceFiles.length > 5) {
-                                  _showError(
-                                    'Please attach between 1 and 5 evidence photos.',
-                                  );
-                                  return;
-                                }
-
-                                setModalState(() => isSubmitting = true);
+                                setModalState(() {
+                                  isSubmitting = true;
+                                  modalError = null;
+                                });
 
                                 try {
                                   final req = http.MultipartRequest(
@@ -1575,9 +2027,17 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                                         err = first.first.toString();
                                       }
                                     }
+                                    if (modalContext.mounted) {
+                                      setModalState(() => modalError = err);
+                                    }
                                     _showError(err);
                                   }
                                 } catch (_) {
+                                  if (modalContext.mounted) {
+                                    setModalState(() {
+                                      modalError = 'Network error occurred.';
+                                    });
+                                  }
                                   _showError('Network error occurred.');
                                 } finally {
                                   if (modalContext.mounted) {
@@ -1969,8 +2429,23 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
         ),
         actions: [
           IconButton(
+            onPressed:
+                _isDownloadingPdf ? null : () => _downloadOfficialPdfInvoice(),
+            tooltip: 'Download Official PDF Invoice',
+            icon: _isDownloadingPdf
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: StorkTheme.primary,
+                    ),
+                  )
+                : const Icon(Icons.picture_as_pdf_outlined),
+          ),
+          IconButton(
             onPressed: _openOrderInvoiceModal,
-            tooltip: 'Order Invoice',
+            tooltip: 'View Official E-Invoice',
             icon: const Icon(Icons.receipt_long_rounded),
           ),
         ],
@@ -2526,7 +3001,11 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                     foregroundColor: StorkTheme.danger,
                     side: const BorderSide(color: StorkTheme.danger),
                   ),
-                  child: const Text('Return / Refund'),
+                  child: Text(
+                    _isIdentityVerified
+                        ? 'Return / Refund'
+                        : 'Return / Refund (Verify ID)',
+                  ),
                 ),
               ),
               const SizedBox(width: 10),
@@ -2578,6 +3057,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
     final String reasonBody = formattedReturn?['reason']?.toString() ??
         _orderData!['dispute_reason']?.toString() ??
         '';
+    final bool isLongDisputeReason = reasonBody.length > 110;
 
     final String? sellerDecision =
         formattedReturn?['seller_decision']?.toString() ??
@@ -2605,6 +3085,10 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
         : null;
     final List<dynamic> shipmentEvents =
         _extractList(returnShipment?['events']);
+    final List<dynamic> visibleReturnEvents =
+        (shipmentEvents.length > 2 && !_showAllReturnEvents)
+            ? shipmentEvents.take(2).toList()
+            : shipmentEvents;
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -2671,12 +3155,24 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
             const SizedBox(height: 6),
             Text(
               '"$reasonBody"',
+              maxLines: isLongDisputeReason && !_showFullDisputeReason ? 3 : 30,
+              overflow: isLongDisputeReason && !_showFullDisputeReason
+                  ? TextOverflow.ellipsis
+                  : TextOverflow.visible,
               style: const TextStyle(
                 fontSize: 12.5,
                 fontStyle: FontStyle.italic,
                 color: StorkTheme.textMain,
               ),
             ),
+            if (isLongDisputeReason)
+              _buildSeeMoreButton(
+                isExpanded: _showFullDisputeReason,
+                moreLabel: 'See Full Return Reason',
+                onTap: () => setState(
+                  () => _showFullDisputeReason = !_showFullDisputeReason,
+                ),
+              ),
           ],
           const SizedBox(height: 6),
           Text(
@@ -2758,7 +3254,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
             ],
             if (shipmentEvents.isNotEmpty) ...[
               const SizedBox(height: 8),
-              for (final ev in shipmentEvents.take(3))
+              for (final ev in visibleReturnEvents)
                 if (ev is Map)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 4),
@@ -2770,6 +3266,16 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                       ),
                     ),
                   ),
+              if (shipmentEvents.length > 2)
+                _buildSeeMoreButton(
+                  isExpanded: _showAllReturnEvents,
+                  moreLabel:
+                      'See More Return Logs (+${shipmentEvents.length - 2} older)',
+                  lessLabel: 'See Less Return Logs',
+                  onTap: () => setState(
+                    () => _showAllReturnEvents = !_showAllReturnEvents,
+                  ),
+                ),
             ],
           ],
           if (sellerDecision != null && sellerDecision.isNotEmpty) ...[
@@ -2820,6 +3326,9 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
     final JsonMap address = _orderData!['delivery_address_snapshot'] is Map
         ? JsonMap.from(_orderData!['delivery_address_snapshot'] as Map)
         : <String, dynamic>{};
+    final String fullAddressText =
+        address['full_address']?.toString() ?? 'No address provided';
+    final bool isLongAddress = fullAddressText.length > 85;
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -2861,13 +3370,25 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
           ),
           const SizedBox(height: 4),
           Text(
-            address['full_address']?.toString() ?? 'No address provided',
+            fullAddressText,
+            maxLines: isLongAddress && !_showFullDeliveryAddress ? 2 : 10,
+            overflow: isLongAddress && !_showFullDeliveryAddress
+                ? TextOverflow.ellipsis
+                : TextOverflow.visible,
             style: const TextStyle(
               fontSize: 12.5,
               color: StorkTheme.textMuted,
               height: 1.35,
             ),
           ),
+          if (isLongAddress)
+            _buildSeeMoreButton(
+              isExpanded: _showFullDeliveryAddress,
+              moreLabel: 'See More Address Details',
+              onTap: () => setState(
+                () => _showFullDeliveryAddress = !_showFullDeliveryAddress,
+              ),
+            ),
         ],
       ),
     );
@@ -2889,6 +3410,12 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
             (p['package_reference']?.toString().isNotEmpty ?? false))
           p['package_reference'].toString(),
     ].join(', ');
+
+    final double? routeDistanceKm = double.tryParse(
+        (_orderData!['seller_to_buyer_distance_km'] ??
+                shipment?['hub_to_buyer_distance_km'] ??
+                '')
+            .toString());
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -2929,6 +3456,11 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
             'Tracking Number:',
             shipment?['tracking_number']?.toString() ?? 'Not generated yet',
           ),
+          if (routeDistanceKm != null && routeDistanceKm > 0)
+            _buildInfoRow(
+              'Estimated Route Distance:',
+              '~${routeDistanceKm.toStringAsFixed(1)} km',
+            ),
           if (pkgRefs.isNotEmpty)
             _buildInfoRow('Package Reference(s):', pkgRefs),
           _buildInfoRow(
@@ -2943,7 +3475,25 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
               OutlinedButton.icon(
                 onPressed: _openOrderInvoiceModal,
                 icon: const Icon(Icons.receipt_long_rounded, size: 16),
-                label: const Text('View Order Invoice'),
+                label: const Text('Official E-Invoice'),
+              ),
+              ElevatedButton.icon(
+                onPressed: _isDownloadingPdf
+                    ? null
+                    : () => _downloadOfficialPdfInvoice(),
+                icon: _isDownloadingPdf
+                    ? const SizedBox(
+                        width: 15,
+                        height: 15,
+                        child: CircularProgressIndicator(
+                          color: Colors.white,
+                          strokeWidth: 2,
+                        ),
+                      )
+                    : const Icon(Icons.picture_as_pdf_rounded, size: 16),
+                label: Text(
+                  _isDownloadingPdf ? 'Saving PDF...' : 'Download PDF Invoice',
+                ),
               ),
               if (latestProof != null && latestProof['id'] != null)
                 OutlinedButton.icon(
@@ -2995,6 +3545,10 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
 
   Widget _buildPurchasedItemsAndSummaryCard(String payMethod, JsonMap? extra) {
     final List<dynamic> items = _extractList(_orderData!['items']);
+    final List<dynamic> visibleItems = (items.length > 2 && !_showAllOrderItems)
+        ? items.take(2).toList()
+        : items;
+
     final double storeDisc =
         double.tryParse(extra?['store_voucher_discount']?.toString() ?? '0') ??
             0.0;
@@ -3028,16 +3582,29 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
             width: double.infinity,
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             color: StorkTheme.surfaceSubtle.withValues(alpha: 0.7),
-            child: const Text(
-              'Purchased Items',
-              style: TextStyle(
-                fontSize: 13.5,
-                fontWeight: FontWeight.w800,
-                color: StorkTheme.primaryDark,
-              ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  'Purchased Items (${items.length})',
+                  style: const TextStyle(
+                    fontSize: 13.5,
+                    fontWeight: FontWeight.w800,
+                    color: StorkTheme.primaryDark,
+                  ),
+                ),
+                _buildSeeMoreButton(
+                  isExpanded: _showOrderPriceBreakdown,
+                  moreLabel: 'See Price Breakdown',
+                  lessLabel: 'Hide Breakdown',
+                  onTap: () => setState(
+                    () => _showOrderPriceBreakdown = !_showOrderPriceBreakdown,
+                  ),
+                ),
+              ],
             ),
           ),
-          for (final rawItem in items)
+          for (final rawItem in visibleItems)
             if (rawItem is Map)
               Padding(
                 padding: const EdgeInsets.all(14),
@@ -3119,45 +3686,59 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                   ],
                 ),
               ),
+          if (items.length > 2)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
+              child: _buildSeeMoreButton(
+                isExpanded: _showAllOrderItems,
+                moreLabel: 'See More Items (+${items.length - 2} more)',
+                lessLabel: 'See Less Items',
+                onTap: () => setState(
+                  () => _showAllOrderItems = !_showAllOrderItems,
+                ),
+              ),
+            ),
           const Divider(height: 1),
           Padding(
             padding: const EdgeInsets.all(16),
             child: Column(
               children: [
-                if (storeDisc > 0)
+                if (_showOrderPriceBreakdown) ...[
+                  if (storeDisc > 0)
+                    _buildInfoRow(
+                      'Store / Bundle Discount:',
+                      '-\u20B1${_formatMoney(storeDisc)}',
+                    ),
+                  if (platDisc > 0)
+                    _buildInfoRow(
+                      'Platform Voucher (${extra?['platform_voucher_code'] ?? ''}):',
+                      '-\u20B1${_formatMoney(platDisc)}',
+                    ),
+                  if (coinsDisc > 0)
+                    _buildInfoRow(
+                      'Storkia Coins ($coinsUsed Coins):',
+                      '-\u20B1${_formatMoney(coinsDisc)}',
+                    ),
                   _buildInfoRow(
-                    'Store / Bundle Discount:',
-                    '-\u20B1${_formatMoney(storeDisc)}',
+                    'Net Product Subtotal:',
+                    '\u20B1${_formatMoney(_orderData!['subtotal_amount'])}',
                   ),
-                if (platDisc > 0)
+                  if (shipDisc > 0 && origShipFee > 0)
+                    _buildInfoRow(
+                      'Original Shipping Fee (${_orderData!['total_weight'] ?? '0'} kg):',
+                      '\u20B1${_formatMoney(origShipFee)}',
+                    ),
+                  if (shipDisc > 0)
+                    _buildInfoRow(
+                      'Shipping Voucher (${extra?['shipping_voucher_code'] ?? 'FREE SHIP'}):',
+                      '-\u20B1${_formatMoney(shipDisc)}',
+                    ),
                   _buildInfoRow(
-                    'Platform Voucher (${extra?['platform_voucher_code'] ?? ''}):',
-                    '-\u20B1${_formatMoney(platDisc)}',
+                    'Net Shipping Fee (${_orderData!['total_weight'] ?? '0'} kg):',
+                    '\u20B1${_formatMoney(_orderData!['shipping_fee'])}',
                   ),
-                if (coinsDisc > 0)
-                  _buildInfoRow(
-                    'Storkia Coins ($coinsUsed Coins):',
-                    '-\u20B1${_formatMoney(coinsDisc)}',
-                  ),
-                _buildInfoRow(
-                  'Net Product Subtotal:',
-                  '\u20B1${_formatMoney(_orderData!['subtotal_amount'])}',
-                ),
-                if (shipDisc > 0 && origShipFee > 0)
-                  _buildInfoRow(
-                    'Original Shipping Fee (${_orderData!['total_weight'] ?? '0'} kg):',
-                    '\u20B1${_formatMoney(origShipFee)}',
-                  ),
-                if (shipDisc > 0)
-                  _buildInfoRow(
-                    'Shipping Voucher (${extra?['shipping_voucher_code'] ?? 'FREE SHIP'}):',
-                    '-\u20B1${_formatMoney(shipDisc)}',
-                  ),
-                _buildInfoRow(
-                  'Net Shipping Fee (${_orderData!['total_weight'] ?? '0'} kg):',
-                  '\u20B1${_formatMoney(_orderData!['shipping_fee'])}',
-                ),
-                const Divider(height: 18),
+                  const Divider(height: 18),
+                ],
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
@@ -3193,6 +3774,10 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
   Widget _buildTrackingTimelineCard() {
     final List<dynamic> histories =
         _extractList(_orderData!['status_histories']);
+    final List<dynamic> visibleHistories =
+        (histories.length > 3 && !_showAllTrackingHistories)
+            ? histories.take(3).toList()
+            : histories;
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -3205,20 +3790,22 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Row(
+          Row(
             children: [
-              Icon(
+              const Icon(
                 Icons.local_shipping_outlined,
                 color: StorkTheme.primary,
                 size: 19,
               ),
-              SizedBox(width: 8),
-              Text(
-                'Order & Shipment Timeline',
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w800,
-                  color: StorkTheme.primaryDark,
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Order & Shipment Timeline (${histories.length})',
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w800,
+                    color: StorkTheme.primaryDark,
+                  ),
                 ),
               ),
             ],
@@ -3229,13 +3816,13 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
               'No status logs recorded yet.',
               style: TextStyle(fontSize: 12.5, color: StorkTheme.textMuted),
             )
-          else
+          else ...[
             ListView.builder(
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
-              itemCount: histories.length,
+              itemCount: visibleHistories.length,
               itemBuilder: (context, index) {
-                final rawHistory = histories[index];
+                final rawHistory = visibleHistories[index];
                 if (rawHistory is! Map) return const SizedBox.shrink();
                 final history = JsonMap.from(rawHistory);
                 final bool isLatest = index == 0;
@@ -3262,7 +3849,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                                 : StorkTheme.borderSubtle,
                           ),
                         ),
-                        if (index != histories.length - 1)
+                        if (index != visibleHistories.length - 1)
                           Container(
                             width: 2,
                             height: 44,
@@ -3315,6 +3902,17 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen>
                 );
               },
             ),
+            if (histories.length > 3)
+              _buildSeeMoreButton(
+                isExpanded: _showAllTrackingHistories,
+                moreLabel:
+                    'See Full Timeline (+${histories.length - 3} older updates)',
+                lessLabel: 'See Less Timeline Updates',
+                onTap: () => setState(
+                  () => _showAllTrackingHistories = !_showAllTrackingHistories,
+                ),
+              ),
+          ],
         ],
       ),
     );
@@ -3345,6 +3943,7 @@ class _DeliveryRiderChatBottomSheetState
   bool _isLoading = true;
   bool _isSending = false;
   bool _canSend = false;
+  String? _chatError;
   XFile? _attachment;
   JsonMap? _rider;
   JsonMapList _messages = [];
@@ -3447,22 +4046,50 @@ class _DeliveryRiderChatBottomSheetState
   }
 
   Future<void> _pickPhoto() async {
+    if (!_canSend) {
+      setState(() {
+        _chatError =
+            'Delivery chat is only active while a Rider is assigned and delivering your parcel.';
+      });
+      return;
+    }
     final picked = await _picker.pickImage(
       source: ImageSource.gallery,
       imageQuality: 84,
     );
     if (picked != null && mounted) {
-      setState(() => _attachment = picked);
+      setState(() {
+        _attachment = picked;
+        _chatError = null;
+      });
     }
   }
 
   Future<void> _sendMessage() async {
+    if (_isSending) return;
+    if (!_canSend) {
+      HapticFeedback.heavyImpact();
+      setState(() {
+        _chatError =
+            'Delivery chat is only active while a Rider is assigned and delivering your parcel.';
+      });
+      return;
+    }
+
     final text = _msgCtrl.text.trim();
     final fileToSend = _attachment;
-    if ((text.isEmpty && fileToSend == null) || _isSending || !_canSend) return;
+    if (text.isEmpty && fileToSend == null) {
+      HapticFeedback.heavyImpact();
+      setState(() {
+        _chatError =
+            'Please type a delivery note or attach a photo before tapping Send.';
+      });
+      return;
+    }
 
     setState(() {
       _isSending = true;
+      _chatError = null;
       _attachment = null;
     });
     _msgCtrl.clear();
@@ -3502,13 +4129,22 @@ class _DeliveryRiderChatBottomSheetState
         await _fetchChat(silent: true);
         _scrollToBottom();
       } else {
+        final decoded = json.decode(response.body);
         _msgCtrl.text = text;
-        setState(() => _attachment = fileToSend);
+        setState(() {
+          _attachment = fileToSend;
+          _chatError = decoded is Map
+              ? (decoded['message']?.toString() ?? 'Unable to send message.')
+              : 'Unable to send message.';
+        });
       }
     } catch (_) {
       _msgCtrl.text = text;
       if (mounted) {
-        setState(() => _attachment = fileToSend);
+        setState(() {
+          _attachment = fileToSend;
+          _chatError = 'Network error while sending message.';
+        });
       }
     } finally {
       if (mounted) setState(() => _isSending = false);
@@ -3578,6 +4214,21 @@ class _DeliveryRiderChatBottomSheetState
               ),
             ),
             const Divider(height: 1),
+            if (_chatError != null)
+              Container(
+                width: double.infinity,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                color: StorkTheme.danger.withValues(alpha: 0.1),
+                child: Text(
+                  _chatError!,
+                  style: const TextStyle(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w700,
+                    color: StorkTheme.danger,
+                  ),
+                ),
+              ),
             Expanded(
               child: _isLoading
                   ? const Center(
@@ -3712,7 +4363,7 @@ class _DeliveryRiderChatBottomSheetState
                 child: Row(
                   children: [
                     IconButton(
-                      onPressed: (_canSend && !_isSending) ? _pickPhoto : null,
+                      onPressed: _isSending ? null : _pickPhoto,
                       icon: const Icon(
                         Icons.photo_library_outlined,
                         color: StorkTheme.primaryDark,
@@ -3722,6 +4373,11 @@ class _DeliveryRiderChatBottomSheetState
                       child: TextField(
                         controller: _msgCtrl,
                         enabled: _canSend && !_isSending,
+                        onChanged: (_) {
+                          if (_chatError != null) {
+                            setState(() => _chatError = null);
+                          }
+                        },
                         decoration: InputDecoration(
                           hintText: _canSend
                               ? 'Message your delivery rider...'
@@ -3733,8 +4389,7 @@ class _DeliveryRiderChatBottomSheetState
                     ),
                     const SizedBox(width: 8),
                     IconButton(
-                      onPressed:
-                          (_canSend && !_isSending) ? _sendMessage : null,
+                      onPressed: _isSending ? null : _sendMessage,
                       icon: _isSending
                           ? const SizedBox(
                               width: 18,

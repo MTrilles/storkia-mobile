@@ -30,6 +30,7 @@ class _AddressSelectionScreenState extends State<AddressSelectionScreen>
   bool _isLoading = true;
   List<Address> _addresses = [];
   int? _currentSelectedId;
+  final Set<int> _expandedAddressIds = <int>{};
 
   String get _domain => ApiConfig.resolveBaseDomain(widget.baseUrl);
 
@@ -82,6 +83,7 @@ class _AddressSelectionScreenState extends State<AddressSelectionScreen>
     if (!silent && _addresses.isEmpty) {
       setState(() => _isLoading = true);
     }
+
     try {
       final response = await ApiService.httpClient
           .get(
@@ -248,6 +250,9 @@ class _AddressSelectionScreenState extends State<AddressSelectionScreen>
                     itemBuilder: (context, index) {
                       final address = _addresses[index];
                       final isSelected = address.id == _currentSelectedId;
+                      final isExpanded =
+                          _expandedAddressIds.contains(address.id);
+                      final isLongAddress = address.fullAddress.length > 85;
 
                       return InkWell(
                         onTap: () {
@@ -264,9 +269,11 @@ class _AddressSelectionScreenState extends State<AddressSelectionScreen>
                                 ? StorkTheme.primary.withValues(alpha: 0.05)
                                 : StorkTheme.surface,
                             border: Border.all(
-                              color: isSelected
-                                  ? StorkTheme.primary
-                                  : StorkTheme.borderSubtle,
+                              color: !address.isServiceable
+                                  ? StorkTheme.danger.withValues(alpha: 0.5)
+                                  : (isSelected
+                                      ? StorkTheme.primary
+                                      : StorkTheme.borderSubtle),
                               width: isSelected ? 2 : 1,
                             ),
                             borderRadius: BorderRadius.circular(20),
@@ -313,7 +320,7 @@ class _AddressSelectionScreenState extends State<AddressSelectionScreen>
                                         Wrap(
                                           crossAxisAlignment:
                                               WrapCrossAlignment.center,
-                                          spacing: 8,
+                                          spacing: 6,
                                           runSpacing: 4,
                                           children: [
                                             Text(
@@ -352,6 +359,35 @@ class _AddressSelectionScreenState extends State<AddressSelectionScreen>
                                                   ),
                                                 ),
                                               ),
+                                            Container(
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                horizontal: 7,
+                                                vertical: 2.5,
+                                              ),
+                                              decoration: BoxDecoration(
+                                                color: address.isServiceable
+                                                    ? StorkTheme.success
+                                                        .withValues(alpha: 0.12)
+                                                    : StorkTheme.danger
+                                                        .withValues(
+                                                            alpha: 0.12),
+                                                borderRadius:
+                                                    BorderRadius.circular(6),
+                                              ),
+                                              child: Text(
+                                                address.isServiceable
+                                                    ? 'Serviceable Zone'
+                                                    : 'Outside Rider Coverage',
+                                                style: TextStyle(
+                                                  fontSize: 9.5,
+                                                  fontWeight: FontWeight.w800,
+                                                  color: address.isServiceable
+                                                      ? StorkTheme.success
+                                                      : StorkTheme.danger,
+                                                ),
+                                              ),
+                                            ),
                                           ],
                                         ),
                                         const SizedBox(height: 4),
@@ -387,13 +423,65 @@ class _AddressSelectionScreenState extends State<AddressSelectionScreen>
                                   color: StorkTheme.surfaceSubtle,
                                   borderRadius: BorderRadius.circular(12),
                                 ),
-                                child: Text(
-                                  address.fullAddress,
-                                  style: const TextStyle(
-                                    color: StorkTheme.textMain,
-                                    fontSize: 13,
-                                    height: 1.4,
-                                  ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      address.fullAddress,
+                                      maxLines:
+                                          isLongAddress && !isExpanded ? 2 : 10,
+                                      overflow: isLongAddress && !isExpanded
+                                          ? TextOverflow.ellipsis
+                                          : TextOverflow.visible,
+                                      style: const TextStyle(
+                                        color: StorkTheme.textMain,
+                                        fontSize: 13,
+                                        height: 1.4,
+                                      ),
+                                    ),
+                                    if (isLongAddress) ...[
+                                      const SizedBox(height: 4),
+                                      GestureDetector(
+                                        onTap: () {
+                                          HapticFeedback.selectionClick();
+                                          setState(() {
+                                            if (isExpanded) {
+                                              _expandedAddressIds
+                                                  .remove(address.id);
+                                            } else {
+                                              _expandedAddressIds
+                                                  .add(address.id);
+                                            }
+                                          });
+                                        },
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Text(
+                                              isExpanded
+                                                  ? 'See Less'
+                                                  : 'See More',
+                                              style: const TextStyle(
+                                                fontSize: 11.5,
+                                                fontWeight: FontWeight.w800,
+                                                color: StorkTheme.primary,
+                                              ),
+                                            ),
+                                            const SizedBox(width: 2),
+                                            Icon(
+                                              isExpanded
+                                                  ? Icons
+                                                      .keyboard_arrow_up_rounded
+                                                  : Icons
+                                                      .keyboard_arrow_down_rounded,
+                                              size: 15,
+                                              color: StorkTheme.primary,
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ],
+                                  ],
                                 ),
                               ),
                               const SizedBox(height: 10),
